@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: imperio-espetos-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: EVOLUTION_URL
+        sync: false
+      - key: EVOLUTION_KEY
+        sync: false
+      - key: EVOLUTION_INSTANCE
+        sync: false
+      - key: ANTHROPIC_KEY
+        sync: false
