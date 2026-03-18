@@ -538,7 +538,7 @@ function Cardapio({ cardapio, onReload }) {
           </div>
         </div>
       )}
-      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 2 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 2 }}>
         {categorias.map(cat => (
           <button key={cat} onClick={() => setFiltro(cat)} style={{ whiteSpace: "nowrap", padding: "5px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: filtro === cat ? 700 : 500, background: filtro === cat ? "#7b1a0a" : "#f0f0f0", color: filtro === cat ? "#fff" : "#555" }}>{cat === "todos" ? "📋 Todos" : cat}</button>
         ))}
@@ -614,7 +614,7 @@ function Configuracoes({ config, onSave, statusLoja }) {
           {!statusLoja?.aberto && <div style={{ fontSize: 12, color: "#b91c1c", marginTop: 2 }}>Próxima abertura: {statusLoja?.proximaAbertura || "—"}</div>}
         </div>
       </div>
-      <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, overflowX: "auto" }}>
+      <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
         {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
@@ -1054,10 +1054,10 @@ export default function PainelPedidos() {
       {aba === "pedidos" && (
         <div>
           {novos > 0 && <div style={{ background: "#fef3c7", borderBottom: "2px solid #f59e0b", padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: "#92400e", fontWeight: 600 }}>🔔 <strong>{novos} novo{novos > 1 ? "s" : ""} pedido{novos > 1 ? "s" : ""}</strong> aguardando!</div>}
-          <div style={{ background: "#fff", padding: "10px 14px", display: "flex", gap: 7, overflowX: "auto", borderBottom: "1px solid #eee" }}>
+          <div style={{ background: "#fff", padding: "8px 10px", display: "flex", gap: 5, flexWrap: "wrap", borderBottom: "1px solid #eee" }}>
             {[["todos","📋 Todos"], ...Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.icon + " " + v.label])].map(([k, l]) => (
-              <button key={k} onClick={() => setFiltro(k)} style={{ whiteSpace: "nowrap", padding: "6px 13px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12.5, fontWeight: filtro === k ? 700 : 500, background: filtro === k ? "#7b1a0a" : "#f0f0f0", color: filtro === k ? "#fff" : "#555", transition: "all 0.15s" }}>
-                {l}{k !== "todos" && counts[k] > 0 && <span style={{ marginLeft: 5, background: filtro === k ? "rgba(255,255,255,0.3)" : "#7b1a0a", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 11, fontWeight: 800 }}>{counts[k]}</span>}
+              <button key={k} onClick={() => setFiltro(k)} style={{ whiteSpace: "nowrap", padding: "5px 10px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: filtro === k ? 700 : 500, background: filtro === k ? "#7b1a0a" : "#f0f0f0", color: filtro === k ? "#fff" : "#555", transition: "all 0.15s" }}>
+                {l}{k !== "todos" && counts[k] > 0 && <span style={{ marginLeft: 4, background: filtro === k ? "rgba(255,255,255,0.3)" : "#7b1a0a", color: "#fff", borderRadius: 10, padding: "1px 5px", fontSize: 10, fontWeight: 800 }}>{counts[k]}</span>}
               </button>
             ))}
           </div>
