@@ -994,14 +994,14 @@ export default function PainelPedidos() {
   const cc = { conectando: { cor: "#f59e0b", txt: "conectando..." }, online: { cor: "#10b981", txt: "atualizado às " + (ultimaAtt ? horaFmt(ultimaAtt) : "") }, offline: { cor: "#f59e0b", txt: "modo demonstração" } }[conexao];
 
   const abas = [
-    ["pedidos","📋 Pedidos"],
-    ["relatorios","📊 Relatórios"],
-    ["clientes","👥 Clientes"],
-    ["cardapio","🍢 Cardápio"],
-    ["cupons","🎟️ Cupons"],
-    ["fidelidade","🏆 Fidelidade"],
-    ["avaliacoes","⭐ Avaliações"],
-    ["config","⚙️ Config"],
+    ["pedidos",    "📋", "Pedidos"],
+    ["relatorios", "📊", "Rel."],
+    ["clientes",   "👥", "Clientes"],
+    ["cardapio",   "🍢", "Cardápio"],
+    ["cupons",     "🎟️", "Cupons"],
+    ["fidelidade", "🏆", "Fidelid."],
+    ["avaliacoes", "⭐", "Aval."],
+    ["config",     "⚙️", "Config"],
   ];
 
   return (
@@ -1041,10 +1041,11 @@ export default function PainelPedidos() {
       </div>
 
       {/* ABAS */}
-      <div style={{ background: "#fff", display: "flex", borderBottom: "2px solid #f0f0f0", overflowX: "auto" }}>
-        {abas.map(([k, l]) => (
-          <button key={k} onClick={() => setAba(k)} style={{ flexShrink: 0, padding: "12px 12px", border: "none", background: "none", cursor: "pointer", fontSize: 12, fontWeight: aba === k ? 800 : 500, color: aba === k ? "#7b1a0a" : "#888", borderBottom: aba === k ? "2px solid #7b1a0a" : "2px solid transparent", marginBottom: -2, transition: "all 0.15s", whiteSpace: "nowrap" }}>
-            {l}
+      <div style={{ background: "#fff", display: "flex", borderBottom: "2px solid #f0f0f0" }}>
+        {abas.map(([k, icon, label]) => (
+          <button key={k} onClick={() => setAba(k)} style={{ flex: 1, padding: "8px 2px", border: "none", background: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: aba === k ? "#7b1a0a" : "#999", borderBottom: aba === k ? "2px solid #7b1a0a" : "2px solid transparent", marginBottom: -2, transition: "all 0.15s" }}>
+            <span style={{ fontSize: 16 }}>{icon}</span>
+            <span style={{ fontSize: 9, fontWeight: aba === k ? 800 : 500, whiteSpace: "nowrap" }}>{label}</span>
           </button>
         ))}
       </div>
