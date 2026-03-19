@@ -1054,81 +1054,115 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   ];
 
   return (
-    <div style={{ fontFamily: "'Segoe UI', Tahoma, sans-serif", minHeight: "100vh", background: "#f5f5f5", maxWidth: 600, margin: "0 auto" }}>
+    <div style={{ fontFamily: "'Segoe UI', Tahoma, sans-serif", minHeight: "100vh", background: "#f0f0f0", display: "flex", flexDirection: "column" }}>
 
-      {/* HEADER */}
-      <div style={{ background: "linear-gradient(135deg,#6b1c0e 0%,#8b2510 60%,#6b1c0e 100%)", color: "#fff", padding: "18px 20px 14px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: 1, textTransform: "uppercase" }}>Painel do Dono</div>
-            <div style={{ fontWeight: 800, fontSize: 18 }}>👑 Império dos Espetos</div>
+      {/* HEADER — full width */}
+      <div style={{ background: "linear-gradient(135deg,#6b1c0e 0%,#8b2510 60%,#6b1c0e 100%)", color: "#fff", padding: "14px 24px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 1400, margin: "0 auto", width: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+            <div>
+              <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: 1, textTransform: "uppercase" }}>Painel do Dono</div>
+              <div style={{ fontWeight: 800, fontSize: 20 }}>👑 Império dos Espetos</div>
+            </div>
+            {/* Contadores no header desktop */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {Object.entries(STATUS_CONFIG).map(([k, c]) => (
+                <div key={k} style={{ background: "rgba(255,255,255,0.15)", borderRadius: 10, padding: "5px 12px", border: k === "novo" && counts[k] > 0 ? "1.5px solid #f59e0b" : "1.5px solid rgba(255,255,255,0.1)", cursor: "pointer" }} onClick={() => { setAba("pedidos"); setFiltro(k); }}>
+                  <div style={{ fontSize: 16, fontWeight: 800, lineHeight: 1 }}>{counts[k] || 0}</div>
+                  <div style={{ fontSize: 10, opacity: 0.8, marginTop: 1 }}>{c.icon} {c.label}</div>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, opacity: 0.7 }}>Faturamento hoje</div>
-            <div style={{ fontWeight: 800, fontSize: 20, color: "#f0c040" }}>R$ {totalHoje.toFixed(2)}</div>
-          </div>
-        </div>
-        {aba === "pedidos" && (
-          <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-            {Object.entries(STATUS_CONFIG).map(([k, c]) => (
-              <div key={k} style={{ background: "rgba(255,255,255,0.15)", borderRadius: 10, padding: "6px 12px", border: k === "novo" && counts[k] > 0 ? "1.5px solid #f59e0b" : "1.5px solid rgba(255,255,255,0.1)" }}>
-                <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1 }}>{counts[k] || 0}</div>
-                <div style={{ fontSize: 10, opacity: 0.8, marginTop: 2 }}>{c.icon} {c.label}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 11, opacity: 0.7 }}>Faturamento hoje</div>
+              <div style={{ fontWeight: 800, fontSize: 22, color: "#f0c040" }}>R$ {totalHoje.toFixed(2)}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, fontSize: 11, opacity: 0.9 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: cc.cor, display: "inline-block", boxShadow: conexao === "online" ? "0 0 6px " + cc.cor : "none" }} />
+                {cc.txt}
+                <button onClick={fetchAll} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 14, padding: 0 }}>↻</button>
               </div>
-            ))}
+              <span style={{ background: statusLoja.aberto ? "rgba(74,222,128,0.25)" : "rgba(239,68,68,0.25)", color: statusLoja.aberto ? "#4ade80" : "#fca5a5", borderRadius: 20, padding: "2px 10px", fontWeight: 700, fontSize: 11 }}>
+                {statusLoja.aberto ? "🟢 ABERTO" : "🔴 FECHADO"}
+              </span>
+            </div>
           </div>
-        )}
-        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, fontSize: 11, opacity: 0.9 }}>
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: cc.cor, display: "inline-block", boxShadow: conexao === "online" ? "0 0 6px " + cc.cor : "none" }} />
-          {cc.txt}
-          {mediaAv && <span style={{ marginLeft: 4, background: "rgba(255,255,255,0.15)", borderRadius: 20, padding: "1px 8px", fontWeight: 700, fontSize: 10 }}>⭐ {mediaAv}</span>}
-          <span style={{ marginLeft: 2, background: statusLoja.aberto ? "rgba(74,222,128,0.25)" : "rgba(239,68,68,0.25)", color: statusLoja.aberto ? "#4ade80" : "#fca5a5", borderRadius: 20, padding: "1px 8px", fontWeight: 700, fontSize: 10 }}>
-            {statusLoja.aberto ? "🟢 ABERTO" : "🔴 FECHADO"}
-          </span>
-          <button onClick={fetchAll} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 14, padding: 0 }}>↻</button>
-          {onLogout && <button onClick={onLogout} title="Sair" style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontSize: 16, padding: 0, marginLeft: 4 }}>🔒</button>}
         </div>
       </div>
 
-      {/* ABAS */}
-      <div style={{ background: "#fff", display: "flex", borderBottom: "2px solid #f0f0f0" }}>
-        {abas.map(([k, icon, label]) => (
-          <button key={k} onClick={() => setAba(k)} style={{ flex: 1, padding: "8px 2px", border: "none", background: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: aba === k ? "#7b1a0a" : "#999", borderBottom: aba === k ? "2px solid #7b1a0a" : "2px solid transparent", marginBottom: -2, transition: "all 0.15s" }}>
-            <span style={{ fontSize: 16 }}>{icon}</span>
-            <span style={{ fontSize: 9, fontWeight: aba === k ? 800 : 500, whiteSpace: "nowrap" }}>{label}</span>
-          </button>
-        ))}
-      </div>
+      {/* BODY — sidebar + content */}
+      <div style={{ display: "flex", flex: 1, maxWidth: 1400, margin: "0 auto", width: "100%" }}>
 
-      {/* ABA PEDIDOS */}
-      {aba === "pedidos" && (
-        <div>
-          {novos > 0 && <div style={{ background: "#fef3c7", borderBottom: "2px solid #f59e0b", padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: "#92400e", fontWeight: 600 }}>🔔 <strong>{novos} novo{novos > 1 ? "s" : ""} pedido{novos > 1 ? "s" : ""}</strong> aguardando!</div>}
-          <div style={{ background: "#fff", padding: "8px 10px", display: "flex", gap: 5, flexWrap: "wrap", borderBottom: "1px solid #eee" }}>
-            {[["todos","📋 Todos"], ...Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.icon + " " + v.label])].map(([k, l]) => (
-              <button key={k} onClick={() => setFiltro(k)} style={{ whiteSpace: "nowrap", padding: "5px 10px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: filtro === k ? 700 : 500, background: filtro === k ? "#7b1a0a" : "#f0f0f0", color: filtro === k ? "#fff" : "#555", transition: "all 0.15s" }}>
-                {l}{k !== "todos" && counts[k] > 0 && <span style={{ marginLeft: 4, background: filtro === k ? "rgba(255,255,255,0.3)" : "#7b1a0a", color: "#fff", borderRadius: 10, padding: "1px 5px", fontSize: 10, fontWeight: 800 }}>{counts[k]}</span>}
+        {/* SIDEBAR — navegação vertical no desktop */}
+        <div style={{ width: 180, background: "#fff", borderRight: "1px solid #e8e8e8", display: "flex", flexDirection: "column", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto", flexShrink: 0 }}>
+          <div style={{ padding: "12px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
+            {abas.map(([k, icon, label]) => (
+              <button key={k} onClick={() => setAba(k)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: aba === k ? "#fef0ed" : "transparent", color: aba === k ? "#7b1a0a" : "#666", fontWeight: aba === k ? 700 : 500, fontSize: 13, transition: "all 0.15s", textAlign: "left", position: "relative" }}>
+                <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
+                <span>{label}</span>
+                {k === "pedidos" && novos > 0 && (
+                  <span style={{ position: "absolute", right: 10, background: "#f59e0b", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{novos}</span>
+                )}
+                {aba === k && <div style={{ position: "absolute", left: 0, top: "20%", bottom: "20%", width: 3, background: "#7b1a0a", borderRadius: "0 3px 3px 0" }} />}
               </button>
             ))}
           </div>
-          <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
-            {pf.length === 0
-              ? <div style={{ textAlign: "center", padding: "50px 20px", color: "#bbb", fontSize: 15 }}><div style={{ fontSize: 40, marginBottom: 10 }}>🍢</div>Nenhum pedido encontrado.</div>
-              : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} atualizando={!!atualizando[p.id]} />)
-            }
+          {/* Info do sistema */}
+          <div style={{ marginTop: "auto", padding: "12px 14px", borderTop: "1px solid #f0f0f0", fontSize: 11, color: "#bbb" }}>
+            {mediaAv && <div style={{ marginBottom: 4 }}>⭐ Avaliação média: <strong>{mediaAv}</strong></div>}
+            <div>v5.0 — Baileys</div>
           </div>
         </div>
-      )}
 
-      {aba === "relatorios"  && <Relatorios pedidos={pedidos} />}
-      {aba === "clientes"    && <Clientes pedidos={pedidos} />}
-      {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
-      {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
-      {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
-      {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-      {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
+        {/* CONTEÚDO PRINCIPAL */}
+        <div style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+
+          {/* Alerta novos pedidos */}
+          {novos > 0 && aba === "pedidos" && (
+            <div style={{ background: "#fef3c7", borderBottom: "2px solid #f59e0b", padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: "#92400e", fontWeight: 600 }}>
+              🔔 <strong>{novos} novo{novos > 1 ? "s" : ""} pedido{novos > 1 ? "s" : ""}</strong> aguardando!
+            </div>
+          )}
+
+          {/* Filtros de status */}
+          {aba === "pedidos" && (
+            <div style={{ background: "#fff", padding: "10px 16px", display: "flex", gap: 6, flexWrap: "wrap", borderBottom: "1px solid #eee" }}>
+              {[["todos","📋 Todos"], ...Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.icon + " " + v.label])].map(([k, l]) => (
+                <button key={k} onClick={() => setFiltro(k)} style={{ whiteSpace: "nowrap", padding: "6px 14px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 13, fontWeight: filtro === k ? 700 : 500, background: filtro === k ? "#7b1a0a" : "#f0f0f0", color: filtro === k ? "#fff" : "#555", transition: "all 0.15s" }}>
+                  {l}{k !== "todos" && counts[k] > 0 && <span style={{ marginLeft: 5, background: filtro === k ? "rgba(255,255,255,0.3)" : "#7b1a0a", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 11, fontWeight: 800 }}>{counts[k]}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Conteúdo das abas */}
+          {aba === "pedidos" && (
+            <div style={{ padding: "16px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 12 }}>
+              {pf.length === 0
+                ? <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "80px 20px", color: "#bbb", fontSize: 16 }}><div style={{ fontSize: 50, marginBottom: 12 }}>🍢</div>Nenhum pedido encontrado.</div>
+                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} atualizando={!!atualizando[p.id]} />)
+              }
+            </div>
+          )}
+
+          {aba === "relatorios"  && <Relatorios pedidos={pedidos} />}
+          {aba === "clientes"    && <Clientes pedidos={pedidos} />}
+          {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
+          {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
+          {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
+          {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
+          {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
+        </div>
+      </div>
 
       <style>{`
+        @media (max-width: 768px) {
+          /* No mobile: oculta sidebar e mostra abas na base */
+          .sidebar-desktop { display: none !important; }
+        }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-thumb { background: rgba(123,26,10,0.2); border-radius: 4px; }
