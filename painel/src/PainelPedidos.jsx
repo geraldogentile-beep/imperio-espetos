@@ -585,6 +585,54 @@ function Cardapio({ cardapio, onReload }) {
   );
 }
 
+// ── COMPONENTE TROCA DE PIN ───────────────────────────────────
+function PinConfig({ pinAtual, onPinChange }) {
+  const [novoPin, setNovoPin] = useState("");
+  const [confirma, setConfirma] = useState("");
+  const [msg, setMsg] = useState(null);
+
+  function salvarPin() {
+    if (novoPin.length !== 4 || !/^\d{4}$/.test(novoPin)) {
+      setMsg({ tipo: "erro", texto: "O PIN deve ter exatamente 4 números." });
+      return;
+    }
+    if (novoPin !== confirma) {
+      setMsg({ tipo: "erro", texto: "Os PINs não conferem." });
+      return;
+    }
+    if (onPinChange) onPinChange(novoPin);
+    setNovoPin(""); setConfirma("");
+    setMsg({ tipo: "ok", texto: "PIN alterado com sucesso! ✅" });
+    setTimeout(() => setMsg(null), 3000);
+  }
+
+  const inputStyle = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box", letterSpacing: 8, textAlign: "center", fontSize: 20 };
+
+  return (
+    <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#333", marginBottom: 10 }}>🔒 Alterar PIN de acesso</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Novo PIN (4 dígitos)</div>
+          <input type="password" inputMode="numeric" maxLength={4} value={novoPin} onChange={e => setNovoPin(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inputStyle} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Confirmar PIN</div>
+          <input type="password" inputMode="numeric" maxLength={4} value={confirma} onChange={e => setConfirma(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inputStyle} />
+        </div>
+      </div>
+      <button onClick={salvarPin} style={{ width: "100%", background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+        Salvar novo PIN
+      </button>
+      {msg && (
+        <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 8, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 13, fontWeight: 600 }}>
+          {msg.texto}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ABA CONFIGURAÇÕES ─────────────────────────────────────────
 function Configuracoes({ config, onSave, statusLoja }) {
   const [cfg, setCfg] = useState(config);
@@ -702,6 +750,7 @@ function Configuracoes({ config, onSave, statusLoja }) {
       {subAba === "geral" && (
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>⚙️ Geral</div>
+          <PinConfig pinAtual={pinAtual} onPinChange={onPinChange} />
           {[["nomeEstabelecimento","Nome do estabelecimento"],["nomeAgente","Nome do agente IA"]].map(([campo, lbl]) => (
             <div key={campo}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input value={cfg[campo]} onChange={e => setCfg(p => ({ ...p, [campo]: e.target.value }))} style={inputStyle} /></div>
           ))}
@@ -920,7 +969,7 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando }) {
 }
 
 // ── PAINEL PRINCIPAL ──────────────────────────────────────────
-export default function PainelPedidos() {
+export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [pedidos, setPedidos] = useState(MOCK_PEDIDOS);
   const [cardapio, setCardapio] = useState(MOCK_CARDAPIO);
   const [cupons, setCupons] = useState(MOCK_CUPONS);
@@ -1036,7 +1085,8 @@ export default function PainelPedidos() {
           <span style={{ marginLeft: 2, background: statusLoja.aberto ? "rgba(74,222,128,0.25)" : "rgba(239,68,68,0.25)", color: statusLoja.aberto ? "#4ade80" : "#fca5a5", borderRadius: 20, padding: "1px 8px", fontWeight: 700, fontSize: 10 }}>
             {statusLoja.aberto ? "🟢 ABERTO" : "🔴 FECHADO"}
           </span>
-          <button onClick={fetchAll} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 14, padding: 0, marginLeft: "auto" }}>↻</button>
+          <button onClick={fetchAll} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 14, padding: 0 }}>↻</button>
+          {onLogout && <button onClick={onLogout} title="Sair" style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontSize: 16, padding: 0, marginLeft: 4 }}>🔒</button>}
         </div>
       </div>
 
