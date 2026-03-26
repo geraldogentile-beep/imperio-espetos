@@ -1463,8 +1463,15 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [statusLoja, setStatusLoja] = useState({ aberto: true, proximaAbertura: "—" });
   const [, setTick] = useState(0);
   const [perfilSalao, setPerfilSalao] = useState(null); // persiste entre trocas de aba
-  const [mesasSalao, setMesasSalao] = useState(Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}))); // persiste entre trocas de perfil
-  const [faturadoSalao, setFaturadoSalao] = useState(0); // persiste entre trocas de perfil
+  const [mesasSalao, setMesasSalao] = useState(() => {
+    try {
+      const saved = localStorage.getItem("imperio_mesas_salao");
+      return saved ? JSON.parse(saved) : Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}));
+    } catch { return Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})); }
+  }); // persiste entre recargas
+  const [faturadoSalao, setFaturadoSalao] = useState(() => {
+    try { return parseFloat(localStorage.getItem("imperio_faturado_salao") || "0"); } catch { return 0; }
+  }); // persiste entre recargas
   const [selSalao, setSelSalao] = useState(null); // mesa selecionada — persiste
   const [telaSalao, setTelaSalaoGlobal] = useState("mapa"); // tela atual — persiste
   const ant = useRef(new Set(MOCK_PEDIDOS.map(p => p.id)));
@@ -1503,6 +1510,10 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
 
   useEffect(() => { fetchAll(); const t = setInterval(fetchAll, POLLING_INTERVAL); return () => clearInterval(t); }, [fetchAll]);
   useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 30000); return () => clearInterval(t); }, []);
+
+  // Persiste dados do salão no localStorage
+  useEffect(() => { try { localStorage.setItem("imperio_faturado_salao", String(faturadoSalao)); } catch {} }, [faturadoSalao]);
+  useEffect(() => { try { localStorage.setItem("imperio_mesas_salao", JSON.stringify(mesasSalao)); } catch {} }, [mesasSalao]);
 
   const updateStatus = async (id, novoStatus) => {
     setAtualizando(prev => ({ ...prev, [id]: true }));
