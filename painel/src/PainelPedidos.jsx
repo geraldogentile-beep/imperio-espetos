@@ -1141,10 +1141,11 @@ function PinLogin({ onLogin }) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
-function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao }) {
   const perfil = perfilSalao;
   const setPerfil = setPerfilSalao;
-  const [mesas, setMesas] = useState(Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})));
+  const mesas = mesasSalao;
+  const setMesas = setMesasSalao;
   const [sel, setSel] = useState(null);
   const [telaSalao, setTelaSalao] = useState("mapa");
   const [catFiltro, setCatFiltro] = useState("todos");
@@ -1458,6 +1459,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [statusLoja, setStatusLoja] = useState({ aberto: true, proximaAbertura: "—" });
   const [, setTick] = useState(0);
   const [perfilSalao, setPerfilSalao] = useState(null); // persiste entre trocas de aba
+  const [mesasSalao, setMesasSalao] = useState(Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}))); // persiste entre trocas de perfil
   const ant = useRef(new Set(MOCK_PEDIDOS.map(p => p.id)));
   const actx = useRef(null);
 
@@ -1544,7 +1546,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {Object.entries(STATUS_CONFIG).map(([k, c]) => (
                 <div key={k} style={{ background: "rgba(255,255,255,0.15)", borderRadius: 10, padding: "5px 12px", border: k === "novo" && counts[k] > 0 ? "1.5px solid #f59e0b" : "1.5px solid rgba(255,255,255,0.1)", cursor: "pointer" }} onClick={() => { setAba("pedidos"); setFiltro(k); }}>
-                  <div style={{ fontSize: 16, fontWeight: 800, lineHeight: 1 }}>{counts[k] || 0}</div>
+                  <div style={{ fontSize: 16, fontWeight: 800, lineHeight: 1, textAlign: "center" }}>{counts[k] || 0}</div>
                   <div style={{ fontSize: 10, opacity: 0.8, marginTop: 1 }}>{c.icon} {c.label}</div>
                 </div>
               ))}
@@ -1630,7 +1632,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={perfilSalao} setPerfilSalao={setPerfilSalao} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={perfilSalao} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
         </div>
       </div>
