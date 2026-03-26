@@ -1365,7 +1365,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
               )}
             </div>
           ):(
-            mesa.itens.length>0&&(
+            totalAcumulado>0&&(
               <button onClick={()=>{upd({...mesa,status:"conta",solicitadoPor:mesa.garcom||"Garçom",solicitadoEm:new Date().toISOString()});msgSalao("📨 Fechamento solicitado ao caixa!","#8b5cf6");}} style={BP2(mesa.status==="conta"?"#8b5cf6":"linear-gradient(135deg,#7c3aed,#6d28d9)")}>
                 {mesa.status==="conta"?"✅ Fechamento já solicitado":"📨 Solicitar fechamento ao caixa"}
               </button>
