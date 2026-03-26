@@ -772,51 +772,115 @@ function Configuracoes({ config, onSave, statusLoja }) {
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
 function Relatorios({ pedidos }) {
   const [periodo, setPeriodo] = useState("semana");
+  const [subAba, setSubAba] = useState("geral"); // geral | diasemana | esgotados
+
   const entregues = pedidos.filter(p => p.status === "entregue");
   const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
   const corte = new Date(); corte.setDate(corte.getDate() - diasFiltro); corte.setHours(0, 0, 0, 0);
   const pp = entregues.filter(p => new Date(p.horario) >= corte);
-  const total = pp.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
+  const totalDelivery = pp.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
   const totalDescontos = pp.reduce((s, p) => s + (p.desconto || 0), 0);
-  const ticket = pp.length > 0 ? total / pp.length : 0;
+  const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
+
+  // Itens mais vendidos
   const ci = {}; pp.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
   const mv = Object.entries(ci).sort((a, b) => b[1] - a[1])[0];
-  const ri = Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const ri = Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 8);
+
+  // Ranking por dia da semana
+  const ds = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const porDia = ds.map((nome, idx) => {
+    const pedidosDia = entregues.filter(p => new Date(p.horario).getDay() === idx);
+    const fat = pedidosDia.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
+    return { nome, fat, qtd: pedidosDia.length };
+  });
+  const maxDia = Math.max(...porDia.map(d => d.fat), 1);
+  const melhorDia = [...porDia].sort((a,b) => b.fat - a.fat)[0];
+
+  // Barras do gráfico temporal
   let barras = [];
   if (periodo === "hoje") { for (let h = 11; h <= 23; h += 2) { const v = pp.filter(p => { const hr = new Date(p.horario).getHours(); return hr >= h && hr < h + 2; }).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0); barras.push({ label: h + "h", valor: v, destaque: new Date().getHours() >= h && new Date().getHours() < h + 2 }); } }
-  else if (periodo === "semana") { const ds = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"]; for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0); const v = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0); barras.push({ label: i === 0 ? "Hoje" : ds[d.getDay()], valor: v, destaque: i === 0 }); } }
+  else if (periodo === "semana") { for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0); const v = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0); barras.push({ label: i === 0 ? "Hoje" : ds[d.getDay()], valor: v, destaque: i === 0 }); } }
   else { for (let s = 3; s >= 0; s--) { const ini = new Date(); ini.setDate(ini.getDate() - s * 7 - 6); ini.setHours(0, 0, 0, 0); const fim = new Date(); fim.setDate(fim.getDate() - s * 7); fim.setHours(23, 59, 59, 999); const v = entregues.filter(p => new Date(p.horario) >= ini && new Date(p.horario) <= fim).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0); barras.push({ label: s === 0 ? "Esta sem." : "Sem. -" + s, valor: v, destaque: s === 0 }); } }
   const maxB = Math.max(...barras.map(b => b.valor), 1);
+
   return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 16 }}>
+    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {/* Período */}
       <div style={{ display: "flex", gap: 8, background: "#fff", borderRadius: 12, padding: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
         {[["hoje","Hoje"],["semana","7 dias"],["mes","30 dias"]].map(([k, l]) => (
           <button key={k} onClick={() => setPeriodo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: periodo === k ? "#7b1a0a" : "transparent", color: periodo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Metrica icon="💰" label="Faturamento" valor={"R$ " + total.toFixed(2)} cor="#10b981" />
-        <Metrica icon="📦" label="Pedidos" valor={pp.length} sub={"ticket R$" + ticket.toFixed(2)} cor="#3b82f6" />
-        <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
-        {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub="via cupons" cor="#8b5cf6" />}
+
+      {/* Sub-abas */}
+      <div style={{ display: "flex", gap: 6 }}>
+        {[["geral","📊 Geral"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"]].map(([k,l]) => (
+          <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer" }}>{l}</button>
+        ))}
       </div>
-      <div style={{ background: "#fff", borderRadius: 14, padding: "16px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📊 {periodo === "hoje" ? "Por hora" : periodo === "semana" ? "Por dia" : "Por semana"}</div>
-        <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 120 }}>
-          {barras.map((b, i) => <Barra key={i} label={b.label} valor={b.valor} maximo={maxB} destaque={b.destaque} />)}
+
+      {/* GERAL */}
+      {subAba === "geral" && <>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Metrica icon="💰" label="Faturamento" valor={"R$ " + totalDelivery.toFixed(2)} cor="#10b981" />
+          <Metrica icon="📦" label="Pedidos" valor={pp.length} sub={"ticket R$" + ticket.toFixed(2)} cor="#3b82f6" />
+          <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
+          {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub="via cupons" cor="#8b5cf6" />}
         </div>
-      </div>
-      {ri.length > 0 && (
+        <div style={{ background: "#fff", borderRadius: 14, padding: "16px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📊 {periodo === "hoje" ? "Por hora" : periodo === "semana" ? "Por dia" : "Por semana"}</div>
+          <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 120 }}>
+            {barras.map((b, i) => <Barra key={i} label={b.label} valor={b.valor} maximo={maxB} destaque={b.destaque} />)}
+          </div>
+        </div>
+      </>}
+
+      {/* POR DIA DA SEMANA */}
+      {subAba === "diasemana" && <>
+        <div style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", borderRadius: 14, padding: "14px 16px", color: "#fff" }}>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>Melhor dia da semana</div>
+          <div style={{ fontWeight: 800, fontSize: 20, marginTop: 4 }}>📅 {melhorDia.nome}</div>
+          <div style={{ fontSize: 13, opacity: 0.9, marginTop: 2 }}>R$ {melhorDia.fat.toFixed(2)} · {melhorDia.qtd} pedidos</div>
+        </div>
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>🥇 Itens mais pedidos</div>
-          {ri.map(([nome, qty], i) => (
-            <div key={nome} style={{ marginBottom: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span style={{ color: "#333" }}>{["🥇","🥈","🥉","4️⃣","5️⃣"][i]} {nome}</span><span style={{ fontWeight: 700, color: "#7b1a0a" }}>{qty}x</span></div>
-              <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}><div style={{ height: "100%", width: ((qty / ri[0][1]) * 100) + "%", background: "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 3, transition: "width 0.6s" }} /></div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>Faturamento por dia da semana</div>
+          {porDia.map((d, i) => (
+            <div key={i} style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 5 }}>
+                <span style={{ fontWeight: 600, color: "#333" }}>{d.nome}</span>
+                <span style={{ color: "#888", fontSize: 12 }}>{d.qtd} pedido{d.qtd !== 1 ? "s" : ""} · <span style={{ fontWeight: 700, color: "#7b1a0a" }}>R$ {d.fat.toFixed(2)}</span></span>
+              </div>
+              <div style={{ height: 8, background: "#f0f0f0", borderRadius: 4 }}>
+                <div style={{ height: "100%", width: ((d.fat / maxDia) * 100) + "%", background: d.fat === melhorDia.fat ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 4, transition: "width 0.6s", minWidth: d.fat > 0 ? 4 : 0 }} />
+              </div>
             </div>
           ))}
         </div>
-      )}
+      </>}
+
+      {/* RANKING ITENS */}
+      {subAba === "ranking" && <>
+        {ri.length === 0
+          ? <div style={{ textAlign: "center", padding: "40px 0", color: "#ccc" }}>Nenhum dado no período</div>
+          : <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>🏆 Itens mais pedidos</div>
+              {ri.map(([nome, qty], i) => (
+                <div key={nome} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                    <span style={{ color: "#333", fontWeight: i < 3 ? 700 : 400 }}>{["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣"][i]} {nome}</span>
+                    <span style={{ fontWeight: 700, color: "#7b1a0a" }}>{qty}x</span>
+                  </div>
+                  <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}>
+                    <div style={{ height: "100%", width: ((qty / ri[0][1]) * 100) + "%", background: i === 0 ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 3, transition: "width 0.6s" }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+        }
+      </>}
+
     </div>
   );
 }
@@ -968,6 +1032,416 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando }) {
   );
 }
 
+
+// ── CARDÁPIO DO SALÃO ─────────────────────────────────────────
+const CARDAPIO_SALAO = [
+  { id:1,  cat:"Tradicionais",    nome:"Alcatra",                 preco:9.00  },
+  { id:2,  cat:"Tradicionais",    nome:"Alcatra com legumes",     preco:9.00  },
+  { id:3,  cat:"Tradicionais",    nome:"Frango",                  preco:9.00  },
+  { id:4,  cat:"Tradicionais",    nome:"Frango com legumes",      preco:9.00  },
+  { id:5,  cat:"Tradicionais",    nome:"Tulipa na mostarda",      preco:9.00  },
+  { id:6,  cat:"Tradicionais",    nome:"Linguiça",                preco:9.00  },
+  { id:7,  cat:"Tradicionais",    nome:"Coraçãozinho de frango",  preco:9.00  },
+  { id:8,  cat:"Tradicionais",    nome:"Panceta suína",           preco:9.00  },
+  { id:9,  cat:"Tradicionais",    nome:"Pão de alho",             preco:8.00  },
+  { id:10, cat:"Especiais",       nome:"Picanha meia lua",        preco:15.00 },
+  { id:11, cat:"Especiais",       nome:"Cordeiro",                preco:13.00 },
+  { id:12, cat:"Especiais",       nome:"Kafta com queijo",        preco:11.00 },
+  { id:13, cat:"Especiais",       nome:"Medalhão frango",         preco:11.00 },
+  { id:14, cat:"Especiais",       nome:"Medalhão mignon",         preco:11.00 },
+  { id:15, cat:"Especiais",       nome:"Medalhão suíno",          preco:11.00 },
+  { id:16, cat:"Especiais",       nome:"Queijo coalho",           preco:10.00 },
+  { id:17, cat:"Especiais",       nome:"Churrasco Grego",         preco:18.00 },
+  { id:18, cat:"Doces",           nome:"Romeu e Julieta",         preco:11.00 },
+  { id:19, cat:"Doces",           nome:"Morango com chocolate",   preco:10.00 },
+  { id:20, cat:"Doces",           nome:"Uva com chocolate",       preco:10.00 },
+  { id:21, cat:"Acompanhamentos", nome:"Vinagrete",               preco:2.00  },
+  { id:22, cat:"Acompanhamentos", nome:"Farofa",                  preco:1.00  },
+  { id:23, cat:"Acompanhamentos", nome:"Molho alho",              preco:2.00  },
+  { id:24, cat:"Água",            nome:"Água com gás",            preco:4.00  },
+  { id:25, cat:"Água",            nome:"Água sem gás",            preco:4.00  },
+  { id:26, cat:"Suco",            nome:"Suco 200ml",              preco:6.00  },
+  { id:27, cat:"Suco",            nome:"Suco 900ml",              preco:12.00 },
+  { id:28, cat:"Refrigerantes",   nome:"Coca-Cola 2L",            preco:14.00 },
+  { id:29, cat:"Refrigerantes",   nome:"Coca-Cola Lata",          preco:6.00  },
+  { id:30, cat:"Refrigerantes",   nome:"Guaraná Lata",            preco:6.00  },
+  { id:31, cat:"Cervejas",        nome:"Sol Long Neck",           preco:8.00  },
+  { id:32, cat:"Cervejas",        nome:"Heineken Long Neck",      preco:10.00 },
+  { id:33, cat:"Cervejas",        nome:"Brahma Lata",             preco:7.00  },
+  { id:34, cat:"Cervejas",        nome:"Chopp",                   preco:10.00 },
+  { id:35, cat:"Cervejas",        nome:"Chopp Vinho",             preco:12.00 },
+  { id:36, cat:"Energético",      nome:"Monster",                 preco:12.00 },
+];
+
+const PIN_GARCOM = "1234";
+const PIN_CAIXA  = "5678";
+
+const STATUS_MESA = {
+  livre:    { c:"#10b981", bg:"#d1fae5", e:"🪑", l:"Livre"    },
+  ocupada:  { c:"#3b82f6", bg:"#dbeafe", e:"🍢", l:"Ocupada"  },
+  chamando: { c:"#f59e0b", bg:"#fef3c7", e:"🔔", l:"Chamando" },
+  conta:    { c:"#8b5cf6", bg:"#ede9fe", e:"💳", l:"Conta"    },
+};
+
+function totMesa(itens=[]) { return itens.reduce((s,i)=>s+(i.qty||1)*i.preco,0); }
+function fmtR(v) { return "R$ "+v.toFixed(2); }
+function tempoAberto(abertura) {
+  if(!abertura) return null;
+  const m = Math.floor((Date.now()-new Date(abertura))/60000);
+  if(m<60) return m+"min"; return Math.floor(m/60)+"h"+(m%60>0?(m%60)+"min":"");
+}
+
+// ── PIN LOGIN ─────────────────────────────────────────────────
+function PinLogin({ onLogin }) {
+  const [pin, setPin] = useState("");
+  const [erro, setErro] = useState(false);
+
+  function digitar(n) {
+    if(pin.length>=4) return;
+    const novo = pin+n;
+    setPin(novo);
+    setErro(false);
+    if(novo.length===4) {
+      setTimeout(()=>{
+        if(novo===PIN_GARCOM) onLogin("garcom");
+        else if(novo===PIN_CAIXA) onLogin("caixa");
+        else { setErro(true); setPin(""); }
+      }, 200);
+    }
+  }
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 20px",minHeight:400}}>
+      <div style={{fontSize:48,marginBottom:8}}>🍽️</div>
+      <div style={{fontWeight:800,fontSize:20,color:"#1a1a1a",marginBottom:4}}>Acesso ao Salão</div>
+      <div style={{fontSize:13,color:"#888",marginBottom:24}}>Digite o PIN para continuar</div>
+      <div style={{display:"flex",gap:12,marginBottom:8}}>
+        {[0,1,2,3].map(i=>(
+          <div key={i} style={{width:16,height:16,borderRadius:"50%",background:i<pin.length?"#7b1a0a":"#e0e0e0",transition:"background 0.15s"}}/>
+        ))}
+      </div>
+      {erro && <div style={{color:"#ef4444",fontSize:12,fontWeight:600,marginBottom:8}}>❌ PIN incorreto</div>}
+      {!erro && <div style={{fontSize:12,color:"#bbb",marginBottom:16,height:20}}>{pin.length>0?"•".repeat(pin.length)+" "+"○".repeat(4-pin.length):""}</div>}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,width:220,marginBottom:16}}>
+        {[1,2,3,4,5,6,7,8,9].map(n=>(
+          <button key={n} onClick={()=>digitar(String(n))} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:22,fontWeight:700,color:"#1a1a1a",cursor:"pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}}>
+            {n}
+          </button>
+        ))}
+        <div/>
+        <button onClick={()=>digitar("0")} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:22,fontWeight:700,color:"#1a1a1a",cursor:"pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}}>0</button>
+        <button onClick={()=>setPin(p=>p.slice(0,-1))} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#f8f8f8",fontSize:18,color:"#888",cursor:"pointer"}}>⌫</button>
+      </div>
+      <div style={{display:"flex",gap:10}}>
+        <div style={{background:"#f5f5f5",borderRadius:10,padding:"5px 12px",fontSize:11,color:"#888"}}>🧑‍🍳 Garçom: 1234</div>
+        <div style={{background:"#f5f5f5",borderRadius:10,padding:"5px 12px",fontSize:11,color:"#888"}}>💁‍♀️ Caixa: 5678</div>
+      </div>
+    </div>
+  );
+}
+
+// ── SALÃO INTEGRADO ───────────────────────────────────────────
+function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao }) {
+  const perfil = perfilSalao;
+  const setPerfil = setPerfilSalao;
+  const [mesas, setMesas] = useState(Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})));
+  const [sel, setSel] = useState(null);
+  const [telaSalao, setTelaSalao] = useState("mapa");
+  const [catFiltro, setCatFiltro] = useState("todos");
+  const [pagSalao, setPagSalao] = useState("pix");
+  const [divSalao, setDivSalao] = useState(1);
+  const [faturado, setFaturado] = useState(0);
+  const [toastSalao, setToastSalao] = useState(null);
+
+  const cardapio = (cardapioExterno && cardapioExterno.length > 0)
+    ? cardapioExterno.filter(i=>i.ativo!==false).map(i=>({...i,cat:i.categoria||i.cat}))
+    : CARDAPIO_SALAO;
+
+  function msgSalao(txt,cor="#10b981"){setToastSalao({txt,cor});setTimeout(()=>setToastSalao(null),2500);}
+  const mesa = mesas.find(m=>m.id===sel);
+  function upd(m){setMesas(p=>p.map(x=>x.id===m.id?m:x));}
+
+  function addItem(item){
+    const itens=[...mesa.itens];
+    const ex=itens.find(i=>i.id===item.id);
+    if(ex) ex.qty+=1; else itens.push({...item,qty:1});
+    upd({...mesa,itens,status:mesa.status==="livre"?"ocupada":mesa.status,abertura:mesa.abertura||new Date().toISOString()});
+  }
+  function chgQty(id,d){
+    const itens=mesa.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>(i.qty||1)>0);
+    upd({...mesa,itens,status:itens.length===0?"livre":mesa.status});
+  }
+  function fecharMesa(){
+    const totalMesa=totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
+    setFaturado(f=>f+totalMesa);
+    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
+    upd({id:mesa.id,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null});
+    setSel(null); setTelaSalao("mapa"); setDivSalao(1);
+  }
+
+  const fat = faturado + mesas.reduce((s,m)=>s+totMesa(m.itens)+m.rodadas.reduce((ss,r)=>ss+totMesa(r.itens),0),0);
+  const ocup = mesas.filter(m=>m.status!=="livre").length;
+  const alertas = mesas.filter(m=>m.status==="chamando"||m.status==="conta");
+  const cats = ["todos",...new Set(cardapio.map(i=>i.cat||i.categoria))];
+  const catIcons = {"todos":"📋","Tradicionais":"🍢","Especiais":"⭐","Doces":"🍫","Acompanhamentos":"🥗","Água":"💧","Suco":"🥤","Refrigerantes":"🥫","Cervejas":"🍺","Energético":"⚡"};
+
+  const H2 = {background:"linear-gradient(135deg,#6b1c0e,#8b2510)",color:"#fff",padding:"12px 16px"};
+  const BK2 = {background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 10px",fontWeight:700,fontSize:13,cursor:"pointer"};
+  const BP2 = (bg,flex=false)=>({background:bg,color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:800,fontSize:14,cursor:"pointer",...(flex?{flex:1}:{width:"100%"})});
+  const card2 = {background:"#fff",borderRadius:14,padding:"14px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:10};
+
+  if(!perfil) return <PinLogin onLogin={setPerfil} />;
+
+  // TELA ADICIONAR
+  if(telaSalao==="adicionar") return (
+    <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+      {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
+      <div style={H2}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
+          <div style={{fontWeight:800,fontSize:15,flex:1}}>Mesa {mesa.id} — Adicionar</div>
+          <div style={{fontWeight:800,color:"#f0c040"}}>{fmtR(totMesa(mesa.itens))}</div>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap",padding:"10px 14px",background:"#fff",borderBottom:"1px solid #eee"}}>
+        {cats.map(c=>(
+          <button key={c} onClick={()=>setCatFiltro(c)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 8px",borderRadius:10,border:`2px solid ${catFiltro===c?"#7b1a0a":"transparent"}`,background:catFiltro===c?"#fef0ed":"#f8f8f8",cursor:"pointer",minWidth:48}}>
+            <span style={{fontSize:16}}>{catIcons[c]||"🍽️"}</span>
+            <span style={{fontSize:9,fontWeight:catFiltro===c?700:500,color:catFiltro===c?"#7b1a0a":"#666"}}>{c==="todos"?"Todos":c.length>7?c.slice(0,6)+".":c}</span>
+          </button>
+        ))}
+      </div>
+      <div style={{padding:"10px 14px 80px",display:"flex",flexDirection:"column",gap:8}}>
+        {cardapio.filter(i=>(catFiltro==="todos"||(i.cat||i.categoria)===catFiltro)).map(item=>{
+          const na=mesa.itens.find(i=>i.id===item.id);
+          return(
+            <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":"transparent"}`}}>
+              <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{item.nome}</div><div style={{fontSize:12,color:"#888"}}>{fmtR(item.preco)}</div></div>
+              {na?(
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <button onClick={()=>chgQty(item.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:18,cursor:"pointer"}}>−</button>
+                  <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{na.qty||1}</span>
+                  <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
+                </div>
+              ):(
+                <button onClick={()=>addItem(item)} style={{background:"#7b1a0a",color:"#fff",border:"none",borderRadius:10,padding:"7px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Add</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {mesa.itens.length>0&&(
+        <div style={{position:"sticky",bottom:0,padding:"10px 14px",background:"#fff",borderTop:"1px solid #f0f0f0"}}>
+          <button onClick={()=>setTelaSalao("comanda")} style={BP2("linear-gradient(135deg,#7b1a0a,#c0392b)")}>✅ Ver comanda — {fmtR(totMesa(mesa.itens))}</button>
+        </div>
+      )}
+    </div>
+  );
+
+  // TELA FECHAR
+  if(telaSalao==="fechar") return (
+    <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+      <div style={H2}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
+          <div style={{fontWeight:800,fontSize:15}}>Mesa {mesa.id} — Fechar conta</div>
+        </div>
+      </div>
+      <div style={{padding:"14px",display:"flex",flexDirection:"column",gap:10}}>
+        <div style={card2}>
+          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🧾 Resumo</div>
+          {[...mesa.rodadas.flatMap(r=>r.itens),...mesa.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]).map((it,i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px dashed #f0f0f0",fontSize:13}}>
+              <span>{it.qty}x {it.nome}</span><span style={{fontWeight:600}}>{fmtR(it.qty*it.preco)}</span>
+            </div>
+          ))}
+          <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,fontSize:16,fontWeight:800,color:"#7b1a0a"}}>
+            <span>Total</span><span>{fmtR(totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</span>
+          </div>
+        </div>
+        <div style={card2}>
+          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:12,textTransform:"uppercase"}}>👥 Dividir</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:20}}>
+            <button onClick={()=>setDivSalao(Math.max(1,divSalao-1))} style={{width:40,height:40,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:22,cursor:"pointer"}}>−</button>
+            <div style={{textAlign:"center"}}><div style={{fontWeight:800,fontSize:28}}>{divSalao}</div><div style={{fontSize:12,color:"#888"}}>pessoa{divSalao>1?"s":""}</div></div>
+            <button onClick={()=>setDivSalao(divSalao+1)} style={{width:40,height:40,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:22,cursor:"pointer"}}>+</button>
+          </div>
+          {divSalao>1&&<div style={{marginTop:10,background:"#fef3c7",borderRadius:10,padding:10,textAlign:"center"}}>
+            <div style={{fontSize:12,color:"#92400e"}}>Cada pessoa paga</div>
+            <div style={{fontWeight:800,fontSize:22,color:"#7b1a0a"}}>{fmtR((totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))/divSalao)}</div>
+          </div>}
+        </div>
+        <div style={card2}>
+          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>💳 Pagamento</div>
+          <div style={{display:"flex",gap:8}}>
+            {[["pix","🟢 Pix"],["cartao","💳 Cartão"],["dinheiro","💵 Dinheiro"]].map(([k,l])=>(
+              <button key={k} onClick={()=>setPagSalao(k)} style={{flex:1,padding:"10px 4px",borderRadius:12,border:`2px solid ${pagSalao===k?"#7b1a0a":"#e0e0e0"}`,background:pagSalao===k?"#fef0ed":"#fff",fontWeight:pagSalao===k?700:500,fontSize:12,cursor:"pointer",color:pagSalao===k?"#7b1a0a":"#555"}}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <button onClick={fecharMesa} style={BP2("linear-gradient(135deg,#065f46,#10b981)")}>✅ Confirmar pagamento — {fmtR(totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</button>
+      </div>
+    </div>
+  );
+
+  // TELA COMANDA
+  if(telaSalao==="comanda"&&mesa) {
+    const totalAcumulado = totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
+    return (
+      <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+        {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
+        <div style={H2}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+            <button style={BK2} onClick={()=>{setSel(null);setTelaSalao("mapa");}}>← Salão</button>
+            <div style={{fontWeight:800,fontSize:18,flex:1}}>Mesa {mesa.id}</div>
+            <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.7}}>Total</div><div style={{fontWeight:800,fontSize:18,color:"#f0c040"}}>{fmtR(totalAcumulado)}</div></div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            <input value={mesa.cliente||""} onChange={e=>upd({...mesa,cliente:e.target.value})} placeholder="🧑 Nome do cliente..." style={{background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.3)",color:"#fff",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
+            <div style={{display:"flex",gap:8}}>
+              <input value={mesa.garcom||""} onChange={e=>upd({...mesa,garcom:e.target.value})} placeholder="👤 Garçom..." style={{flex:1,background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.3)",color:"#fff",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
+              <button onClick={()=>upd({...mesa,status:mesa.status==="chamando"?"ocupada":"chamando"})} style={{background:mesa.status==="chamando"?"#f59e0b":"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontWeight:700,fontSize:12}}>
+                🔔 {mesa.status==="chamando"?"Cancelar":"Chamar"}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div style={{padding:"12px 14px"}}>
+          {mesa.itens.length===0&&mesa.rodadas.length===0?(
+            <div style={{textAlign:"center",padding:"30px 0",color:"#ccc"}}><div style={{fontSize:36}}>🍢</div><div style={{marginTop:6,fontSize:14}}>Comanda vazia</div></div>
+          ):(
+            <div style={card2}>
+              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Itens na mesa</div>
+              {mesa.itens.map((it,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
+                  <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{it.nome}</div><div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div></div>
+                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                    <button onClick={()=>chgQty(it.id,-1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:15,cursor:"pointer"}}>−</button>
+                    <span style={{fontWeight:800,minWidth:18,textAlign:"center"}}>{it.qty||1}</span>
+                    <button onClick={()=>chgQty(it.id,1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:15,cursor:"pointer"}}>+</button>
+                  </div>
+                  <div style={{fontWeight:800,fontSize:13,color:"#7b1a0a",minWidth:50,textAlign:"right"}}>{fmtR((it.qty||1)*it.preco)}</div>
+                </div>
+              ))}
+              {mesa.rodadas.length>0&&<div style={{fontSize:11,color:"#aaa",marginTop:6}}>+ {fmtR(mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))} em {mesa.rodadas.length} rodada{mesa.rodadas.length>1?"s":""} anteriores</div>}
+              <div style={{display:"flex",justifyContent:"space-between",paddingTop:8,fontSize:15,fontWeight:800,color:"#7b1a0a"}}><span>Total</span><span>{fmtR(totalAcumulado)}</span></div>
+            </div>
+          )}
+          {mesa.rodadas.length>0&&(
+            <div style={card2}>
+              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Rodadas à cozinha</div>
+              {mesa.rodadas.map((r,ri)=>(
+                <div key={ri} style={{marginBottom:6,paddingBottom:6,borderBottom:"1px dashed #f0f0f0"}}>
+                  <div style={{fontSize:11,color:"#aaa",marginBottom:3}}>Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</div>
+                  {r.itens.map((it,ii)=><div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#555"}}><span>{it.qty||1}x {it.nome}</span><span>{fmtR((it.qty||1)*it.preco)}</span></div>)}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{...card2}}>
+            <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observações..." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
+          </div>
+        </div>
+        <div style={{padding:"0 14px 16px",display:"flex",flexDirection:"column",gap:8}}>
+          <div style={{display:"flex",gap:8}}>
+            {perfil==="garcom"&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
+            {perfil==="garcom"&&mesa.itens.length>0&&(
+              <button onClick={()=>{
+                const rodada={hora:new Date().toISOString(),itens:[...mesa.itens]};
+                upd({...mesa,rodadas:[...mesa.rodadas,rodada],itens:[]});
+                msgSalao(`🔥 Mesa ${mesa.id} enviada à cozinha!`);
+              }} style={{...BP2("linear-gradient(135deg,#1d4ed8,#2563eb)",true)}}>🔥 Cozinha</button>
+            )}
+          </div>
+          {perfil==="caixa"?(
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
+                {mesa.status==="conta"?"💳 Receber pagamento":"✅ Fechar comanda"}{totalAcumulado>0?` — ${fmtR(totalAcumulado)}`:""}
+              </button>
+              {mesa.status==="conta"&&mesa.solicitadoPor&&(
+                <div style={{background:"#ede9fe",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#7c3aed",fontWeight:600,textAlign:"center"}}>
+                  📨 Solicitado por {mesa.solicitadoPor} às {new Date(mesa.solicitadoEm).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+                </div>
+              )}
+            </div>
+          ):(
+            mesa.itens.length>0&&(
+              <button onClick={()=>{upd({...mesa,status:"conta",solicitadoPor:mesa.garcom||"Garçom",solicitadoEm:new Date().toISOString()});msgSalao("📨 Fechamento solicitado ao caixa!","#8b5cf6");}} style={BP2(mesa.status==="conta"?"#8b5cf6":"linear-gradient(135deg,#7c3aed,#6d28d9)")}>
+                {mesa.status==="conta"?"✅ Fechamento já solicitado":"📨 Solicitar fechamento ao caixa"}
+              </button>
+            )
+          )}
+          <button onClick={()=>{setSel(null);setTelaSalao("mapa");}} style={{background:"none",border:"none",color:"#aaa",fontSize:13,cursor:"pointer",padding:"6px 0"}}>← Voltar ao Salão</button>
+        </div>
+      </div>
+    );
+  }
+
+  // MAPA DE MESAS
+  return (
+    <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+      {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
+      <div style={{background:"linear-gradient(135deg,#1a3a1a,#2d5a2d)",color:"#fff",padding:"12px 16px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div>
+            <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{perfil==="caixa"?"💁‍♀️ Caixa":"🧑‍🍳 Garçom"}</div>
+            <div style={{fontWeight:800,fontSize:18}}>🍽️ Mapa do Salão</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:11,opacity:0.7}}>Faturamento</div>
+            <div style={{fontWeight:800,fontSize:18,color:"#86efac"}}>{fmtR(fat)}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <div style={{background:"rgba(255,255,255,0.15)",borderRadius:10,padding:"5px 12px"}}>
+            <div style={{fontWeight:800,fontSize:14}}>{ocup}/{mesas.length}</div>
+            <div style={{fontSize:10,opacity:0.8}}>ocupadas</div>
+          </div>
+          {alertas.length>0&&<div style={{background:"rgba(139,92,246,0.4)",borderRadius:10,padding:"5px 12px",border:"1px solid #8b5cf6"}}>
+            <div style={{fontWeight:800,fontSize:14}}>⚠️ {alertas.length}</div>
+            <div style={{fontSize:10,opacity:0.8}}>atenção</div>
+          </div>}
+          <button onClick={()=>setPerfil(null)} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>
+        </div>
+      </div>
+      {alertas.length>0&&(
+        <div style={{background:"#ede9fe",borderBottom:"2px solid #8b5cf6",padding:"8px 14px"}}>
+          {alertas.map(m=>(
+            <div key={m.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:"#5b21b6",marginBottom:2}}>
+              <span>{m.status==="conta"?"💳":"🔔"} Mesa {m.id} — {m.status==="conta"?"fechamento solicitado":"chamando"}{m.solicitadoPor?` por ${m.solicitadoPor}`:""}</span>
+              <span>{fmtR(totMesa(m.itens)+m.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,padding:14}}>
+        {mesas.map(m=>{
+          const s=STATUS_MESA[m.status];
+          const totM=totMesa(m.itens)+m.rodadas.reduce((ss,r)=>ss+totMesa(r.itens),0);
+          return(
+            <div key={m.id} onClick={()=>{setSel(m.id);setTelaSalao("comanda");}} style={{background:"#fff",borderRadius:14,padding:"10px 8px",textAlign:"center",cursor:"pointer",border:`2px solid ${m.status==="livre"?"#e8e8e8":s.c}`,boxShadow:m.status==="chamando"||m.status==="conta"?`0 0 0 2px ${s.c}`:"0 2px 8px rgba(0,0,0,0.07)",position:"relative"}}>
+              {(m.status==="chamando"||m.status==="conta")&&<div style={{position:"absolute",top:-6,right:-6,width:16,height:16,background:s.c,borderRadius:"50%",fontSize:8,color:"#fff",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>!</div>}
+              <div style={{fontSize:20}}>{s.e}</div>
+              <div style={{fontWeight:800,fontSize:16,color:"#1a1a1a"}}>{m.id}</div>
+              <div style={{fontSize:8,background:s.bg,color:s.c,borderRadius:10,padding:"1px 5px",marginTop:3,fontWeight:700,display:"inline-block"}}>{s.l}</div>
+              {m.status!=="livre"&&<div style={{fontSize:11,fontWeight:800,color:"#7b1a0a",marginTop:3}}>{fmtR(totM)}</div>}
+              {m.abertura&&<div style={{fontSize:9,color:((Date.now()-new Date(m.abertura))/60000)>90?"#ef4444":"#aaa",marginTop:1}}>⏱️{tempoAberto(m.abertura)}</div>}
+              {m.cliente&&<div style={{fontSize:9,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.cliente}</div>}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",padding:"0 14px 14px"}}>
+        {Object.entries(STATUS_MESA).map(([k,v])=>(
+          <div key={k} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#666"}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:v.c}}/>{v.l}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── PAINEL PRINCIPAL ──────────────────────────────────────────
 export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [pedidos, setPedidos] = useState(MOCK_PEDIDOS);
@@ -983,6 +1457,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [statusLoja, setStatusLoja] = useState({ aberto: true, proximaAbertura: "—" });
   const [, setTick] = useState(0);
+  const [perfilSalao, setPerfilSalao] = useState(null); // persiste entre trocas de aba
   const ant = useRef(new Set(MOCK_PEDIDOS.map(p => p.id)));
   const actx = useRef(null);
 
@@ -1044,6 +1519,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
 
   const abas = [
     ["pedidos",    "📋", "Pedidos"],
+    ["salao",      "🍽️", "Salão"],
     ["relatorios", "📊", "Rel."],
     ["clientes",   "👥", "Clientes"],
     ["cardapio",   "🍢", "Cardápio"],
@@ -1154,6 +1630,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={perfilSalao} setPerfilSalao={setPerfilSalao} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
         </div>
       </div>
