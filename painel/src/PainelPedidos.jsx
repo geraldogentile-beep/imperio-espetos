@@ -1141,17 +1141,21 @@ function PinLogin({ onLogin }) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
-function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal }) {
   const perfil = perfilSalao;
   const setPerfil = setPerfilSalao;
   const mesas = mesasSalao;
   const setMesas = setMesasSalao;
-  const [sel, setSel] = useState(null);
-  const [telaSalao, setTelaSalao] = useState("mapa");
+  const faturado = faturadoSalao;
+  const setFaturado = setFaturadoSalao;
+  const sel = selSalao;
+  const setSel = setSelSalao;
+  const telaSalao = telaSalaoGlobal;
+  const setTelaSalao = setTelaSalaoGlobal;
   const [catFiltro, setCatFiltro] = useState("todos");
   const [pagSalao, setPagSalao] = useState("pix");
   const [divSalao, setDivSalao] = useState(1);
-  const [faturado, setFaturado] = useState(0);
+
   const [toastSalao, setToastSalao] = useState(null);
 
   const cardapio = (cardapioExterno && cardapioExterno.length > 0)
@@ -1460,6 +1464,9 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [, setTick] = useState(0);
   const [perfilSalao, setPerfilSalao] = useState(null); // persiste entre trocas de aba
   const [mesasSalao, setMesasSalao] = useState(Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}))); // persiste entre trocas de perfil
+  const [faturadoSalao, setFaturadoSalao] = useState(0); // persiste entre trocas de perfil
+  const [selSalao, setSelSalao] = useState(null); // mesa selecionada — persiste
+  const [telaSalao, setTelaSalaoGlobal] = useState("mapa"); // tela atual — persiste
   const ant = useRef(new Set(MOCK_PEDIDOS.map(p => p.id)));
   const actx = useRef(null);
 
@@ -1632,7 +1639,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={perfilSalao} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={perfilSalao} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
         </div>
       </div>
