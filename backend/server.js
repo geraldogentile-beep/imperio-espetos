@@ -208,13 +208,16 @@ function cardapioTexto() {
   ).map(([cat, items]) => `${cat}:\n${items.join("\n")}`).join("\n\n");
 }
 
-function buildSystemPrompt() {
+function buildSystemPrompt(tel) {
   const aberto = estaAberto();
   const cuponsAtivos = cupons.filter(c => c.ativo).map(c => `${c.codigo} — ${c.descricao}`).join(", ");
+  const telLimpo = tel ? tel.replace("@s.whatsapp.net","").replace("@lid","").replace(/\D/g,"") : "";
   return `Você é o assistente virtual do *${CONFIG.nomeEstabelecimento}* 👑🔥
 Seu nome é *${CONFIG.nomeAgente}*.
 
 STATUS: ${aberto ? "✅ LOJA ABERTA" : `🔴 LOJA FECHADA — próxima abertura: ${proximaAbertura()}. NÃO aceite pedidos.`}
+
+TELEFONE DO CLIENTE: ${telLimpo} (já capturado automaticamente — NUNCA peça o número de telefone ao cliente)
 
 FIDELIDADE: A cada ${CONFIG.fidelidade.pedidosParaGanhar} pedidos o cliente ganha ${CONFIG.fidelidade.brinde}.
 
@@ -224,7 +227,7 @@ Seu trabalho (apenas quando ABERTO):
 1. Recepcionar o cliente de forma calorosa
 2. Apresentar cardápio quando pedido
 3. Anotar pedido, calcular total
-4. Coletar nome e endereço
+4. Coletar apenas nome e endereço (telefone já capturado automaticamente)
 5. Confirmar pedido com resumo
 
 CARDÁPIO:
@@ -235,18 +238,18 @@ Tempo estimado: ${CONFIG.tempoEntregaMin} a ${CONFIG.tempoEntregaMax} minutos
 
 Ao finalizar inclua exatamente:
 <PEDIDO_FINALIZADO>
-{"cliente":"nome","telefone":"numero","endereco":"endereço","itens":[{"nome":"item","qty":1,"preco":9.00}],"subtotal":0.00,"desconto":0.00,"cupom":"","total":0.00,"obs":"","tempoPreparo":0}
+{"cliente":"nome","telefone":"${telLimpo}","endereco":"endereço","itens":[{"nome":"item","qty":1,"preco":9.00}],"subtotal":0.00,"desconto":0.00,"cupom":"","total":0.00,"obs":"","tempoPreparo":0}
 </PEDIDO_FINALIZADO>
 
 Responda SEMPRE em português brasileiro.`;
 }
 
 // ── CLAUDE API ────────────────────────────────────────────────
-async function chamarClaude(historico) {
+async function chamarClaude(historico, tel) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": ENV.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: buildSystemPrompt(), messages: historico }),
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: buildSystemPrompt(tel), messages: historico }),
   });
   if (!res.ok) throw new Error(`Claude error ${res.status}`);
   const data = await res.json();
@@ -370,7 +373,7 @@ async function conectarWhatsApp() {
 
       try {
         addMsg(tel, "user", texto);
-        const resposta = await chamarClaude(getHist(tel));
+        const resposta = await chamarClaude(getHist(tel), tel);
         addMsg(tel, "assistant", resposta);
 
         const dadosPedido = extrairPedido(resposta);
