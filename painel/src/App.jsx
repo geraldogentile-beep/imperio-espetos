@@ -63,11 +63,7 @@ function TelaLogin({ onLogin }) {
       </div>
 
       {/* Dica de perfis */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-        <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: 10, padding: "5px 12px", fontSize: 11, color: "rgba(255,255,255,0.5)" }}>🧑‍🍳 Garçom</div>
-        <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: 10, padding: "5px 12px", fontSize: 11, color: "rgba(255,255,255,0.5)" }}>💁‍♀️ Caixa</div>
-        <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: 10, padding: "5px 12px", fontSize: 11, color: "rgba(255,255,255,0.5)" }}>👑 Dono</div>
-      </div>
+
     </div>
   );
 }
