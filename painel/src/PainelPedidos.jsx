@@ -586,46 +586,69 @@ function Cardapio({ cardapio, onReload }) {
 }
 
 // ── COMPONENTE TROCA DE PIN ───────────────────────────────────
-function PinConfig({ pinAtual, onPinChange }) {
-  const [novoPin, setNovoPin] = useState("");
+function PinManager() {
+  const [pins, setPins] = useState(() => {
+    try { const s = localStorage.getItem("imperio_pins"); return s ? JSON.parse(s) : { dono: "9999", garcom: "1234", caixa: "5678" }; } catch { return { dono: "9999", garcom: "1234", caixa: "5678" }; }
+  });
+  const [editando, setEditando] = useState(null); // "dono" | "garcom" | "caixa"
+  const [novo, setNovo] = useState("");
   const [confirma, setConfirma] = useState("");
   const [msg, setMsg] = useState(null);
 
-  function salvarPin() {
-    if (novoPin.length !== 4 || !/^\d{4}$/.test(novoPin)) {
-      setMsg({ tipo: "erro", texto: "O PIN deve ter exatamente 4 números." });
-      return;
-    }
-    if (novoPin !== confirma) {
-      setMsg({ tipo: "erro", texto: "Os PINs não conferem." });
-      return;
-    }
-    if (onPinChange) onPinChange(novoPin);
-    setNovoPin(""); setConfirma("");
-    setMsg({ tipo: "ok", texto: "PIN alterado com sucesso! ✅" });
+  const perfis = [
+    { key: "dono",   icon: "👑", label: "Dono",   desc: "Acesso completo ao painel" },
+    { key: "garcom", icon: "🧑‍🍳", label: "Garçom", desc: "Acesso ao salão — lança pedidos" },
+    { key: "caixa",  icon: "💁‍♀️", label: "Caixa",  desc: "Acesso ao salão — fecha contas" },
+  ];
+
+  function salvar() {
+    if (novo.length !== 4 || !/^\d{4}$/.test(novo)) { setMsg({ tipo: "erro", texto: "PIN deve ter 4 números." }); return; }
+    if (novo !== confirma) { setMsg({ tipo: "erro", texto: "PINs não conferem." }); return; }
+    const novosPins = { ...pins, [editando]: novo };
+    setPins(novosPins);
+    try { localStorage.setItem("imperio_pins", JSON.stringify(novosPins)); } catch {}
+    setEditando(null); setNovo(""); setConfirma("");
+    setMsg({ tipo: "ok", texto: `PIN do ${perfis.find(p=>p.key===editando)?.label} alterado! ✅` });
     setTimeout(() => setMsg(null), 3000);
   }
 
-  const inputStyle = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box", letterSpacing: 8, textAlign: "center", fontSize: 20 };
+  const inp = { width: "100%", padding: "10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 22, color: "#333", outline: "none", boxSizing: "border-box", letterSpacing: 10, textAlign: "center" };
 
   return (
-    <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: "#333", marginBottom: 10 }}>🔒 Alterar PIN de acesso</div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Novo PIN (4 dígitos)</div>
-          <input type="password" inputMode="numeric" maxLength={4} value={novoPin} onChange={e => setNovoPin(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inputStyle} />
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {perfis.map(p => (
+        <div key={p.key} style={{ border: "1.5px solid " + (editando === p.key ? "#7b1a0a" : "#f0f0f0"), borderRadius: 12, padding: "12px 14px", background: editando === p.key ? "#fef0ed" : "#fafafa" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{p.icon} {p.label}</div>
+              <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{p.desc}</div>
+            </div>
+            <button onClick={() => { setEditando(editando === p.key ? null : p.key); setNovo(""); setConfirma(""); setMsg(null); }}
+              style={{ background: editando === p.key ? "#fee2e2" : "#f0f0f0", color: editando === p.key ? "#ef4444" : "#555", border: "none", borderRadius: 8, padding: "6px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+              {editando === p.key ? "Cancelar" : "✏️ Alterar"}
+            </button>
+          </div>
+          {editando === p.key && (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Novo PIN</div>
+                  <input type="password" inputMode="numeric" maxLength={4} value={novo} onChange={e => setNovo(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inp} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Confirmar</div>
+                  <input type="password" inputMode="numeric" maxLength={4} value={confirma} onChange={e => setConfirma(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inp} />
+                </div>
+              </div>
+              <button onClick={salvar} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                💾 Salvar PIN do {p.label}
+              </button>
+            </div>
+          )}
         </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Confirmar PIN</div>
-          <input type="password" inputMode="numeric" maxLength={4} value={confirma} onChange={e => setConfirma(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inputStyle} />
-        </div>
-      </div>
-      <button onClick={salvarPin} style={{ width: "100%", background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-        Salvar novo PIN
-      </button>
+      ))}
       {msg && (
-        <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 8, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 13, fontWeight: 600 }}>
+        <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 13, fontWeight: 600 }}>
           {msg.texto}
         </div>
       )}
@@ -663,7 +686,7 @@ function Configuracoes({ config, onSave, statusLoja }) {
         </div>
       </div>
       <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["geral","⚙️"]].map(([k, l]) => (
+        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
       </div>
@@ -747,10 +770,20 @@ function Configuracoes({ config, onSave, statusLoja }) {
         </div>
       )}
 
+      {subAba === "pins" && (
+        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🔑 PINs de acesso</div>
+          <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e" }}>
+            ⚠️ Altere os PINs com cuidado. Informe os novos PINs aos funcionários antes de salvar.
+          </div>
+          <PinManager />
+        </div>
+      )}
+
       {subAba === "geral" && (
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>⚙️ Geral</div>
-          <PinConfig pinAtual={pinAtual} onPinChange={onPinChange} />
+          <PinManager />
           {[["nomeEstabelecimento","Nome do estabelecimento"],["nomeAgente","Nome do agente IA"]].map(([campo, lbl]) => (
             <div key={campo}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input value={cfg[campo]} onChange={e => setCfg(p => ({ ...p, [campo]: e.target.value }))} style={inputStyle} /></div>
           ))}
@@ -1416,7 +1449,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             <div style={{fontWeight:800,fontSize:14}}>⚠️ {alertas.length}</div>
             <div style={{fontSize:10,opacity:0.8}}>atenção</div>
           </div>}
-          <button onClick={()=>setPerfil(null)} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>
+          <button onClick={()=>{ setPerfil(null); if(onSair) onSair(); }} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>
         </div>
       </div>
       {alertas.length>0&&(
@@ -1458,12 +1491,12 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
 }
 
 // ── PAINEL PRINCIPAL ──────────────────────────────────────────
-export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
+export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSalao, onSair }) {
   const [pedidos, setPedidos] = useState(MOCK_PEDIDOS);
   const [cardapio, setCardapio] = useState(MOCK_CARDAPIO);
   const [cupons, setCupons] = useState(MOCK_CUPONS);
   const [avaliacoes, setAvaliacoes] = useState(MOCK_AVALIACOES);
-  const [aba, setAba] = useState("pedidos");
+  const [aba, setAba] = useState(abrirSalao ? "salao" : "pedidos");
   const [expanded, setExpanded] = useState(null);
   const [filtro, setFiltro] = useState("todos");
   const [atualizando, setAtualizando] = useState({});
@@ -1472,7 +1505,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [statusLoja, setStatusLoja] = useState({ aberto: true, proximaAbertura: "—" });
   const [, setTick] = useState(0);
-  const [perfilSalao, setPerfilSalao] = useState(null); // persiste entre trocas de aba
+  const [perfilSalao, setPerfilSalao] = useState(abrirSalao || null); // persiste entre trocas de aba
   const [mesasSalao, setMesasSalao] = useState(() => {
     try {
       const lastDay = localStorage.getItem("imperio_mesas_dia");
@@ -1585,8 +1618,8 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   return (
     <div style={{ fontFamily: "'Segoe UI', Tahoma, sans-serif", minHeight: "100vh", background: "#f0f0f0", display: "flex", flexDirection: "column" }}>
 
-      {/* HEADER DESKTOP */}
-      <div className="header-desktop" style={{ background: "linear-gradient(135deg,#6b1c0e 0%,#8b2510 60%,#6b1c0e 100%)", color: "#fff", padding: "14px 24px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+      {/* HEADER DESKTOP — oculta para garçom/caixa */}
+      {!abrirSalao && <div className="header-desktop" style={{ background: "linear-gradient(135deg,#6b1c0e 0%,#8b2510 60%,#6b1c0e 100%)", color: "#fff", padding: "14px 24px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 1400, margin: "0 auto", width: "100%" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
             <div>
@@ -1620,10 +1653,10 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             </div>
           </div>
         </div>
-      </div>
+      </div>}
 
-      {/* HEADER MOBILE — compacto */}
-      <div className="header-mobile" style={{ background: "linear-gradient(135deg,#6b1c0e,#8b2510)", color: "#fff", padding: "10px 16px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.3)", display: "none" }}>
+      {/* HEADER MOBILE — compacto, oculta para garçom/caixa */}
+      {!abrirSalao && <div className="header-mobile" style={{ background: "linear-gradient(135deg,#6b1c0e,#8b2510)", color: "#fff", padding: "10px 16px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.3)", display: "none" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontWeight: 800, fontSize: 16 }}>👑 Império dos Espetos</div>
@@ -1638,13 +1671,13 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             <div style={{ fontSize: 9, opacity: 0.6 }}>🛵{totalDeliveryHoje.toFixed(0)} · 🍽️{totalSalaoHoje.toFixed(0)}</div>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* BODY — sidebar + content */}
       <div style={{ display: "flex", flex: 1, maxWidth: 1400, margin: "0 auto", width: "100%" }}>
 
-        {/* SIDEBAR DESKTOP */}
-        <div className="sidebar-desktop" style={{ width: 180, background: "#fff", borderRight: "1px solid #e8e8e8", display: "flex", flexDirection: "column", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto", flexShrink: 0 }}>
+        {/* SIDEBAR DESKTOP — oculta para garçom/caixa */}
+        {!abrirSalao && <div className="sidebar-desktop" style={{ width: 180, background: "#fff", borderRight: "1px solid #e8e8e8", display: "flex", flexDirection: "column", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto", flexShrink: 0 }}>
           <div style={{ padding: "12px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
             {abas.map(([k, icon, label]) => (
               <button key={k} onClick={() => setAba(k)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: aba === k ? "#fef0ed" : "transparent", color: aba === k ? "#7b1a0a" : "#666", fontWeight: aba === k ? 700 : 500, fontSize: 13, transition: "all 0.15s", textAlign: "left", position: "relative" }}>
@@ -1660,7 +1693,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             {mediaAv && <div style={{ marginBottom: 4 }}>⭐ {mediaAv}</div>}
             <div>v5.0 — Baileys</div>
           </div>
-        </div>
+        </div>}
 
         {/* CONTEÚDO PRINCIPAL */}
         <div className="main-content" style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
@@ -1704,8 +1737,8 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
         </div>
       </div>
 
-      {/* BARRA INFERIOR MOBILE */}
-      <div className="mobile-nav" style={{ display: "none" }}>
+      {/* BARRA INFERIOR MOBILE — oculta para garçom/caixa */}
+      {!abrirSalao && <div className="mobile-nav" style={{ display: "none" }}>
         <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: "2px solid #f0f0f0", display: "flex", zIndex: 50, boxShadow: "0 -4px 20px rgba(0,0,0,0.1)", paddingBottom: "env(safe-area-inset-bottom)" }}>
           {abas.map(([k, icon, label]) => (
             <button key={k} onClick={() => setAba(k)} style={{ flex: 1, padding: "8px 2px 10px", border: "none", background: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: aba === k ? "#7b1a0a" : "#aaa", position: "relative", transition: "color 0.15s" }}>
@@ -1717,7 +1750,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       <style>{`
         @media (max-width: 768px) {
