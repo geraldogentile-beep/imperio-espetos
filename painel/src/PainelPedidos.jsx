@@ -770,9 +770,9 @@ function Configuracoes({ config, onSave, statusLoja }) {
 }
 
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
-function Relatorios({ pedidos }) {
+function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [] }) {
   const [periodo, setPeriodo] = useState("semana");
-  const [subAba, setSubAba] = useState("geral"); // geral | diasemana | esgotados
+  const [subAba, setSubAba] = useState("geral");
 
   const entregues = pedidos.filter(p => p.status === "entregue");
   const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
@@ -781,6 +781,15 @@ function Relatorios({ pedidos }) {
   const totalDelivery = pp.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
   const totalDescontos = pp.reduce((s, p) => s + (p.desconto || 0), 0);
   const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
+
+  // Faturamento do salão — mesas abertas + já fechadas
+  const totalSalaoAberto = mesasSalao.reduce((s, m) => {
+    const itens = m.itens.reduce((ss, i) => ss + (i.qty||1) * i.preco, 0);
+    const rodadas = m.rodadas.reduce((ss, r) => ss + r.itens.reduce((sss, i) => sss + (i.qty||1) * i.preco, 0), 0);
+    return s + itens + rodadas;
+  }, 0);
+  const totalSalao = faturadoSalao + totalSalaoAberto;
+  const totalGeral = totalDelivery + totalSalao;
 
   // Itens mais vendidos
   const ci = {}; pp.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
@@ -824,8 +833,9 @@ function Relatorios({ pedidos }) {
       {/* GERAL */}
       {subAba === "geral" && <>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <Metrica icon="💰" label="Faturamento" valor={"R$ " + totalDelivery.toFixed(2)} cor="#10b981" />
-          <Metrica icon="📦" label="Pedidos" valor={pp.length} sub={"ticket R$" + ticket.toFixed(2)} cor="#3b82f6" />
+          <Metrica icon="💰" label="Total geral" valor={"R$ " + totalGeral.toFixed(2)} cor="#7b1a0a" />
+          <Metrica icon="🛵" label="Delivery" valor={"R$ " + totalDelivery.toFixed(2)} sub={pp.length + " pedidos"} cor="#10b981" />
+          <Metrica icon="🍽️" label="Salão" valor={"R$ " + totalSalao.toFixed(2)} cor="#3b82f6" />
           <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
           {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub="via cupons" cor="#8b5cf6" />}
         </div>
@@ -1531,7 +1541,13 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   };
 
   const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidos.filter(p => p.status === s).length; return a; }, {});
-  const totalHoje = pedidos.filter(p => p.status === "entregue" && isMesmosDias(p.horario, new Date())).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+  const totalDeliveryHoje = pedidos.filter(p => p.status === "entregue" && isMesmosDias(p.horario, new Date())).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => {
+    const itens = m.itens.reduce((ss, i) => ss + (i.qty||1) * i.preco, 0);
+    const rodadas = m.rodadas.reduce((ss, r) => ss + r.itens.reduce((sss, i) => sss + (i.qty||1) * i.preco, 0), 0);
+    return s + itens + rodadas;
+  }, 0);
+  const totalHoje = totalDeliveryHoje + totalSalaoHoje;
   const novos = counts["novo"] || 0;
   const pf = (filtro === "todos" ? pedidos : pedidos.filter(p => p.status === filtro)).sort((a, b) => new Date(b.horario) - new Date(a.horario));
   const mediaAv = avaliacoes.length > 0 ? (avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length).toFixed(1) : null;
@@ -1644,7 +1660,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             </div>
           )}
 
-          {aba === "relatorios"  && <Relatorios pedidos={pedidos} />}
+          {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
