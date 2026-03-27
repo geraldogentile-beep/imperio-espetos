@@ -1184,7 +1184,7 @@ function PinLogin({ onLogin }) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
-function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono }) {
   const perfil = perfilSalao;
   const setPerfil = setPerfilSalao;
   const mesas = mesasSalao;
@@ -1449,7 +1449,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             <div style={{fontWeight:800,fontSize:14}}>⚠️ {alertas.length}</div>
             <div style={{fontSize:10,opacity:0.8}}>atenção</div>
           </div>}
-          <button onClick={()=>{ setPerfil(null); if(onSair) onSair(); }} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>
+          {!isDono && <button onClick={()=>{ setPerfil(null); if(onSair) onSair(); }} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>}
         </div>
       </div>
       {alertas.length>0&&(
@@ -1732,7 +1732,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={perfilSalao} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
         </div>
       </div>
