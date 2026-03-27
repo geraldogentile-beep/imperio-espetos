@@ -805,7 +805,7 @@ function Configuracoes({ config, onSave, statusLoja }) {
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
 function totMesaRel(m) { return m.itens.reduce((s,i)=>s+(i.qty||1)*i.preco,0)+m.rodadas.reduce((s,r)=>s+r.itens.reduce((ss,i)=>ss+(i.qty||1)*i.preco,0),0); }
 
-function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
+function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
   const [periodo, setPeriodo] = useState("semana");
   const [subAba, setSubAba] = useState("geral");
   const [vendaAberta, setVendaAberta] = useState(null);
@@ -828,26 +828,49 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], historicoSala
   const totalSalao = faturadoSalao + totalSalaoAberto;
   const totalGeral = totalDelivery + totalSalao;
 
-  // Itens mais vendidos
-  const ci = {}; pp.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
+  // Itens mais vendidos — delivery + salão
+  const ci = {};
+  pp.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
+  historicoSalao.forEach(v => v.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
   const mv = Object.entries(ci).sort((a, b) => b[1] - a[1])[0];
   const ri = Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 8);
 
-  // Ranking por dia da semana
+  // Ranking por dia da semana — delivery + salão
   const ds = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
   const porDia = ds.map((nome, idx) => {
     const pedidosDia = entregues.filter(p => new Date(p.horario).getDay() === idx);
-    const fat = pedidosDia.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
-    return { nome, fat, qtd: pedidosDia.length };
+    const fatDelivery = pedidosDia.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
+    const fatSalao = historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).reduce((s, v) => s + v.total, 0);
+    const fat = fatDelivery + fatSalao;
+    return { nome, fat, qtd: pedidosDia.length + historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).length };
   });
   const maxDia = Math.max(...porDia.map(d => d.fat), 1);
   const melhorDia = [...porDia].sort((a,b) => b.fat - a.fat)[0];
 
-  // Barras do gráfico temporal
+  // Barras do gráfico temporal — delivery + salão
   let barras = [];
-  if (periodo === "hoje") { for (let h = 11; h <= 23; h += 2) { const v = pp.filter(p => { const hr = new Date(p.horario).getHours(); return hr >= h && hr < h + 2; }).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0); barras.push({ label: h + "h", valor: v, destaque: new Date().getHours() >= h && new Date().getHours() < h + 2 }); } }
-  else if (periodo === "semana") { for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0); const v = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0); barras.push({ label: i === 0 ? "Hoje" : ds[d.getDay()], valor: v, destaque: i === 0 }); } }
-  else { for (let s = 3; s >= 0; s--) { const ini = new Date(); ini.setDate(ini.getDate() - s * 7 - 6); ini.setHours(0, 0, 0, 0); const fim = new Date(); fim.setDate(fim.getDate() - s * 7); fim.setHours(23, 59, 59, 999); const v = entregues.filter(p => new Date(p.horario) >= ini && new Date(p.horario) <= fim).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0); barras.push({ label: s === 0 ? "Esta sem." : "Sem. -" + s, valor: v, destaque: s === 0 }); } }
+  if (periodo === "hoje") {
+    for (let h = 11; h <= 23; h += 2) {
+      const vDel = pp.filter(p => { const hr = new Date(p.horario).getHours(); return hr >= h && hr < h + 2; }).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+      const vSal = historicoSalao.filter(v => { const hr = new Date(v.fechamento).getHours(); return hr >= h && hr < h + 2; }).reduce((s, v) => s + v.total, 0);
+      barras.push({ label: h + "h", valor: vDel + vSal, destaque: new Date().getHours() >= h && new Date().getHours() < h + 2 });
+    }
+  } else if (periodo === "semana") {
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
+      const vDel = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+      const vSal = historicoSalao.filter(v => isMesmosDias(v.fechamento, d)).reduce((s, v) => s + v.total, 0);
+      barras.push({ label: i === 0 ? "Hoje" : ds[d.getDay()], valor: vDel + vSal, destaque: i === 0 });
+    }
+  } else {
+    for (let s = 3; s >= 0; s--) {
+      const ini = new Date(); ini.setDate(ini.getDate() - s * 7 - 6); ini.setHours(0, 0, 0, 0);
+      const fim = new Date(); fim.setDate(fim.getDate() - s * 7); fim.setHours(23, 59, 59, 999);
+      const vDel = entregues.filter(p => new Date(p.horario) >= ini && new Date(p.horario) <= fim).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+      const vSal = historicoSalao.filter(v => new Date(v.fechamento) >= ini && new Date(v.fechamento) <= fim).reduce((s, v) => s + v.total, 0);
+      barras.push({ label: s === 0 ? "Esta sem." : "Sem. -" + s, valor: vDel + vSal, destaque: s === 0 });
+    }
+  }
   const maxB = Math.max(...barras.map(b => b.valor), 1);
 
   return (
@@ -871,7 +894,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], historicoSala
       {subAba === "geral" && <>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Metrica icon="💰" label="Total geral" valor={"R$ " + totalGeral.toFixed(2)} cor="#7b1a0a" />
-          <Metrica icon="🛵" label="Delivery" valor={"R$ " + totalDelivery.toFixed(2)} sub={pp.length + " pedidos"} cor="#10b981" />
+          <Metrica icon="🛵" label="Delivery" valor={"R$ " + totalDelivery.toFixed(2)} sub={pp.length + " pedido" + (pp.length !== 1 ? "s" : "")} cor="#10b981" />
           <Metrica icon="🍽️" label="Salão" valor={"R$ " + totalSalao.toFixed(2)} cor="#3b82f6" />
           <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
           {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub="via cupons" cor="#8b5cf6" />}
@@ -909,9 +932,21 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], historicoSala
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={() => {
+                    // Zera histórico de vendas
                     if (setHistoricoSalao) setHistoricoSalao([]);
+                    // Zera faturamento acumulado
                     if (setFaturadoSalaoRel) setFaturadoSalaoRel(0);
-                    try { localStorage.removeItem("imperio_faturado_salao"); localStorage.removeItem("imperio_mesas_salao"); localStorage.removeItem("imperio_historico_salao"); } catch {}
+                    // Libera todas as mesas
+                    if (setMesasSalaoRel) setMesasSalaoRel(Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})));
+                    // Limpa localStorage do salão
+                    try {
+                      localStorage.removeItem("imperio_faturado_salao");
+                      localStorage.removeItem("imperio_mesas_salao");
+                      localStorage.removeItem("imperio_historico_salao");
+                      localStorage.removeItem("imperio_faturado_dia");
+                      localStorage.removeItem("imperio_mesas_dia");
+                      localStorage.removeItem("imperio_historico_dia");
+                    } catch {}
                     setZerarAberto(false);
                   }} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>✅ Confirmar</button>
                   <button onClick={() => setZerarAberto(false)} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
@@ -1846,7 +1881,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
             </div>
           )}
 
-          {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
+          {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
