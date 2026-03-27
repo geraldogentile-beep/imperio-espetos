@@ -803,9 +803,13 @@ function Configuracoes({ config, onSave, statusLoja }) {
 }
 
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
-function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [] }) {
+function totMesaRel(m) { return m.itens.reduce((s,i)=>s+(i.qty||1)*i.preco,0)+m.rodadas.reduce((s,r)=>s+r.itens.reduce((ss,i)=>ss+(i.qty||1)*i.preco,0),0); }
+
+function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
   const [periodo, setPeriodo] = useState("semana");
   const [subAba, setSubAba] = useState("geral");
+  const [vendaAberta, setVendaAberta] = useState(null);
+  const [zerarAberto, setZerarAberto] = useState(false);
 
   const entregues = pedidos.filter(p => p.status === "entregue");
   const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
@@ -857,9 +861,9 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [] }) {
       </div>
 
       {/* Sub-abas */}
-      <div style={{ display: "flex", gap: 6 }}>
-        {[["geral","📊 Geral"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"]].map(([k,l]) => (
-          <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer" }}>{l}</button>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {[["geral","📊 Geral"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"]].map(([k,l]) => (
+          <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
 
@@ -879,6 +883,96 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [] }) {
           </div>
         </div>
       </>}
+
+      {/* VENDAS DO SALÃO */}
+      {subAba === "vendas" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Resumo */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Metrica icon="🧾" label="Vendas hoje" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "mesas fechadas"} cor="#7b1a0a" />
+            <Metrica icon="💰" label="Total salão" valor={"R$ " + (faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaRel(m),0)).toFixed(2)} cor="#10b981" />
+            <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(historicoSalao.map(v=>v.garcom).filter(g=>g!=="—"))].length || "—"} cor="#3b82f6" />
+          </div>
+
+          {/* Botão zerar operação */}
+          <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 6 }}>🔄 Zerar operação do dia</div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Apaga todas as vendas, zera o faturamento e libera todas as mesas. Use para encerrar o turno ou apagar dados de teste.</div>
+            {!zerarAberto ? (
+              <button onClick={() => setZerarAberto(true)} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "9px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                🔄 Zerar operação
+              </button>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ background: "#fef3c7", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400e", fontWeight: 600 }}>
+                  ⚠️ Esta ação não pode ser desfeita. Tem certeza?
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => {
+                    if (setHistoricoSalao) setHistoricoSalao([]);
+                    if (setFaturadoSalaoRel) setFaturadoSalaoRel(0);
+                    try { localStorage.removeItem("imperio_faturado_salao"); localStorage.removeItem("imperio_mesas_salao"); localStorage.removeItem("imperio_historico_salao"); } catch {}
+                    setZerarAberto(false);
+                  }} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>✅ Confirmar</button>
+                  <button onClick={() => setZerarAberto(false)} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+
+
+          {/* Lista de vendas */}
+          {historicoSalao.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 20px", color: "#ccc" }}>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>🧾</div>
+              <div>Nenhuma venda registrada hoje</div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[...historicoSalao].reverse().map(v => (
+                <div key={v.id} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: vendaAberta === v.id ? "2px solid #7b1a0a" : "2px solid transparent" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setVendaAberta(vendaAberta === v.id ? null : v.id)}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>Mesa {v.mesa} {v.cliente !== "—" ? `— ${v.cliente}` : ""}</div>
+                      <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+                        👤 {v.garcom} · {new Date(v.fechamento).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+                        {v.abertura && ` · ⏱️ ${Math.round((new Date(v.fechamento)-new Date(v.abertura))/60000)}min`}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>R$ {v.total.toFixed(2)}</div>
+                      <div style={{ fontSize: 11, color: "#888" }}>{v.pagamento === "pix" ? "🟢 Pix" : v.pagamento === "cartao" ? "💳 Cartão" : "💵 Dinheiro"}</div>
+                    </div>
+                  </div>
+                  {vendaAberta === v.id && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #f0f0f0" }}>
+                      {v.itens.map((it,i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0", color: "#555" }}>
+                          <span>{it.qty}x {it.nome}</span>
+                          <span>R$ {(it.qty*it.preco).toFixed(2)}</span>
+                        </div>
+                      ))}
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #f0f0f0" }}>
+                        <button onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
+                            if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => x.id !== v.id));
+                            if (setFaturadoSalaoRel) setFaturadoSalaoRel(f => Math.max(0, f - v.total));
+                            setVendaAberta(null);
+                          }
+                        }} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", width: "100%" }}>
+                          🗑️ Excluir esta venda
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* POR DIA DA SEMANA */}
       {subAba === "diasemana" && <>
@@ -1184,7 +1278,7 @@ function PinLogin({ onLogin }) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
-function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao }) {
   const perfil = perfilSalao;
   const setPerfil = setPerfilSalao;
   const mesas = mesasSalao;
@@ -1221,6 +1315,21 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   }
   function fecharMesa(){
     const totalMesa=totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
+    const todosItens = [...mesa.rodadas.flatMap(r=>r.itens), ...mesa.itens].reduce((acc,it)=>{
+      const ex=acc.find(i=>i.id===it.id); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
+    }, []);
+    const registro = {
+      id: Date.now(),
+      mesa: mesa.id,
+      cliente: mesa.cliente || "—",
+      garcom: mesa.garcom || "—",
+      itens: todosItens,
+      total: totalMesa,
+      pagamento: pagSalao,
+      abertura: mesa.abertura,
+      fechamento: new Date().toISOString(),
+    };
+    if (setHistoricoSalao) setHistoricoSalao(h => [...h, registro]);
     setFaturado(f=>f+totalMesa);
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
     upd({id:mesa.id,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null});
@@ -1449,7 +1558,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             <div style={{fontWeight:800,fontSize:14}}>⚠️ {alertas.length}</div>
             <div style={{fontSize:10,opacity:0.8}}>atenção</div>
           </div>}
-          {!isDono && <button onClick={()=>{ setPerfil(null); if(onSair) onSair(); }} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>}
+          {!isDono && <button onClick={()=>{ if(onSair) onSair(); else setPerfil(null); }} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>}
         </div>
       </div>
       {alertas.length>0&&(
@@ -1518,6 +1627,16 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       return saved ? JSON.parse(saved) : Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}));
     } catch { return Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})); }
   }); // persiste entre recargas, zera automaticamente a cada novo dia
+  const [historicoSalao, setHistoricoSalao] = useState(() => {
+    try {
+      const lastDay = localStorage.getItem("imperio_historico_dia");
+      const hoje = new Date().toDateString();
+      if (lastDay !== hoje) return [];
+      const saved = localStorage.getItem("imperio_historico_salao");
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+
   const [faturadoSalao, setFaturadoSalao] = useState(() => {
     try {
       const lastDay = localStorage.getItem("imperio_faturado_dia");
@@ -1571,6 +1690,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   // Persiste dados do salão no localStorage
   useEffect(() => { try { localStorage.setItem("imperio_faturado_salao", String(faturadoSalao)); } catch {} }, [faturadoSalao]);
+  useEffect(() => { try { localStorage.setItem("imperio_historico_salao", JSON.stringify(historicoSalao)); localStorage.setItem("imperio_historico_dia", new Date().toDateString()); } catch {} }, [historicoSalao]);
   useEffect(() => { try { localStorage.setItem("imperio_mesas_salao", JSON.stringify(mesasSalao)); } catch {} }, [mesasSalao]);
 
   const updateStatus = async (id, novoStatus) => {
@@ -1726,13 +1846,13 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
             </div>
           )}
 
-          {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} />}
+          {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
         </div>
       </div>
