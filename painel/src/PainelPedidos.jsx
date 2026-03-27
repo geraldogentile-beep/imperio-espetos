@@ -1580,18 +1580,19 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
     ["config",     "⚙️", "Config"],
   ];
 
+  const mesasPendentes = mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length;
+
   return (
     <div style={{ fontFamily: "'Segoe UI', Tahoma, sans-serif", minHeight: "100vh", background: "#f0f0f0", display: "flex", flexDirection: "column" }}>
 
-      {/* HEADER — full width */}
-      <div style={{ background: "linear-gradient(135deg,#6b1c0e 0%,#8b2510 60%,#6b1c0e 100%)", color: "#fff", padding: "14px 24px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+      {/* HEADER DESKTOP */}
+      <div className="header-desktop" style={{ background: "linear-gradient(135deg,#6b1c0e 0%,#8b2510 60%,#6b1c0e 100%)", color: "#fff", padding: "14px 24px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 1400, margin: "0 auto", width: "100%" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
             <div>
               <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: 1, textTransform: "uppercase" }}>Painel do Dono</div>
               <div style={{ fontWeight: 800, fontSize: 20 }}>👑 Império dos Espetos</div>
             </div>
-            {/* Contadores no header desktop */}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {Object.entries(STATUS_CONFIG).map(([k, c]) => (
                 <div key={k} style={{ background: "rgba(255,255,255,0.15)", borderRadius: 10, padding: "5px 12px", border: k === "novo" && counts[k] > 0 ? "1.5px solid #f59e0b" : "1.5px solid rgba(255,255,255,0.1)", cursor: "pointer" }} onClick={() => { setAba("pedidos"); setFiltro(k); }}>
@@ -1609,7 +1610,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, fontSize: 11, opacity: 0.9 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: cc.cor, display: "inline-block", boxShadow: conexao === "online" ? "0 0 6px " + cc.cor : "none" }} />
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: cc.cor, display: "inline-block" }} />
                 {cc.txt}
                 <button onClick={fetchAll} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 14, padding: 0 }}>↻</button>
               </div>
@@ -1621,35 +1622,48 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
         </div>
       </div>
 
+      {/* HEADER MOBILE — compacto */}
+      <div className="header-mobile" style={{ background: "linear-gradient(135deg,#6b1c0e,#8b2510)", color: "#fff", padding: "10px 16px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.3)", display: "none" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>👑 Império dos Espetos</div>
+            <div style={{ fontSize: 11, opacity: 0.8, marginTop: 1 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: cc.cor, display: "inline-block", marginRight: 4 }} />
+              {statusLoja.aberto ? "🟢 Aberto" : "🔴 Fechado"} · {cc.txt}
+            </div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 10, opacity: 0.7 }}>Hoje</div>
+            <div style={{ fontWeight: 800, fontSize: 18, color: "#f0c040" }}>R$ {totalHoje.toFixed(2)}</div>
+            <div style={{ fontSize: 9, opacity: 0.6 }}>🛵{totalDeliveryHoje.toFixed(0)} · 🍽️{totalSalaoHoje.toFixed(0)}</div>
+          </div>
+        </div>
+      </div>
+
       {/* BODY — sidebar + content */}
       <div style={{ display: "flex", flex: 1, maxWidth: 1400, margin: "0 auto", width: "100%" }}>
 
-        {/* SIDEBAR — navegação vertical no desktop */}
-        <div style={{ width: 180, background: "#fff", borderRight: "1px solid #e8e8e8", display: "flex", flexDirection: "column", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto", flexShrink: 0 }}>
+        {/* SIDEBAR DESKTOP */}
+        <div className="sidebar-desktop" style={{ width: 180, background: "#fff", borderRight: "1px solid #e8e8e8", display: "flex", flexDirection: "column", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto", flexShrink: 0 }}>
           <div style={{ padding: "12px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
             {abas.map(([k, icon, label]) => (
               <button key={k} onClick={() => setAba(k)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: aba === k ? "#fef0ed" : "transparent", color: aba === k ? "#7b1a0a" : "#666", fontWeight: aba === k ? 700 : 500, fontSize: 13, transition: "all 0.15s", textAlign: "left", position: "relative" }}>
                 <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
                 <span>{label}</span>
-                {k === "pedidos" && novos > 0 && (
-                  <span style={{ position: "absolute", right: 10, background: "#f59e0b", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{novos}</span>
-                )}
-                {k === "salao" && mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length > 0 && (
-                  <span style={{ position: "absolute", right: 10, background: "#8b5cf6", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length}</span>
-                )}
+                {k === "pedidos" && novos > 0 && <span style={{ position: "absolute", right: 10, background: "#f59e0b", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{novos}</span>}
+                {k === "salao" && mesasPendentes > 0 && <span style={{ position: "absolute", right: 10, background: "#8b5cf6", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{mesasPendentes}</span>}
                 {aba === k && <div style={{ position: "absolute", left: 0, top: "20%", bottom: "20%", width: 3, background: "#7b1a0a", borderRadius: "0 3px 3px 0" }} />}
               </button>
             ))}
           </div>
-          {/* Info do sistema */}
           <div style={{ marginTop: "auto", padding: "12px 14px", borderTop: "1px solid #f0f0f0", fontSize: 11, color: "#bbb" }}>
-            {mediaAv && <div style={{ marginBottom: 4 }}>⭐ Avaliação média: <strong>{mediaAv}</strong></div>}
+            {mediaAv && <div style={{ marginBottom: 4 }}>⭐ {mediaAv}</div>}
             <div>v5.0 — Baileys</div>
           </div>
         </div>
 
         {/* CONTEÚDO PRINCIPAL */}
-        <div style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+        <div className="main-content" style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
 
           {/* Alerta novos pedidos */}
           {novos > 0 && aba === "pedidos" && (
@@ -1690,10 +1704,32 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
         </div>
       </div>
 
+      {/* BARRA INFERIOR MOBILE */}
+      <div className="mobile-nav" style={{ display: "none" }}>
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: "2px solid #f0f0f0", display: "flex", zIndex: 50, boxShadow: "0 -4px 20px rgba(0,0,0,0.1)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          {abas.map(([k, icon, label]) => (
+            <button key={k} onClick={() => setAba(k)} style={{ flex: 1, padding: "8px 2px 10px", border: "none", background: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: aba === k ? "#7b1a0a" : "#aaa", position: "relative", transition: "color 0.15s" }}>
+              <span style={{ fontSize: aba === k ? 22 : 20, transition: "font-size 0.15s" }}>{icon}</span>
+              <span style={{ fontSize: 9, fontWeight: aba === k ? 800 : 400, whiteSpace: "nowrap" }}>{label}</span>
+              {aba === k && <div style={{ position: "absolute", top: 0, left: "15%", right: "15%", height: 2, background: "#7b1a0a", borderRadius: "0 0 4px 4px" }} />}
+              {k === "pedidos" && novos > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: "#f59e0b", color: "#fff", borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{novos}</span>}
+              {k === "salao" && mesasPendentes > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: "#8b5cf6", color: "#fff", borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{mesasPendentes}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <style>{`
         @media (max-width: 768px) {
-          /* No mobile: oculta sidebar e mostra abas na base */
+          .header-desktop { display: none !important; }
+          .header-mobile { display: block !important; }
           .sidebar-desktop { display: none !important; }
+          .mobile-nav { display: block !important; }
+          .main-content { padding-bottom: 68px !important; }
+        }
+        @media (min-width: 769px) {
+          .header-mobile { display: none !important; }
+          .mobile-nav { display: none !important; }
         }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
