@@ -1475,13 +1475,28 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
   const [perfilSalao, setPerfilSalao] = useState(null); // persiste entre trocas de aba
   const [mesasSalao, setMesasSalao] = useState(() => {
     try {
+      const lastDay = localStorage.getItem("imperio_mesas_dia");
+      const hoje = new Date().toDateString();
+      if (lastDay !== hoje) {
+        localStorage.setItem("imperio_mesas_dia", hoje);
+        return Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}));
+      }
       const saved = localStorage.getItem("imperio_mesas_salao");
       return saved ? JSON.parse(saved) : Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}));
     } catch { return Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})); }
-  }); // persiste entre recargas
+  }); // persiste entre recargas, zera automaticamente a cada novo dia
   const [faturadoSalao, setFaturadoSalao] = useState(() => {
-    try { return parseFloat(localStorage.getItem("imperio_faturado_salao") || "0"); } catch { return 0; }
-  }); // persiste entre recargas
+    try {
+      const lastDay = localStorage.getItem("imperio_faturado_dia");
+      const hoje = new Date().toDateString();
+      if (lastDay !== hoje) {
+        localStorage.setItem("imperio_faturado_dia", hoje);
+        localStorage.setItem("imperio_faturado_salao", "0");
+        return 0;
+      }
+      return parseFloat(localStorage.getItem("imperio_faturado_salao") || "0");
+    } catch { return 0; }
+  }); // persiste entre recargas, zera automaticamente a cada novo dia
   const [selSalao, setSelSalao] = useState(null); // mesa selecionada — persiste
   const [telaSalao, setTelaSalaoGlobal] = useState("mapa"); // tela atual — persiste
   const ant = useRef(new Set(MOCK_PEDIDOS.map(p => p.id)));
@@ -1590,6 +1605,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
             <div style={{ textAlign: "right" }}>
               <div style={{ fontSize: 11, opacity: 0.7 }}>Faturamento hoje</div>
               <div style={{ fontWeight: 800, fontSize: 22, color: "#f0c040" }}>R$ {totalHoje.toFixed(2)}</div>
+              <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>🛵 R$ {totalDeliveryHoje.toFixed(2)} · 🍽️ R$ {totalSalaoHoje.toFixed(2)}</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, fontSize: 11, opacity: 0.9 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1617,6 +1633,9 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual }) {
                 <span>{label}</span>
                 {k === "pedidos" && novos > 0 && (
                   <span style={{ position: "absolute", right: 10, background: "#f59e0b", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{novos}</span>
+                )}
+                {k === "salao" && mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length > 0 && (
+                  <span style={{ position: "absolute", right: 10, background: "#8b5cf6", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length}</span>
                 )}
                 {aba === k && <div style={{ position: "absolute", left: 0, top: "20%", bottom: "20%", width: 3, background: "#7b1a0a", borderRadius: "0 3px 3px 0" }} />}
               </button>
