@@ -1501,8 +1501,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
         </div>
         <div style={{padding:"0 14px 16px",display:"flex",flexDirection:"column",gap:8}}>
           <div style={{display:"flex",gap:8}}>
-            {perfil==="garcom"&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
-            {perfil==="garcom"&&mesa.itens.length>0&&(
+            {(perfil==="garcom"||isDono)&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
+            {(perfil==="garcom"||isDono)&&mesa.itens.length>0&&(
               <button onClick={()=>{
                 const rodada={hora:new Date().toISOString(),itens:[...mesa.itens]};
                 upd({...mesa,rodadas:[...mesa.rodadas,rodada],itens:[]});
@@ -1510,7 +1510,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
               }} style={{...BP2("linear-gradient(135deg,#1d4ed8,#2563eb)",true)}}>🔥 Cozinha</button>
             )}
           </div>
-          {perfil==="caixa"?(
+          {(perfil==="caixa"||isDono)?(
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
                 {mesa.status==="conta"?"💳 Receber pagamento":"✅ Fechar comanda"}{totalAcumulado>0?` — ${fmtR(totalAcumulado)}`:""}
@@ -1541,7 +1541,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       <div style={{background:"linear-gradient(135deg,#1a3a1a,#2d5a2d)",color:"#fff",padding:"12px 16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <div>
-            <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{perfil==="caixa"?"💁‍♀️ Caixa":"🧑‍🍳 Garçom"}</div>
+            <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{isDono?"👑 Dono":perfil==="caixa"?"💁‍♀️ Caixa":"🧑‍🍳 Garçom"}</div>
             <div style={{fontWeight:800,fontSize:18}}>🍽️ Mapa do Salão</div>
           </div>
           <div style={{textAlign:"right"}}>
