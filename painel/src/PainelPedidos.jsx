@@ -1783,6 +1783,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: cc.cor, display: "inline-block" }} />
                 {cc.txt}
                 <button onClick={fetchAll} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 14, padding: 0 }}>↻</button>
+              {onSair && <button onClick={onSair} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontSize: 13, padding: 0, marginLeft: 4 }}>🔒</button>}
               </div>
               <span style={{ background: statusLoja.aberto ? "rgba(74,222,128,0.25)" : "rgba(239,68,68,0.25)", color: statusLoja.aberto ? "#4ade80" : "#fca5a5", borderRadius: 20, padding: "2px 10px", fontWeight: 700, fontSize: 11 }}>
                 {statusLoja.aberto ? "🟢 ABERTO" : "🔴 FECHADO"}
@@ -1828,7 +1829,12 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           </div>
           <div style={{ marginTop: "auto", padding: "12px 14px", borderTop: "1px solid #f0f0f0", fontSize: 11, color: "#bbb" }}>
             {mediaAv && <div style={{ marginBottom: 4 }}>⭐ {mediaAv}</div>}
-            <div>v5.0 — Baileys</div>
+            <div style={{ marginBottom: 8 }}>v5.0 — Baileys</div>
+            {onSair && (
+              <button onClick={onSair} style={{ width: "100%", background: "#fee2e2", color: "#ef4444", border: "1px solid #fca5a5", borderRadius: 8, padding: "7px 0", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                🔒 Sair
+              </button>
+            )}
           </div>
         </div>}
 
