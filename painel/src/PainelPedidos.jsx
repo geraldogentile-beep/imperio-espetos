@@ -978,7 +978,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
                         </div>
                       ))}
                       <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #f0f0f0" }}>
-                        <button onClick={(e) => {
+                        <button onClick={async (e) => {
                           e.stopPropagation();
                           if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
                             // Remove do MongoDB se tiver _id
