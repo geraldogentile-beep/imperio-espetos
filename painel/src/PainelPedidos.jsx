@@ -783,7 +783,6 @@ function Configuracoes({ config, onSave, statusLoja }) {
       {subAba === "geral" && (
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>⚙️ Geral</div>
-          <PinManager />
           {[["nomeEstabelecimento","Nome do estabelecimento"],["nomeAgente","Nome do agente IA"]].map(([campo, lbl]) => (
             <div key={campo}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input value={cfg[campo]} onChange={e => setCfg(p => ({ ...p, [campo]: e.target.value }))} style={inputStyle} /></div>
           ))}
@@ -1584,7 +1583,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             <div style={{fontWeight:800,fontSize:18,color:"#86efac"}}>{fmtR(fat)}</div>
           </div>
         </div>
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <div style={{background:"rgba(255,255,255,0.15)",borderRadius:10,padding:"5px 12px"}}>
             <div style={{fontWeight:800,fontSize:14}}>{ocup}/{mesas.length}</div>
             <div style={{fontSize:10,opacity:0.8}}>ocupadas</div>
@@ -1593,7 +1592,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             <div style={{fontWeight:800,fontSize:14}}>⚠️ {alertas.length}</div>
             <div style={{fontSize:10,opacity:0.8}}>atenção</div>
           </div>}
-          {!isDono && <button onClick={()=>{ if(onSairApp) onSairApp(); else setPerfil(null); }} style={{marginLeft:"auto",background:"none",border:"none",color:"rgba(255,255,255,0.6)",fontSize:12,cursor:"pointer"}}>🔒 Sair</button>}
+          <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
+            {isDono&&<>
+              <button onClick={()=>{const n=mesas.length+1;setMesas(p=>[...p,{id:n,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}]);msgSalao("✅ Mesa "+n+" adicionada!");}} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
+              <button onClick={()=>{const u=mesas[mesas.length-1];if(!u||u.status!=="livre"){msgSalao("❌ Só é possível remover mesa livre!","#ef4444");return;}setMesas(p=>p.slice(0,-1));msgSalao("Mesa "+u.id+" removida.","#f59e0b");}} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>− Mesa</button>
+            </>}
+            {!isDono&&<button onClick={()=>{if(onSairApp)onSairApp();else setPerfil(null);}} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 10px",fontSize:12,cursor:"pointer",fontWeight:600}}>🔒 Sair</button>}
+          </div>
         </div>
       </div>
       {alertas.length>0&&(
