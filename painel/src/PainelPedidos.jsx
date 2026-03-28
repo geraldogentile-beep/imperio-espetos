@@ -879,8 +879,8 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
 
           {/* Botão zerar operação */}
           <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 6 }}>🔄 Zerar operação do dia</div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Apaga todas as vendas, zera o faturamento e libera todas as mesas. Use para encerrar o turno ou apagar dados de teste.</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 6 }}>🔄 Fechar turno</div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Todas as vendas já estão salvas no banco de dados. Ao fechar o turno, a tela é resetada para o próximo dia — sem perder nenhum dado.</div>
             {!zerarAberto ? (
               <button onClick={() => setZerarAberto(true)} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "9px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                 🔄 Zerar operação
@@ -952,6 +952,10 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
                         <button onClick={(e) => {
                           e.stopPropagation();
                           if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
+                            // Remove do MongoDB se tiver _id
+                            if (v._id) {
+                              try { await fetch(BACKEND_URL + "/vendas-salao/" + v._id, { method: "DELETE" }); } catch {}
+                            }
                             if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => x.id !== v.id));
                             if (setFaturadoSalaoRel) setFaturadoSalaoRel(f => Math.max(0, f - v.total));
                             setVendaAberta(null);
@@ -1308,7 +1312,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
     const itens=mesa.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>(i.qty||1)>0);
     upd({...mesa,itens,status:itens.length===0?"livre":mesa.status});
   }
-  function fecharMesa(){
+  async function fecharMesa(){
     const totalMesa=totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
     const todosItens = [...mesa.rodadas.flatMap(r=>r.itens), ...mesa.itens].reduce((acc,it)=>{
       const ex=acc.find(i=>i.id===it.id); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
@@ -1324,6 +1328,18 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       abertura: mesa.abertura,
       fechamento: new Date().toISOString(),
     };
+    // Salva no MongoDB
+    try {
+      const res = await fetch(BACKEND_URL + "/vendas-salao", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(registro),
+      });
+      if (res.ok) {
+        const salvo = await res.json();
+        registro._id = salvo._id; // guarda o ID do banco para poder excluir
+      }
+    } catch (e) { console.warn("Falha ao salvar venda no banco:", e); }
     if (setHistoricoSalao) setHistoricoSalao(h => [...h, registro]);
     setFaturado(f=>f+totalMesa);
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
