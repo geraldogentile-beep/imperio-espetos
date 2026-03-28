@@ -1270,7 +1270,7 @@ const PIN_GARCOM = "1234";
 const PIN_CAIXA  = "5678";
 
 const STATUS_MESA = {
-  livre:    { c:"#10b981", bg:"#d1fae5", e:"🪑", l:"Livre"    },
+  livre:    { c:"#10b981", bg:"#d1fae5", e:"🍽️", l:"Livre"    },
   ocupada:  { c:"#3b82f6", bg:"#dbeafe", e:"🍢", l:"Ocupada"  },
   chamando: { c:"#f59e0b", bg:"#fef3c7", e:"🔔", l:"Chamando" },
   conta:    { c:"#8b5cf6", bg:"#ede9fe", e:"💳", l:"Conta"    },
