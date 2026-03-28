@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import PainelPedidos from "./PainelPedidos.jsx";
 
 function getPins() {
@@ -70,8 +70,42 @@ function TelaLogin({ onLogin }) {
 
 export default function App() {
   const [perfil, setPerfil] = useState(null);
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [showInstall, setShowInstall] = useState(false);
 
-  if (!perfil) return <TelaLogin onLogin={setPerfil} />;
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+      setShowInstall(true);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  async function instalarApp() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === "accepted") setShowInstall(false);
+  }
+
+  if (!perfil) return (
+    <>
+      <TelaLogin onLogin={setPerfil} />
+      {showInstall && (
+        <div style={{ position: "fixed", bottom: 20, left: 16, right: 16, background: "#fff", borderRadius: 16, padding: "14px 16px", boxShadow: "0 8px 30px rgba(0,0,0,0.2)", display: "flex", alignItems: "center", gap: 12, zIndex: 999, fontFamily: "'Segoe UI', sans-serif" }}>
+          <div style={{ fontSize: 32 }}>👑</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: "#1a1a1a" }}>Instalar o app</div>
+            <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>Adicione à tela inicial para acesso rápido</div>
+          </div>
+          <button onClick={instalarApp} style={{ background: "linear-gradient(135deg,#6b1c0e,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "8px 14px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Instalar</button>
+          <button onClick={() => setShowInstall(false)} style={{ background: "none", border: "none", color: "#ccc", fontSize: 20, cursor: "pointer", padding: 0 }}>×</button>
+        </div>
+      )}
+    </>
+  );
 
   // Garçom e Caixa vão direto para o salão
   if (perfil === "garcom" || perfil === "caixa") {
