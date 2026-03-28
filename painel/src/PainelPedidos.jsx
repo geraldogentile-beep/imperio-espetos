@@ -977,7 +977,34 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
                           <span>R$ {(it.qty*it.preco).toFixed(2)}</span>
                         </div>
                       ))}
-                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #f0f0f0" }}>
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.grayL}`, display:"flex", gap:8 }}>
+                        <button onClick={(e)=>{
+                          e.stopPropagation();
+                          const win = window.open('','_blank','width=400,height=600');
+                          win.document.write(`<!DOCTYPE html><html><head><title>Venda Mesa ${v.mesa}</title><style>
+                            body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
+                            h2{text-align:center;font-size:16px;margin-bottom:4px}
+                            .sub{text-align:center;font-size:12px;color:#666;margin-bottom:16px}
+                            .linha{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-bottom:1px dashed #eee}
+                            .total{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:8px 0;border-top:2px solid #000;margin-top:8px}
+                            .info{font-size:12px;color:#555;margin-bottom:10px}
+                            .rodape{text-align:center;font-size:11px;color:#999;margin-top:16px}
+                            @media print{button{display:none}}
+                          </style></head><body>
+                            <h2>👑 Império dos Espetos</h2>
+                            <div class="sub">Relatório de Venda — Mesa ${v.mesa}</div>
+                            <div class="info">${v.cliente&&v.cliente!=='—'?'Cliente: '+v.cliente+'<br>':''}${v.garcom&&v.garcom!=='—'?'Garçom: '+v.garcom+'<br>':''}Fechamento: ${new Date(v.fechamento).toLocaleString('pt-BR',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</div>
+                            ${v.itens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
+                            <div class="total"><span>TOTAL</span><span>R$ ${v.total.toFixed(2)}</span></div>
+                            <div class="info" style="margin-top:10px">Pagamento: ${v.pagamento==='pix'?'Pix':v.pagamento==='cartao'?'Cartão':'Dinheiro'}</div>
+                            <div class="rodape">Obrigado! 🍢</div>
+                            <br><button onclick="window.print()">🖨️ Imprimir</button>
+                          </body></html>`);
+                          win.document.close();
+                          setTimeout(()=>win.print(),500);
+                        }} style={{ flex:1, background:T.grayLL, color:T.gray, border:`1px solid ${T.grayL}`, borderRadius:T.radiusS, padding:"8px 0", fontWeight:600, fontSize:12, cursor:"pointer" }}>
+                          🖨️ Imprimir
+                        </button>
                         <button onClick={async (e) => {
                           e.stopPropagation();
                           if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
@@ -990,7 +1017,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
                             setVendaAberta(null);
                           }
                         }} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", width: "100%" }}>
-                          🗑️ Excluir esta venda
+                          🗑️ Excluir
                         </button>
                       </div>
                     </div>
@@ -1477,7 +1504,35 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             ))}
           </div>
         </div>
-        <button onClick={fecharMesa} style={BP2("linear-gradient(135deg,#065f46,#10b981)")}>✅ Confirmar pagamento — {fmtR(totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</button>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>{
+            const total = totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
+            const todosItens = [...mesa.rodadas.flatMap(r=>r.itens),...mesa.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+            const win = window.open('','_blank','width=400,height=600');
+            win.document.write(`<!DOCTYPE html><html><head><title>Comanda Mesa ${mesa.id}</title><style>
+              body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
+              h2{text-align:center;font-size:16px;margin-bottom:4px}
+              .sub{text-align:center;font-size:12px;color:#666;margin-bottom:16px}
+              .linha{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-bottom:1px dashed #eee}
+              .total{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:8px 0;border-top:2px solid #000;margin-top:8px}
+              .info{font-size:12px;color:#555;margin-bottom:12px}
+              .rodape{text-align:center;font-size:11px;color:#999;margin-top:16px}
+              @media print{button{display:none}}
+            </style></head><body>
+              <h2>👑 Império dos Espetos</h2>
+              <div class="sub">Comanda — Mesa ${mesa.id}</div>
+              <div class="info">${mesa.cliente&&mesa.cliente!=='—'?'Cliente: '+mesa.cliente+'<br>':''}${mesa.garcom&&mesa.garcom!=='—'?'Garçom: '+mesa.garcom+'<br>':''}Abertura: ${mesa.abertura?new Date(mesa.abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
+              ${todosItens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
+              <div class="total"><span>TOTAL</span><span>R$ ${total.toFixed(2)}</span></div>
+              <div class="info" style="margin-top:12px">Pagamento: ${pagSalao==='pix'?'Pix':pagSalao==='cartao'?'Cartão':'Dinheiro'}</div>
+              <div class="rodape">Obrigado pela visita! 🍢</div>
+              <br><button onclick="window.print()">🖨️ Imprimir</button>
+            </body></html>`);
+            win.document.close();
+            setTimeout(()=>win.print(),500);
+          }} style={{background:T.grayLL,color:T.gray,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"12px 0",fontWeight:600,fontSize:14,cursor:"pointer",flex:1}}>🖨️ Imprimir</button>
+          <button onClick={fecharMesa} style={{...BP2("linear-gradient(135deg,#065f46,#10b981)"),flex:2}}>✅ Confirmar — {fmtR(totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</button>
+        </div>
       </div>
     </div>
   );
