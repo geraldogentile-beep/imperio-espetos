@@ -1766,7 +1766,7 @@ function WhatsAppConexao({ conexao, backendUrl }) {
         {status && (
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.grayL}`, display: "flex", gap: 16, fontSize: 12, color: T.gray }}>
             <span>📦 {status.pedidos || 0} pedidos</span>
-            <span>🗄️ MongoDB: {status.mongodb || "—"}</span>
+            <span>🗄️ Base de Dados: {status.mongodb || "—"}</span>
             <span>⏱️ {status.uptime || "—"}</span>
           </div>
         )}
