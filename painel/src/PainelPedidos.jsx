@@ -1646,6 +1646,116 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   );
 }
 
+// ── ABA WHATSAPP ──────────────────────────────────────────────
+function WhatsAppConexao({ conexao, backendUrl }) {
+  const [qrCode, setQrCode] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [desconectando, setDesconectando] = useState(false);
+
+  async function carregarStatus() {
+    try {
+      const r = await fetch(backendUrl + "/health");
+      const d = await r.json();
+      setStatus(d);
+    } catch {}
+  }
+
+  async function carregarQR() {
+    setLoading(true);
+    try {
+      const r = await fetch(backendUrl + "/qrcode");
+      const html = await r.text();
+      // Extrai o src da imagem do QR
+      const match = html.match(/src="(data:image\/png;base64,[^"]+)"/);
+      if (match) setQrCode(match[1]);
+      else setQrCode("conectado");
+    } catch { setQrCode(null); }
+    setLoading(false);
+  }
+
+  async function desconectar() {
+    setDesconectando(true);
+    try {
+      await fetch(backendUrl + "/whatsapp/logout", { method: "POST" });
+      setQrCode(null);
+      setStatus(null);
+      setTimeout(carregarStatus, 3000);
+    } catch {}
+    setDesconectando(false);
+  }
+
+  useState(() => { carregarStatus(); }, []);
+
+  const conectado = conexao === "online" || status?.whatsapp === "connected";
+
+  return (
+    <div style={{ padding: "20px", maxWidth: 500, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
+
+      {/* Status card */}
+      <div style={{ background: T.white, borderRadius: T.radius, padding: "20px", boxShadow: T.shadow, border: `1px solid ${T.grayL}` }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: T.gray, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 16 }}>Status da Conexão</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ width: 52, height: 52, borderRadius: T.radius, background: conectado ? T.greenL : T.wineL, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, border: `1px solid ${conectado ? T.green+"30" : T.wine+"30"}` }}>
+            {conectado ? "✅" : "📵"}
+          </div>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16, color: T.dark }}>
+              {conectado ? "WhatsApp Conectado" : "WhatsApp Desconectado"}
+            </div>
+            <div style={{ fontSize: 13, color: T.gray, marginTop: 3 }}>
+              {conectado ? "Bot respondendo normalmente" : "Escaneie o QR Code para conectar"}
+            </div>
+          </div>
+        </div>
+        {status && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.grayL}`, display: "flex", gap: 16, fontSize: 12, color: T.gray }}>
+            <span>📦 {status.pedidos || 0} pedidos</span>
+            <span>🗄️ MongoDB: {status.mongodb || "—"}</span>
+            <span>⏱️ {status.uptime || "—"}</span>
+          </div>
+        )}
+      </div>
+
+      {/* QR Code card */}
+      {!conectado && (
+        <div style={{ background: T.white, borderRadius: T.radius, padding: "20px", boxShadow: T.shadow, border: `1px solid ${T.grayL}`, textAlign: "center" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: T.gray, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 16 }}>Conectar WhatsApp</div>
+          {qrCode && qrCode !== "conectado" ? (
+            <>
+              <img src={qrCode} alt="QR Code WhatsApp" style={{ width: 220, height: 220, borderRadius: T.radiusS, border: `1px solid ${T.grayL}` }} />
+              <div style={{ fontSize: 12, color: T.gray, marginTop: 12 }}>
+                Abra o WhatsApp → <strong>Aparelhos conectados</strong> → <strong>Conectar aparelho</strong>
+              </div>
+              <div style={{ fontSize: 11, color: T.amber, marginTop: 6, fontWeight: 600 }}>⏱️ QR Code expira em ~60 segundos</div>
+              <button onClick={carregarQR} style={{ marginTop: 12, background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, borderRadius: T.radiusS, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+                🔄 Gerar novo QR Code
+              </button>
+            </>
+          ) : (
+            <button onClick={carregarQR} disabled={loading} style={{ background: `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radius, padding: "14px 28px", fontWeight: 700, fontSize: 15, cursor: "pointer", opacity: loading ? 0.7 : 1 }}>
+              {loading ? "⏳ Carregando..." : "📱 Mostrar QR Code"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Desconectar */}
+      {conectado && (
+        <div style={{ background: T.white, borderRadius: T.radius, padding: "16px 20px", boxShadow: T.shadow, border: `1px solid ${T.grayL}` }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: T.gray, marginBottom: 8 }}>Trocar número</div>
+          <div style={{ fontSize: 12, color: T.gray, marginBottom: 12 }}>Desconecte para escanear com outro número do WhatsApp.</div>
+          <button onClick={desconectar} disabled={desconectando} style={{ background: T.wineL, color: T.wine, border: `1px solid ${T.wine}30`, borderRadius: T.radiusS, padding: "9px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+            {desconectando ? "⏳ Desconectando..." : "🔌 Desconectar WhatsApp"}
+          </button>
+        </div>
+      )}
+
+      <button onClick={carregarStatus} style={{ background: "none", border: "none", color: T.gray, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>↻ Atualizar status</button>
+    </div>
+  );
+}
+
 // ── PAINEL PRINCIPAL ──────────────────────────────────────────
 export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSalao, onSair }) {
   const [pedidos, setPedidos] = useState(MOCK_PEDIDOS);
@@ -1777,6 +1887,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     ["cupons",     "🎟️", "Cupons"],
     ["fidelidade", "🏆", "Fidelid."],
     ["avaliacoes", "⭐", "Aval."],
+    ["whatsapp",   "📱", "WhatsApp"],
     ["config",     "⚙️", "Config"],
   ];
 
@@ -1914,6 +2025,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
           {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} />}
+          {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
         </div>
       </div>
