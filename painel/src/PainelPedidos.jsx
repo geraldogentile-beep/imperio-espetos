@@ -1,6 +1,34 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+
+// ── DESIGN TOKENS ─────────────────────────────────────────────
+const T = {
+  cream:   "#FAFAF8",
+  wine:    "#8B2635",
+  wineD:   "#6B1A28",
+  wineL:   "#F5E8EA",
+  amber:   "#D4842A",
+  amberL:  "#FDF3E7",
+  gray:    "#6B6560",
+  grayL:   "#F2F1EF",
+  grayLL:  "#F8F7F5",
+  dark:    "#1C1917",
+  white:   "#FFFFFF",
+  green:   "#2D7A4F",
+  greenL:  "#E8F5EE",
+  red:     "#C0392B",
+  redL:    "#FEE8E6",
+  blue:    "#1D4ED8",
+  blueL:   "#EFF6FF",
+  purple:  "#6D28D9",
+  purpleL: "#EDE9FE",
+  shadow:  "0 2px 16px rgba(28,25,23,0.07)",
+  shadowM: "0 4px 24px rgba(28,25,23,0.1)",
+  radius:  "16px",
+  radiusS: "10px",
+  radiusL: "24px",
+};
 const POLLING_INTERVAL = 8000;
 const DIAS_SEMANA = ["Domingo","Segunda","Terça","Quarta","Quinta","Sexta","Sábado"];
 
@@ -79,18 +107,18 @@ function estrelas(nota) { return "⭐".repeat(nota) + "☆".repeat(5 - nota); }
 // ── COMPONENTES BASE ──────────────────────────────────────────
 function Badge({ status }) {
   const c = STATUS_CONFIG[status] || STATUS_CONFIG.novo;
-  return <span style={{ background: c.bg, color: c.color, border: "1.5px solid " + c.color, borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>{c.icon} {c.label}</span>;
+  return <span style={{ background: c.bg, color: c.color, border: `1px solid ${c.color}40`, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3, fontFamily:"'DM Sans',sans-serif" }}>{c.icon} {c.label}</span>;
 }
 
 function Toggle({ value, onChange, label, sub }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
       <div>
-        <div style={{ fontSize: 14, fontWeight: 600, color: "#333" }}>{label}</div>
-        {sub && <div style={{ fontSize: 12, color: "#aaa", marginTop: 1 }}>{sub}</div>}
+        <div style={{ fontSize: 14, fontWeight: 500, color: T.dark, fontFamily:"'DM Sans',sans-serif" }}>{label}</div>
+        {sub && <div style={{ fontSize: 12, color: T.gray, marginTop: 2 }}>{sub}</div>}
       </div>
-      <div onClick={() => onChange(!value)} style={{ width: 46, height: 26, borderRadius: 13, background: value ? "#7b1a0a" : "#ddd", cursor: "pointer", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
-        <div style={{ position: "absolute", top: 3, left: value ? 23 : 3, width: 20, height: 20, borderRadius: "50%", background: "#fff", transition: "left 0.2s", boxShadow: "0 1px 4px rgba(0,0,0,0.2)" }} />
+      <div onClick={() => onChange(!value)} style={{ width: 48, height: 28, borderRadius: 14, background: value ? T.wine : T.grayL, cursor: "pointer", position: "relative", transition: "background 0.25s", flexShrink: 0, boxShadow: value ? `0 2px 8px ${T.wine}40` : "none" }}>
+        <div style={{ position: "absolute", top: 4, left: value ? 24 : 4, width: 20, height: 20, borderRadius: "50%", background: T.white, transition: "left 0.25s", boxShadow: "0 1px 4px rgba(0,0,0,0.15)" }} />
       </div>
     </div>
   );
@@ -98,11 +126,12 @@ function Toggle({ value, onChange, label, sub }) {
 
 function Metrica({ icon, label, valor, sub, cor }) {
   return (
-    <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", flex: 1, minWidth: 100, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", borderTop: "3px solid " + cor }}>
-      <div style={{ fontSize: 20, marginBottom: 4 }}>{icon}</div>
-      <div style={{ fontSize: 16, fontWeight: 800, color: "#1a1a1a" }}>{valor}</div>
-      <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{label}</div>
-      {sub && <div style={{ fontSize: 10, color: cor, fontWeight: 600, marginTop: 3 }}>{sub}</div>}
+    <div style={{ background: T.white, borderRadius: T.radius, padding: "16px", flex: 1, minWidth: 110, boxShadow: T.shadow, border: `1px solid ${T.grayL}`, position: "relative", overflow: "hidden" }}>
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: cor, borderRadius: "16px 16px 0 0" }} />
+      <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: T.dark, fontFamily:"'DM Sans',sans-serif", lineHeight:1 }}>{valor}</div>
+      <div style={{ fontSize: 11, color: T.gray, marginTop: 4, textTransform:"uppercase", letterSpacing:0.5 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: cor, fontWeight: 600, marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }
@@ -111,11 +140,11 @@ function Barra({ label, valor, maximo, destaque }) {
   const pct = maximo > 0 ? (valor / maximo) * 100 : 0;
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: 1 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: destaque ? "#7b1a0a" : "#999" }}>{valor > 0 ? "R$" + valor.toFixed(0) : "—"}</div>
+      <div style={{ fontSize: 10, fontWeight: 600, color: destaque ? T.wine : T.gray }}>{valor > 0 ? "R$" + valor.toFixed(0) : "—"}</div>
       <div style={{ width: "100%", height: 80, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-        <div style={{ width: "65%", height: Math.max(pct, valor > 0 ? 4 : 0) + "%", background: destaque ? "linear-gradient(180deg,#c0392b,#7b1a0a)" : "linear-gradient(180deg,#e8b4b0,#d4817a)", borderRadius: "4px 4px 0 0", transition: "height 0.6s", minHeight: valor > 0 ? 4 : 0 }} />
+        <div style={{ width: "60%", height: Math.max(pct, valor > 0 ? 4 : 0) + "%", background: destaque ? `linear-gradient(180deg,${T.amber},${T.wine})` : `linear-gradient(180deg,${T.wineL},${T.wineL.replace("F5","E0")})`, borderRadius: "6px 6px 0 0", transition: "height 0.6s ease", minHeight: valor > 0 ? 4 : 0 }} />
       </div>
-      <div style={{ fontSize: 10, color: destaque ? "#7b1a0a" : "#aaa", fontWeight: destaque ? 700 : 400 }}>{label}</div>
+      <div style={{ fontSize: 10, color: destaque ? T.wine : T.gray, fontWeight: destaque ? 700 : 400 }}>{label}</div>
     </div>
   );
 }
@@ -1118,48 +1147,49 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando }) {
   const total = calcTotal(pedido.itens, pedido.desconto || 0);
   const sc = STATUS_CONFIG[pedido.status] || STATUS_CONFIG.novo;
   const nxt = { novo: "preparando", preparando: "entrega", entrega: "entregue" }[pedido.status];
+  const isNovo = pedido.status === "novo";
   return (
-    <div style={{ background: "#fff", borderRadius: 14, boxShadow: pedido.status === "novo" ? "0 0 0 2px #f59e0b,0 4px 20px rgba(245,158,11,0.15)" : "0 2px 12px rgba(0,0,0,0.08)", overflow: "hidden", opacity: atualizando ? 0.6 : 1, transition: "opacity 0.2s" }}>
-      <div onClick={onToggle} style={{ padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, borderLeft: "4px solid " + sc.color, userSelect: "none" }}>
-        <div style={{ width: 40, height: 40, borderRadius: 10, background: sc.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{atualizando ? "⏳" : sc.icon}</div>
+    <div style={{ background: T.white, borderRadius: T.radius, boxShadow: isNovo ? `0 0 0 2px ${T.amber}, ${T.shadowM}` : T.shadow, overflow: "hidden", opacity: atualizando ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${isNovo ? T.amber+"40" : T.grayL}` }}>
+      <div onClick={onToggle} style={{ padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, borderLeft: `3px solid ${sc.color}`, userSelect: "none" }}>
+        <div style={{ width: 42, height: 42, borderRadius: T.radiusS, background: sc.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0, border: `1px solid ${sc.color}20` }}>{atualizando ? "⏳" : sc.icon}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontWeight: 800, fontSize: 14, color: "#1a1a1a" }}>#{pedido.id} — {pedido.cliente}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, fontSize: 14, color: T.dark, fontFamily:"'DM Sans',sans-serif" }}>#{pedido.id} — {pedido.cliente}</span>
             <Badge status={pedido.status} />
-            {pedido.cupom && <span style={{ background: "#ede9fe", color: "#7c3aed", borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>🎟️ {pedido.cupom}</span>}
+            {pedido.cupom && <span style={{ background: T.purpleL, color: T.purple, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 600 }}>🎟️ {pedido.cupom}</span>}
           </div>
-          <div style={{ fontSize: 12, color: "#888", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📍 {pedido.endereco}</div>
+          <div style={{ fontSize: 12, color: T.gray, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📍 {pedido.endereco}</div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {total.toFixed(2)}</div>
-          <div style={{ fontSize: 11, color: "#888" }}>⏱️ {pedido.tempoPreparo || "—"}min</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: T.wine }}>R$ {total.toFixed(2)}</div>
+          <div style={{ fontSize: 11, color: T.gray, marginTop: 1 }}>⏱️ {pedido.tempoPreparo || "—"}min</div>
         </div>
-        <div style={{ color: "#ccc", fontSize: 18, flexShrink: 0 }}>{expanded ? "▲" : "▼"}</div>
+        <div style={{ color: T.grayL, fontSize: 16, flexShrink: 0 }}>{expanded ? "▴" : "▾"}</div>
       </div>
       {expanded && (
-        <div style={{ borderTop: "1px solid #f0f0f0", padding: "14px 16px" }}>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#888", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Itens</div>
+        <div style={{ borderTop: `1px solid ${T.grayL}`, padding: "14px 16px", background: T.grayLL }}>
+          <div style={{ background: T.white, borderRadius: T.radiusS, padding: "12px", marginBottom: 12, border: `1px solid ${T.grayL}` }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.gray, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Itens do pedido</div>
             {(pedido.itens || []).map((it, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px dashed #f0f0f0", fontSize: 13, color: "#333" }}>
-                <span>{it.qty || 1}x {it.nome}</span>
-                <span style={{ fontWeight: 600 }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span>
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.grayL}`, fontSize: 13, color: T.dark }}>
+                <span style={{ color: T.gray }}>{it.qty || 1}× <span style={{ color: T.dark }}>{it.nome}</span></span>
+                <span style={{ fontWeight: 600, color: T.dark }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span>
               </div>
             ))}
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13, color: "#888" }}><span>Taxa entrega</span><span>R$ 5,00</span></div>
-            {pedido.desconto > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13, color: "#7c3aed" }}><span>🎟️ Desconto ({pedido.cupom})</span><span>-R$ {pedido.desconto.toFixed(2)}</span></div>}
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0 0", fontSize: 15, fontWeight: 800, color: "#7b1a0a" }}><span>Total</span><span>R$ {total.toFixed(2)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.gray }}><span>Taxa de entrega</span><span>R$ 5,00</span></div>
+            {pedido.desconto > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.purple }}><span>🎟️ Desconto ({pedido.cupom})</span><span>−R$ {pedido.desconto.toFixed(2)}</span></div>}
+            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 4, borderTop: `1px solid ${T.grayL}`, fontSize: 15, fontWeight: 700, color: T.wine }}><span>Total</span><span>R$ {total.toFixed(2)}</span></div>
           </div>
-          {pedido.obs && <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 12px", marginBottom: 12, fontSize: 13, color: "#92400e" }}>⚠️ <strong>Obs:</strong> {pedido.obs}</div>}
-          <div style={{ fontSize: 13, color: "#555", marginBottom: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {pedido.obs && <div style={{ background: T.amberL, border: `1px solid ${T.amber}40`, borderRadius: T.radiusS, padding: "8px 12px", marginBottom: 12, fontSize: 13, color: T.amber }}>⚠️ <strong>Obs:</strong> {pedido.obs}</div>}
+          <div style={{ fontSize: 12, color: T.gray, marginBottom: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
             <span>📞 {pedido.telefone}</span>
             <span>🕐 {horaFmt(pedido.horario)}</span>
             {pedido.tempoPreparo && <span>⏱️ ~{pedido.tempoPreparo}min</span>}
           </div>
           {pedido.status !== "entregue" && pedido.status !== "cancelado" && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {nxt && <button onClick={() => onStatus(pedido.id, nxt)} disabled={atualizando} style={{ flex: 1, minWidth: 140, background: atualizando ? "#ccc" : "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>{STATUS_CONFIG[nxt].icon} Mover para {STATUS_CONFIG[nxt].label}</button>}
-              <button onClick={() => onStatus(pedido.id, "cancelado")} disabled={atualizando} style={{ background: "#fff", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "10px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>❌ Cancelar</button>
+              {nxt && <button onClick={() => onStatus(pedido.id, nxt)} disabled={atualizando} style={{ flex: 1, minWidth: 140, background: atualizando ? T.grayL : `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily:"'DM Sans',sans-serif" }}>{STATUS_CONFIG[nxt].icon} {STATUS_CONFIG[nxt].label}</button>}
+              <button onClick={() => onStatus(pedido.id, "cancelado")} disabled={atualizando} style={{ background: T.white, color: T.red, border: `1.5px solid ${T.red}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>❌ Cancelar</button>
             </div>
           )}
         </div>
@@ -1362,7 +1392,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
 
   // TELA ADICIONAR
   if(telaSalao==="adicionar") return (
-    <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+    <div style={{background:T.cream,minHeight:"100%"}}>
       {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1408,7 +1438,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
 
   // TELA FECHAR
   if(telaSalao==="fechar") return (
-    <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+    <div style={{background:T.cream,minHeight:"100%"}}>
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
@@ -1456,7 +1486,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   if(telaSalao==="comanda"&&mesa) {
     const totalAcumulado = totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
     return (
-      <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+      <div style={{background:T.cream,minHeight:"100%"}}>
         {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
         <div style={H2}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
@@ -1547,9 +1577,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
 
   // MAPA DE MESAS
   return (
-    <div style={{background:"#f5f5f5",minHeight:"100%"}}>
+    <div style={{background:T.cream,minHeight:"100%"}}>
       {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
-      <div style={{background:"linear-gradient(135deg,#1a3a1a,#2d5a2d)",color:"#fff",padding:"12px 16px"}}>
+      <div style={{background:`linear-gradient(135deg,${T.wineD},${T.wine})`,color:"#fff",padding:"12px 16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <div>
             <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{isDono?"👑 Dono":perfil==="caixa"?"💁‍♀️ Caixa":"🧑‍🍳 Garçom"}</div>
@@ -1557,7 +1587,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:11,opacity:0.7}}>Faturamento</div>
-            <div style={{fontWeight:800,fontSize:18,color:"#86efac"}}>{fmtR(fat)}</div>
+            <div style={{fontWeight:800,fontSize:18,color:T.amber}}>{fmtR(fat)}</div>
           </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
@@ -1579,7 +1609,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
         </div>
       </div>
       {alertas.length>0&&(
-        <div style={{background:"#ede9fe",borderBottom:"2px solid #8b5cf6",padding:"8px 14px"}}>
+        <div style={{background:T.purpleL,borderBottom:`2px solid ${T.purple}`,padding:"8px 14px"}}>
           {alertas.map(m=>(
             <div key={m.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:"#5b21b6",marginBottom:2}}>
               <span>{m.status==="conta"?"💳":"🔔"} Mesa {m.id} — {m.status==="conta"?"fechamento solicitado":"chamando"}{m.solicitadoPor?` por ${m.solicitadoPor}`:""}</span>
@@ -1753,10 +1783,10 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const mesasPendentes = mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length;
 
   return (
-    <div style={{ fontFamily: "'Segoe UI', Tahoma, sans-serif", minHeight: "100vh", background: "#f0f0f0", display: "flex", flexDirection: "column" }}>
+    <div style={{ fontFamily: "'DM Sans','Segoe UI',sans-serif", minHeight: "100vh", background: T.cream, display: "flex", flexDirection: "column" }}>
 
       {/* HEADER DESKTOP — oculta para garçom/caixa */}
-      {!abrirSalao && <div className="header-desktop" style={{ background: "linear-gradient(135deg,#6b1c0e 0%,#8b2510 60%,#6b1c0e 100%)", color: "#fff", padding: "14px 24px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
+      {!abrirSalao && <div className="header-desktop" style={{ background: T.white, borderBottom: `1px solid ${T.grayL}`, color: T.dark, padding: "0 28px", position: "sticky", top: 0, zIndex: 20, boxShadow: T.shadow, height: 64 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 1400, margin: "0 auto", width: "100%" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
             <div>
@@ -1794,19 +1824,27 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       </div>}
 
       {/* HEADER MOBILE — compacto, oculta para garçom/caixa */}
-      {!abrirSalao && <div className="header-mobile" style={{ background: "linear-gradient(135deg,#6b1c0e,#8b2510)", color: "#fff", padding: "10px 16px", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.3)", display: "none" }}>
+      {!abrirSalao && <div className="header-mobile" style={{ background: T.white, borderBottom: `1px solid ${T.grayL}`, padding: "10px 16px", position: "sticky", top: 0, zIndex: 20, boxShadow: T.shadow, display: "none" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 16 }}>👑 Império dos Espetos</div>
-            <div style={{ fontSize: 11, opacity: 0.8, marginTop: 1 }}>
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: cc.cor, display: "inline-block", marginRight: 4 }} />
-              {statusLoja.aberto ? "🟢 Aberto" : "🔴 Fechado"} · {cc.txt}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 30, height: 30, borderRadius: 8, background: `linear-gradient(135deg,${T.wineD},${T.wine})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>👑</div>
+            <div>
+              <div style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700, fontSize: 14, color: T.dark }}>Império dos Espetos</div>
+              <div style={{ fontSize: 10, color: T.gray, marginTop: 1 }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: cc.cor, display: "inline-block", marginRight: 3 }} />
+                {statusLoja.aberto ? "Aberto" : "Fechado"}
+              </div>
             </div>
           </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 10, opacity: 0.7 }}>Hoje</div>
-            <div style={{ fontWeight: 800, fontSize: 18, color: "#f0c040" }}>R$ {totalHoje.toFixed(2)}</div>
-            <div style={{ fontSize: 9, opacity: 0.6 }}>🛵{totalDeliveryHoje.toFixed(0)} · 🍽️{totalSalaoHoje.toFixed(0)}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 9, color: T.gray, textTransform: "uppercase", letterSpacing: 1 }}>Hoje</div>
+              <div style={{ fontWeight: 700, fontSize: 17, color: T.wine }}>R$ {totalHoje.toFixed(2)}</div>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={fetchAll} style={{ background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, cursor: "pointer", fontSize: 13, padding: "5px 8px", borderRadius: 8 }}>↻</button>
+              {onSair && <button onClick={onSair} style={{ background: T.wineL, border: `1px solid ${T.wine}30`, color: T.wine, cursor: "pointer", fontSize: 13, padding: "5px 8px", borderRadius: 8, fontWeight: 600 }}>🔒</button>}
+            </div>
           </div>
         </div>
       </div>}
@@ -1839,21 +1877,21 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
         </div>}
 
         {/* CONTEÚDO PRINCIPAL */}
-        <div className="main-content" style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+        <div className="main-content" style={{ flex: 1, minWidth: 0, overflow: "auto", background: T.cream }}>
 
           {/* Alerta novos pedidos */}
           {novos > 0 && aba === "pedidos" && (
-            <div style={{ background: "#fef3c7", borderBottom: "2px solid #f59e0b", padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: "#92400e", fontWeight: 600 }}>
+            <div style={{ background: T.amberL, borderBottom: `2px solid ${T.amber}`, padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: T.amber, fontWeight: 600, borderRadius: 0 }}>
               🔔 <strong>{novos} novo{novos > 1 ? "s" : ""} pedido{novos > 1 ? "s" : ""}</strong> aguardando!
             </div>
           )}
 
           {/* Filtros de status */}
           {aba === "pedidos" && (
-            <div style={{ background: "#fff", padding: "10px 16px", display: "flex", gap: 6, flexWrap: "wrap", borderBottom: "1px solid #eee" }}>
+            <div style={{ background: T.white, padding: "12px 16px", display: "flex", gap: 6, flexWrap: "wrap", borderBottom: `1px solid ${T.grayL}` }}>
               {[["todos","📋 Todos"], ...Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.icon + " " + v.label])].map(([k, l]) => (
-                <button key={k} onClick={() => setFiltro(k)} style={{ whiteSpace: "nowrap", padding: "6px 14px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 13, fontWeight: filtro === k ? 700 : 500, background: filtro === k ? "#7b1a0a" : "#f0f0f0", color: filtro === k ? "#fff" : "#555", transition: "all 0.15s" }}>
-                  {l}{k !== "todos" && counts[k] > 0 && <span style={{ marginLeft: 5, background: filtro === k ? "rgba(255,255,255,0.3)" : "#7b1a0a", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 11, fontWeight: 800 }}>{counts[k]}</span>}
+                <button key={k} onClick={() => setFiltro(k)} style={{ whiteSpace: "nowrap", padding: "6px 14px", borderRadius: 20, border: `1px solid ${filtro===k ? T.wine : T.grayL}`, cursor: "pointer", fontSize: 13, fontWeight: filtro === k ? 600 : 400, background: filtro === k ? T.wine : T.white, color: filtro === k ? T.white : T.gray, transition: "all 0.15s", fontFamily: "'DM Sans',sans-serif" }}>
+                  {l}{k !== "todos" && counts[k] > 0 && <span style={{ marginLeft: 5, background: filtro===k ? "rgba(255,255,255,0.25)" : T.wineL, color: filtro===k ? T.white : T.wine, borderRadius: 10, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{counts[k]}</span>}
                 </button>
               ))}
             </div>
@@ -1861,9 +1899,9 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
           {/* Conteúdo das abas */}
           {aba === "pedidos" && (
-            <div style={{ padding: "16px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 12 }}>
+            <div style={{ padding: "20px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 14 }}>
               {pf.length === 0
-                ? <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "80px 20px", color: "#bbb", fontSize: 16 }}><div style={{ fontSize: 50, marginBottom: 12 }}>🍢</div>Nenhum pedido encontrado.</div>
+                ? <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "80px 20px", color: T.gray, fontSize: 16 }}><div style={{ fontSize: 50, marginBottom: 12, opacity: 0.3 }}>🍢</div>Nenhum pedido encontrado.</div>
                 : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} atualizando={!!atualizando[p.id]} />)
               }
             </div>
@@ -1882,20 +1920,21 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
       {/* BARRA INFERIOR MOBILE — oculta para garçom/caixa */}
       {!abrirSalao && <div className="mobile-nav" style={{ display: "none" }}>
-        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: "2px solid #f0f0f0", display: "flex", zIndex: 50, boxShadow: "0 -4px 20px rgba(0,0,0,0.1)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: T.white, borderTop: `1px solid ${T.grayL}`, display: "flex", zIndex: 50, boxShadow: "0 -4px 20px rgba(28,25,23,0.08)", paddingBottom: "env(safe-area-inset-bottom)" }}>
           {abas.map(([k, icon, label]) => (
-            <button key={k} onClick={() => setAba(k)} style={{ flex: 1, padding: "8px 2px 10px", border: "none", background: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: aba === k ? "#7b1a0a" : "#aaa", position: "relative", transition: "color 0.15s" }}>
-              <span style={{ fontSize: aba === k ? 22 : 20, transition: "font-size 0.15s" }}>{icon}</span>
-              <span style={{ fontSize: 9, fontWeight: aba === k ? 800 : 400, whiteSpace: "nowrap" }}>{label}</span>
-              {aba === k && <div style={{ position: "absolute", top: 0, left: "15%", right: "15%", height: 2, background: "#7b1a0a", borderRadius: "0 0 4px 4px" }} />}
-              {k === "pedidos" && novos > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: "#f59e0b", color: "#fff", borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{novos}</span>}
-              {k === "salao" && mesasPendentes > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: "#8b5cf6", color: "#fff", borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{mesasPendentes}</span>}
+            <button key={k} onClick={() => setAba(k)} style={{ flex: 1, padding: "8px 2px 10px", border: "none", background: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: aba === k ? T.wine : T.gray, position: "relative", transition: "color 0.15s" }}>
+              <span style={{ fontSize: aba === k ? 21 : 19, transition: "font-size 0.15s" }}>{icon}</span>
+              <span style={{ fontSize: 9, fontWeight: aba === k ? 700 : 400, whiteSpace: "nowrap" }}>{label}</span>
+              {aba === k && <div style={{ position: "absolute", top: 0, left: "20%", right: "20%", height: 2, background: T.wine, borderRadius: "0 0 4px 4px" }} />}
+              {k === "pedidos" && novos > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: T.amber, color: T.white, borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{novos}</span>}
+              {k === "salao" && mesasPendentes > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: T.purple, color: T.white, borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{mesasPendentes}</span>}
             </button>
           ))}
         </div>
       </div>}
 
       <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
         @media (max-width: 768px) {
           .header-desktop { display: none !important; }
           .header-mobile { display: block !important; }
@@ -1908,8 +1947,12 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           .mobile-nav { display: none !important; }
         }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
-        ::-webkit-scrollbar { width: 4px; height: 4px; }
-        ::-webkit-scrollbar-thumb { background: rgba(123,26,10,0.2); border-radius: 4px; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(139,38,53,0.15); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(139,38,53,0.3); }
+        button { transition: all 0.15s ease; }
+        * { box-sizing: border-box; }
       `}</style>
     </div>
   );
