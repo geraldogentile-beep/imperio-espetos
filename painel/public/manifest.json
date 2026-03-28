@@ -1,13 +1,19 @@
 {
-  "name": "Império dos Espetos — Painel",
-  "short_name": "Império",
-  "description": "Painel de pedidos do Império dos Espetos e Grill",
+  "name": "Império dos Espetos",
+  "short_name": "Império 👑",
+  "description": "Sistema de pedidos — Império dos Espetos e Grill",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f5f5f5",
   "theme_color": "#6b1c0e",
-  "orientation": "portrait",
+  "orientation": "portrait-primary",
   "icons": [
+    {
+      "src": "/icon-512.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
@@ -20,5 +26,14 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "display_override": [
+    "standalone",
+    "fullscreen"
+  ],
+  "categories": [
+    "food",
+    "business"
+  ],
+  "lang": "pt-BR"
 }
