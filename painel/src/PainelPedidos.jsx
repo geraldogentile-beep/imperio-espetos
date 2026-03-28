@@ -1495,9 +1495,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.7}}>Total</div><div style={{fontWeight:800,fontSize:18,color:"#f0c040"}}>{fmtR(totalAcumulado)}</div></div>
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
-            <input value={mesa.cliente||""} onChange={e=>upd({...mesa,cliente:e.target.value})} placeholder="🧑 Nome do cliente..." style={{background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.3)",color:"#fff",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
+            <input value={mesa.cliente||""} onChange={e=>upd({...mesa,cliente:e.target.value})} placeholder="🧑 Nome do cliente..." style={{background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
             <div style={{display:"flex",gap:8}}>
-              <input value={mesa.garcom||""} onChange={e=>upd({...mesa,garcom:e.target.value})} placeholder="👤 Garçom..." style={{flex:1,background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.3)",color:"#fff",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
+              <input value={mesa.garcom||""} onChange={e=>upd({...mesa,garcom:e.target.value})} placeholder="👤 Garçom..." style={{flex:1,background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
               <button onClick={()=>upd({...mesa,status:mesa.status==="chamando"?"ocupada":"chamando"})} style={{background:mesa.status==="chamando"?"#f59e0b":"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontWeight:700,fontSize:12}}>
                 🔔 {mesa.status==="chamando"?"Cancelar":"Chamar"}
               </button>
