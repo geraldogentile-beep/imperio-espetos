@@ -1,6 +1,6 @@
 {
   "name": "Império dos Espetos",
-  "short_name": "Império 👑",
+  "short_name": "Império",
   "description": "Sistema de pedidos — Império dos Espetos e Grill",
   "start_url": "/",
   "display": "standalone",
@@ -8,12 +8,6 @@
   "theme_color": "#6b1c0e",
   "orientation": "portrait-primary",
   "icons": [
-    {
-      "src": "/icon-512.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
-    },
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
