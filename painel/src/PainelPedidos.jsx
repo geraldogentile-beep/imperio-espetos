@@ -16,49 +16,10 @@ const hoje = new Date();
 function diasAtras(n) { const d = new Date(hoje); d.setDate(d.getDate() - n); return d.toISOString(); }
 function isMesmosDias(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
 
-const MOCK_PEDIDOS = [
-  { id: "012", cliente: "Pedro Lima",    telefone: "11977776543", endereco: "Rua XV, 789",          cep: "01310200", itens: [{ nome: "Churrasco Grego", qty: 1, preco: 18 }, { nome: "Guaraná 2L", qty: 1, preco: 14 }],              status: "novo",     horario: diasAtras(0),  obs: "Sem molho",       tempoPreparo: 40, desconto: 0,   cupom: "" },
-  { id: "011", cliente: "Maria Costa",   telefone: "11988887654", endereco: "Av. Brasil, 456",      cep: "01311100", itens: [{ nome: "Frango", qty: 3, preco: 9 }, { nome: "Heineken Long Neck", qty: 2, preco: 10 }],                status: "entregue", horario: diasAtras(0),  obs: "",               tempoPreparo: 35, desconto: 4.7, cupom: "BEMVINDO10" },
-  { id: "010", cliente: "João Silva",    telefone: "11999991234", endereco: "Rua das Flores, 123",  cep: "01310100", itens: [{ nome: "Picanha meia lua", qty: 2, preco: 15 }, { nome: "Coca-Cola 2L", qty: 1, preco: 14 }],            status: "entregue", horario: diasAtras(0),  obs: "",               tempoPreparo: 45, desconto: 0,   cupom: "" },
-  { id: "009", cliente: "João Silva",    telefone: "11999991234", endereco: "Rua das Flores, 123",  cep: "01310100", itens: [{ nome: "Picanha meia lua", qty: 1, preco: 15 }, { nome: "Frango", qty: 2, preco: 9 }],                  status: "entregue", horario: diasAtras(3),  obs: "",               tempoPreparo: 40, desconto: 0,   cupom: "" },
-  { id: "008", cliente: "Ana Souza",     telefone: "11966665432", endereco: "Rua Ipiranga, 321",    cep: "01312000", itens: [{ nome: "Alcatra", qty: 4, preco: 9 }, { nome: "Sprite Lata", qty: 2, preco: 6 }],                      status: "entregue", horario: diasAtras(1),  obs: "",               tempoPreparo: 40, desconto: 5,   cupom: "FRETE0" },
-  { id: "007", cliente: "Carlos Mendes", telefone: "11955554321", endereco: "Av. Paulista, 100",    cep: "01311000", itens: [{ nome: "Cordeiro", qty: 2, preco: 13 }, { nome: "Chopp", qty: 3, preco: 10 }],                         status: "entregue", horario: diasAtras(1),  obs: "",               tempoPreparo: 50, desconto: 0,   cupom: "" },
-  { id: "006", cliente: "Maria Costa",   telefone: "11988887654", endereco: "Av. Brasil, 456",      cep: "01311100", itens: [{ nome: "Kafta com queijo", qty: 3, preco: 11 }, { nome: "Monster", qty: 1, preco: 12 }],               status: "entregue", horario: diasAtras(5),  obs: "Capricha no sal", tempoPreparo: 42, desconto: 0,   cupom: "" },
-  { id: "005", cliente: "Roberto Alves", telefone: "11933332109", endereco: "Rua Oscar Freire, 50", cep: "01413001", itens: [{ nome: "Medalhão mignon", qty: 2, preco: 11 }, { nome: "Brahma Lata", qty: 4, preco: 7 }],             status: "entregue", horario: diasAtras(2),  obs: "",               tempoPreparo: 43, desconto: 0,   cupom: "" },
-  { id: "004", cliente: "Ana Souza",     telefone: "11966665432", endereco: "Rua Ipiranga, 321",    cep: "01312000", itens: [{ nome: "Picanha meia lua", qty: 3, preco: 15 }, { nome: "Coca-Cola Lata", qty: 3, preco: 6 }],          status: "entregue", horario: diasAtras(8),  obs: "",               tempoPreparo: 47, desconto: 0,   cupom: "" },
-  { id: "003", cliente: "João Silva",    telefone: "11999991234", endereco: "Rua das Flores, 123",  cep: "01310100", itens: [{ nome: "Frango", qty: 5, preco: 9 }, { nome: "Linguiça", qty: 2, preco: 9 }],                         status: "entregue", horario: diasAtras(10), obs: "",               tempoPreparo: 40, desconto: 0,   cupom: "" },
-  { id: "002", cliente: "Juliana Neves", telefone: "11900009876", endereco: "Rua Consolação, 400",  cep: "01301000", itens: [{ nome: "Churrasco Grego", qty: 2, preco: 18 }, { nome: "Heineken Long Neck", qty: 3, preco: 10 }],     status: "entregue", horario: diasAtras(6),  obs: "",               tempoPreparo: 50, desconto: 0,   cupom: "" },
-  { id: "001", cliente: "Carlos Mendes", telefone: "11955554321", endereco: "Av. Paulista, 100",    cep: "01311000", itens: [{ nome: "Alcatra com legumes", qty: 3, preco: 9 }, { nome: "Queijo coalho", qty: 2, preco: 10 }],        status: "entregue", horario: diasAtras(15), obs: "",               tempoPreparo: 42, desconto: 0,   cupom: "" },
-];
-
-const MOCK_CARDAPIO = [
-  { id: 1,  categoria: "Tradicionais",    nome: "Alcatra",                preco: 9.00,  tempoPreparo: 15, ativo: true,  obs: null },
-  { id: 3,  categoria: "Tradicionais",    nome: "Frango",                 preco: 9.00,  tempoPreparo: 12, ativo: true,  obs: null },
-  { id: 6,  categoria: "Tradicionais",    nome: "Linguiça",               preco: 9.00,  tempoPreparo: 10, ativo: true,  obs: null },
-  { id: 9,  categoria: "Tradicionais",    nome: "Pão de alho",            preco: 8.00,  tempoPreparo: 5,  ativo: true,  obs: null },
-  { id: 10, categoria: "Especiais",       nome: "Picanha meia lua",       preco: 15.00, tempoPreparo: 20, ativo: true,  obs: "no sal grosso" },
-  { id: 11, categoria: "Especiais",       nome: "Cordeiro",               preco: 13.00, tempoPreparo: 25, ativo: true,  obs: null },
-  { id: 12, categoria: "Especiais",       nome: "Kafta com queijo",       preco: 11.00, tempoPreparo: 15, ativo: false, obs: null },
-  { id: 16, categoria: "Especiais",       nome: "Queijo coalho",          preco: 10.00, tempoPreparo: 8,  ativo: true,  obs: null },
-  { id: 17, categoria: "Doces",           nome: "Romeu e Julieta",        preco: 11.00, tempoPreparo: 8,  ativo: true,  obs: null },
-  { id: 20, categoria: "Churrasco Grego", nome: "Churrasco Grego",        preco: 18.00, tempoPreparo: 25, ativo: true,  obs: null },
-  { id: 21, categoria: "Acompanhamentos", nome: "Vinagrete",              preco: 2.00,  tempoPreparo: 2,  ativo: true,  obs: null },
-  { id: 47, categoria: "Energético",      nome: "Monster",                preco: 12.00, tempoPreparo: 1,  ativo: true,  obs: null },
-];
-
-const MOCK_CUPONS = [
-  { codigo: "BEMVINDO10", tipo: "percentual", valor: 10, ativo: true, usoMax: 100, usoAtual: 12, validade: null, descricao: "10% boas-vindas" },
-  { codigo: "FRETE0",     tipo: "frete",      valor: 0,  ativo: true, usoMax: 50,  usoAtual: 8,  validade: null, descricao: "Frete grátis" },
-];
-
-const MOCK_AVALIACOES = [
-  { pedidoId: "011", cliente: "Maria Costa",   nota: 5, horario: diasAtras(0) },
-  { pedidoId: "010", cliente: "João Silva",    nota: 4, horario: diasAtras(0) },
-  { pedidoId: "008", cliente: "Ana Souza",     nota: 5, horario: diasAtras(1) },
-  { pedidoId: "007", cliente: "Carlos Mendes", nota: 3, horario: diasAtras(1) },
-  { pedidoId: "006", cliente: "Maria Costa",   nota: 5, horario: diasAtras(5) },
-  { pedidoId: "005", cliente: "Roberto Alves", nota: 4, horario: diasAtras(2) },
-];
+const MOCK_PEDIDOS    = [];
+const MOCK_CARDAPIO   = [];
+const MOCK_CUPONS     = [];
+const MOCK_AVALIACOES = [];
 
 const DEFAULT_CONFIG = {
   nomeEstabelecimento: "Império dos Espetos e Grill",
@@ -1691,7 +1652,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   }); // persiste entre recargas, zera automaticamente a cada novo dia
   const [selSalao, setSelSalao] = useState(null); // mesa selecionada — persiste
   const [telaSalao, setTelaSalaoGlobal] = useState("mapa"); // tela atual — persiste
-  const ant = useRef(new Set(MOCK_PEDIDOS.map(p => p.id)));
+  const ant = useRef(new Set());
   const actx = useRef(null);
 
   const tocarSom = useCallback(() => {
