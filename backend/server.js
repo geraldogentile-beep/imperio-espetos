@@ -11,6 +11,7 @@ import pino from "pino";
 import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
+import mongoose from "mongoose";
 
 const app = express();
 app.use(express.json());
@@ -25,8 +26,99 @@ app.use((req, res, next) => {
 // ── ENV ───────────────────────────────────────────────────────
 const ENV = {
   ANTHROPIC_KEY: process.env.ANTHROPIC_KEY || "sua-chave-anthropic-aqui",
+  MONGO_URI:     process.env.MONGO_URI     || "mongodb+srv://geraldogentile_db_user:p6AEJhBDgj9YXOgm@cluster0.l4v1ubi.mongodb.net/imperioespetos?appName=Cluster0",
   PORT:          process.env.PORT          || 3000,
 };
+
+// ── MONGODB — SCHEMAS & CONEXÃO ──────────────────────────────
+const PedidoSchema = new mongoose.Schema({
+  id: String, cliente: String, telefone: String, endereco: String,
+  itens: Array, subtotal: Number, desconto: Number, cupom: String,
+  total: Number, obs: String, tempoPreparo: Number,
+  status: { type: String, default: "novo" },
+  horario: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+const CupomSchema = new mongoose.Schema({
+  codigo: String, tipo: String, valor: Number, ativo: Boolean,
+  usoMax: Number, usoAtual: { type: Number, default: 0 },
+  validade: Date, descricao: String,
+});
+
+const AvaliacaoSchema = new mongoose.Schema({
+  pedidoId: String, telefone: String, cliente: String,
+  nota: Number, horario: { type: Date, default: Date.now },
+});
+
+const FidelidadeSchema = new mongoose.Schema({
+  telefone: { type: String, unique: true },
+  pedidosEntregues: { type: Number, default: 0 },
+  brindesGanhos: { type: Number, default: 0 },
+});
+
+const ConfigSchema = new mongoose.Schema({
+  chave: { type: String, unique: true },
+  valor: mongoose.Schema.Types.Mixed,
+});
+
+const CardapioSchema = new mongoose.Schema({
+  id: Number, categoria: String, nome: String, preco: Number,
+  tempoPreparo: Number, ativo: Boolean, obs: String,
+});
+
+const VendaSalaoSchema = new mongoose.Schema({
+  mesa: Number, cliente: String, garcom: String,
+  itens: Array, total: Number, pagamento: String,
+  abertura: Date, fechamento: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+const PedidoDB    = mongoose.model("Pedido",    PedidoSchema);
+const CupomDB     = mongoose.model("Cupom",     CupomSchema);
+const AvaliacaoDB = mongoose.model("Avaliacao", AvaliacaoSchema);
+const FidelidadeDB = mongoose.model("Fidelidade", FidelidadeSchema);
+const ConfigDB    = mongoose.model("Config",    ConfigSchema);
+const CardapioDB  = mongoose.model("Cardapio",  CardapioSchema);
+const VendaSalaoDB = mongoose.model("VendaSalao", VendaSalaoSchema);
+
+async function conectarMongo() {
+  try {
+    await mongoose.connect(ENV.MONGO_URI);
+    console.log("✅ MongoDB conectado!");
+    await inicializarDados();
+  } catch (e) {
+    console.error("⚠️  MongoDB falhou — usando memória:", e.message);
+  }
+}
+
+async function inicializarDados() {
+  // Inicializa cardápio se vazio
+  const totalCardapio = await CardapioDB.countDocuments();
+  if (totalCardapio === 0) {
+    await CardapioDB.insertMany(CARDAPIO);
+    console.log("📦 Cardápio inicializado no banco!");
+  } else {
+    CARDAPIO = await CardapioDB.find().lean();
+  }
+
+  // Inicializa cupons se vazio
+  const totalCupons = await CupomDB.countDocuments();
+  if (totalCupons === 0) {
+    await CupomDB.insertMany(cupons);
+    console.log("🎟️  Cupons inicializados no banco!");
+  } else {
+    cupons = await CupomDB.find().lean();
+  }
+
+  // Carrega config salva
+  const cfgSalva = await ConfigDB.findOne({ chave: "config" });
+  if (cfgSalva) CONFIG = { ...CONFIG, ...cfgSalva.valor };
+
+  // Carrega counter de pedidos
+  const ultimoPedido = await PedidoDB.findOne().sort({ horario: -1 }).lean();
+  if (ultimoPedido?.id) counter = parseInt(ultimoPedido.id) + 1;
+
+  console.log("✅ Dados carregados do banco!");
+}
 
 // ── ESTADO DO WHATSAPP ────────────────────────────────────────
 let sock = null;
@@ -125,6 +217,9 @@ const fidelidadeClientes = new Map();
 function getFidelidade(tel) {
   if (!fidelidadeClientes.has(tel)) fidelidadeClientes.set(tel, { pedidosEntregues: 0, brindesGanhos: 0 });
   return fidelidadeClientes.get(tel);
+}
+async function salvarFidelidade(tel, dados) {
+  try { await FidelidadeDB.updateOne({ telefone: tel }, { $set: dados }, { upsert: true }); } catch {}
 }
 
 // ── AVALIAÇÕES ────────────────────────────────────────────────
@@ -362,7 +457,9 @@ async function conectarWhatsApp() {
         if (nota >= 1 && nota <= 5) {
           const pedidoId = aguardandoAvaliacao.get(tel);
           const pedido = pedidos.find(p => p.id === pedidoId);
-          avaliacoes.push({ pedidoId, telefone: tel, cliente: pedido?.cliente || tel, nota, horario: new Date().toISOString() });
+          const novaAv = { pedidoId, telefone: tel, cliente: pedido?.cliente || tel, nota, horario: new Date().toISOString() };
+            avaliacoes.push(novaAv);
+            try { await AvaliacaoDB.create(novaAv); } catch {}
           aguardandoAvaliacao.delete(tel);
           const agradecimento = CONFIG.avaliacao.mensagemObrigado.replace(/{cliente}/g, pedido?.cliente || "");
           await enviarMsg(tel, agradecimento);
@@ -388,6 +485,7 @@ async function conectarWhatsApp() {
           const tempoPreparo = calcularTempoPreparo(dadosPedido.itens);
           const pedido = { id: String(counter++).padStart(3, "0"), ...dadosPedido, telefone: tel, tempoPreparo, status: "novo", horario: new Date().toISOString() };
           pedidos.push(pedido);
+          try { await PedidoDB.create(pedido); } catch {}
           console.log(`📦 Pedido #${pedido.id} — ${pedido.cliente}`);
           await enviarMsg(tel, resposta);
           await enviarMsg(tel, `⏱️ Tempo estimado: *${tempoPreparo} minutos*`);
@@ -436,13 +534,17 @@ app.get("/qrcode", (req, res) => {
 });
 
 // ── PEDIDOS API ───────────────────────────────────────────────
-app.get("/pedidos", (req, res) => res.json(pedidos));
+app.get("/pedidos", async (req, res) => { try { const lista = await PedidoDB.find().sort({ horario: -1 }).lean(); res.json(lista); } catch { res.json(pedidos); } });
 
 app.patch("/pedidos/:id/status", async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
   if (!["novo","preparando","entrega","entregue","cancelado"].includes(status)) return res.status(400).json({ erro: "Status inválido" });
-  const pedido = pedidos.find(p => p.id === id);
+  let pedido = pedidos.find(p => p.id === id);
+  try {
+    const atualizado = await PedidoDB.findOneAndUpdate({ id }, { status }, { new: true }).lean();
+    if (atualizado) pedido = atualizado;
+  } catch {}
   if (!pedido) return res.status(404).json({ erro: "Pedido não encontrado" });
   pedido.status = status;
   await enviarMsgStatus(pedido, status);
@@ -468,25 +570,31 @@ app.post("/whatsapp/logout", async (req, res) => {
 });
 
 // ── CUPONS API ────────────────────────────────────────────────
-app.get("/cupons", (req, res) => res.json(cupons));
-app.post("/cupons", (req, res) => {
+app.get("/cupons", async (req, res) => { try { const lista = await CupomDB.find().lean(); res.json(lista); } catch { res.json(cupons); } });
+app.post("/cupons", async (req, res) => {
   const { codigo, tipo, valor, usoMax, validade, descricao } = req.body;
   if (!codigo || !tipo || valor === undefined) return res.status(400).json({ erro: "codigo, tipo e valor obrigatórios" });
-  if (cupons.find(c => c.codigo.toUpperCase() === codigo.toUpperCase())) return res.status(400).json({ erro: "Código já existe" });
   const novo = { codigo: codigo.toUpperCase(), tipo, valor: parseFloat(valor), ativo: true, usoMax: usoMax || null, usoAtual: 0, validade: validade || null, descricao: descricao || "" };
-  cupons.push(novo);
-  res.status(201).json(novo);
+  try {
+    const existe = await CupomDB.findOne({ codigo: novo.codigo });
+    if (existe) return res.status(400).json({ erro: "Código já existe" });
+    const criado = await CupomDB.create(novo);
+    cupons.push(novo);
+    res.status(201).json(criado);
+  } catch { cupons.push(novo); res.status(201).json(novo); }
 });
-app.patch("/cupons/:codigo/ativo", (req, res) => {
-  const cupom = cupons.find(c => c.codigo === req.params.codigo.toUpperCase());
-  if (!cupom) return res.status(404).json({ erro: "Cupom não encontrado" });
-  cupom.ativo = req.body.ativo;
-  res.json(cupom);
+app.patch("/cupons/:codigo/ativo", async (req, res) => {
+  const codigo = req.params.codigo.toUpperCase();
+  try { await CupomDB.updateOne({ codigo }, { ativo: req.body.ativo }); } catch {}
+  const cupom = cupons.find(c => c.codigo === codigo);
+  if (cupom) cupom.ativo = req.body.ativo;
+  res.json(cupom || { codigo, ativo: req.body.ativo });
 });
-app.delete("/cupons/:codigo", (req, res) => {
-  const idx = cupons.findIndex(c => c.codigo === req.params.codigo.toUpperCase());
-  if (idx === -1) return res.status(404).json({ erro: "Cupom não encontrado" });
-  const [removido] = cupons.splice(idx, 1);
+app.delete("/cupons/:codigo", async (req, res) => {
+  const codigo = req.params.codigo.toUpperCase();
+  try { await CupomDB.deleteOne({ codigo }); } catch {}
+  const idx = cupons.findIndex(c => c.codigo === codigo);
+  const removido = idx !== -1 ? cupons.splice(idx, 1)[0] : { codigo };
   res.json({ ok: true, removido });
 });
 app.post("/cupons/validar", (req, res) => {
@@ -495,65 +603,114 @@ app.post("/cupons/validar", (req, res) => {
 });
 
 // ── AVALIAÇÕES API ────────────────────────────────────────────
-app.get("/avaliacoes", (req, res) => res.json(avaliacoes));
-app.get("/avaliacoes/resumo", (req, res) => {
-  if (!avaliacoes.length) return res.json({ media: 0, total: 0, distribuicao: {} });
-  const media = avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length;
-  const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  avaliacoes.forEach(a => dist[a.nota]++);
-  res.json({ media: parseFloat(media.toFixed(1)), total: avaliacoes.length, distribuicao: dist });
+app.get("/avaliacoes", async (req, res) => { try { const lista = await AvaliacaoDB.find().sort({ horario: -1 }).lean(); res.json(lista); } catch { res.json(avaliacoes); } });
+app.get("/avaliacoes/resumo", async (req, res) => {
+  try {
+    const lista = await AvaliacaoDB.find().lean();
+    if (!lista.length) return res.json({ media: 0, total: 0, distribuicao: {} });
+    const media = lista.reduce((s, a) => s + a.nota, 0) / lista.length;
+    const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    lista.forEach(a => dist[a.nota]++);
+    res.json({ media: parseFloat(media.toFixed(1)), total: lista.length, distribuicao: dist });
+  } catch {
+    if (!avaliacoes.length) return res.json({ media: 0, total: 0, distribuicao: {} });
+    const media = avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length;
+    res.json({ media: parseFloat(media.toFixed(1)), total: avaliacoes.length, distribuicao: {} });
+  }
 });
 
 // ── FIDELIDADE API ────────────────────────────────────────────
-app.get("/fidelidade", (req, res) => {
-  const lista = [...fidelidadeClientes.entries()].map(([tel, f]) => {
-    const pedido = pedidos.filter(p => p.telefone === tel).slice(-1)[0];
-    return { telefone: tel, cliente: pedido?.cliente || tel, ...f };
-  });
-  res.json(lista);
+app.get("/fidelidade", async (req, res) => {
+  try {
+    const lista = await FidelidadeDB.find().lean();
+    const result = await Promise.all(lista.map(async f => {
+      const pedido = await PedidoDB.findOne({ telefone: f.telefone }).sort({ horario: -1 }).lean();
+      return { ...f, cliente: pedido?.cliente || f.telefone };
+    }));
+    res.json(result);
+  } catch {
+    const lista = [...fidelidadeClientes.entries()].map(([tel, f]) => ({ telefone: tel, ...f }));
+    res.json(lista);
+  }
 });
 
 // ── CARDÁPIO API ──────────────────────────────────────────────
 app.get("/cardapio", (req, res) => res.json(CARDAPIO));
-app.post("/cardapio", (req, res) => {
+app.post("/cardapio", async (req, res) => {
   const { categoria, nome, preco, tempoPreparo, obs } = req.body;
   if (!categoria || !nome || !preco) return res.status(400).json({ erro: "categoria, nome e preco obrigatórios" });
   const item = { id: nextItemId++, categoria, nome, preco: parseFloat(preco), tempoPreparo: parseInt(tempoPreparo) || 10, ativo: true, obs: obs || null };
+  try { await CardapioDB.create(item); } catch {}
   CARDAPIO.push(item);
   res.status(201).json(item);
 });
-app.put("/cardapio/:id", (req, res) => {
-  const idx = CARDAPIO.findIndex(i => i.id === parseInt(req.params.id));
+app.put("/cardapio/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
-  CARDAPIO[idx] = { ...CARDAPIO[idx], ...req.body, id: parseInt(req.params.id) };
+  CARDAPIO[idx] = { ...CARDAPIO[idx], ...req.body, id };
+  try { await CardapioDB.updateOne({ id }, { $set: req.body }); } catch {}
   res.json(CARDAPIO[idx]);
 });
-app.patch("/cardapio/:id/ativo", (req, res) => {
-  const item = CARDAPIO.find(i => i.id === parseInt(req.params.id));
+app.patch("/cardapio/:id/ativo", async (req, res) => {
+  const id = parseInt(req.params.id);
+  const item = CARDAPIO.find(i => i.id === id);
   if (!item) return res.status(404).json({ erro: "Item não encontrado" });
   item.ativo = req.body.ativo;
+  try { await CardapioDB.updateOne({ id }, { ativo: req.body.ativo }); } catch {}
   res.json(item);
 });
-app.delete("/cardapio/:id", (req, res) => {
-  const idx = CARDAPIO.findIndex(i => i.id === parseInt(req.params.id));
+app.delete("/cardapio/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   const [removido] = CARDAPIO.splice(idx, 1);
+  try { await CardapioDB.deleteOne({ id }); } catch {}
   res.json({ ok: true, removido });
 });
 
 // ── CONFIG API ────────────────────────────────────────────────
 app.get("/config", (req, res) => res.json(CONFIG));
-app.put("/config", (req, res) => { CONFIG = { ...CONFIG, ...req.body }; res.json(CONFIG); });
-app.put("/config/horario", (req, res) => { CONFIG.horarioFuncionamento = { ...CONFIG.horarioFuncionamento, ...req.body }; res.json(CONFIG.horarioFuncionamento); });
-app.put("/config/mensagens", (req, res) => { CONFIG.mensagensAutomaticas = { ...CONFIG.mensagensAutomaticas, ...req.body }; res.json(CONFIG.mensagensAutomaticas); });
-app.put("/config/fidelidade", (req, res) => { CONFIG.fidelidade = { ...CONFIG.fidelidade, ...req.body }; res.json(CONFIG.fidelidade); });
-app.put("/config/avaliacao", (req, res) => { CONFIG.avaliacao = { ...CONFIG.avaliacao, ...req.body }; res.json(CONFIG.avaliacao); });
+async function salvarConfig() { try { await ConfigDB.updateOne({ chave: "config" }, { valor: CONFIG }, { upsert: true }); } catch {} }
+app.put("/config", async (req, res) => { CONFIG = { ...CONFIG, ...req.body }; await salvarConfig(); res.json(CONFIG); });
+app.put("/config/horario", async (req, res) => { CONFIG.horarioFuncionamento = { ...CONFIG.horarioFuncionamento, ...req.body }; await salvarConfig(); res.json(CONFIG.horarioFuncionamento); });
+app.put("/config/mensagens", async (req, res) => { CONFIG.mensagensAutomaticas = { ...CONFIG.mensagensAutomaticas, ...req.body }; await salvarConfig(); res.json(CONFIG.mensagensAutomaticas); });
+app.put("/config/fidelidade", async (req, res) => { CONFIG.fidelidade = { ...CONFIG.fidelidade, ...req.body }; await salvarConfig(); res.json(CONFIG.fidelidade); });
+app.put("/config/avaliacao", async (req, res) => { CONFIG.avaliacao = { ...CONFIG.avaliacao, ...req.body }; await salvarConfig(); res.json(CONFIG.avaliacao); });
 app.get("/config/status-loja", (req, res) => res.json({ aberto: estaAberto(), proximaAbertura: proximaAbertura() }));
+
+// ── VENDAS SALÃO API ─────────────────────────────────────────
+app.get("/vendas-salao", async (req, res) => {
+  try {
+    const hoje = new Date(); hoje.setHours(0,0,0,0);
+    const lista = await VendaSalaoDB.find({ fechamento: { $gte: hoje } }).sort({ fechamento: -1 }).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+app.post("/vendas-salao", async (req, res) => {
+  try { const venda = await VendaSalaoDB.create(req.body); res.status(201).json(venda); }
+  catch (e) { res.status(500).json({ erro: e.message }); }
+});
+app.delete("/vendas-salao/:id", async (req, res) => {
+  try { await VendaSalaoDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ erro: e.message }); }
+});
+app.get("/vendas-salao/historico", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = {};
+    if (de) filtro.fechamento = { $gte: new Date(de) };
+    if (ate) filtro.fechamento = { ...filtro.fechamento, $lte: new Date(ate) };
+    const lista = await VendaSalaoDB.find(filtro).sort({ fechamento: -1 }).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
 
 // ── HEALTH ────────────────────────────────────────────────────
 app.get("/health", (req, res) => res.json({
-  status: "ok", versao: "5.0",
+  status: "ok", versao: "5.1",
   whatsapp: whatsappStatus,
+  mongodb: mongoose.connection.readyState === 1 ? "conectado" : "memória",
   aberto: estaAberto(),
   pedidos: pedidos.length,
   avaliacoes: avaliacoes.length,
@@ -572,5 +729,6 @@ app.listen(ENV.PORT, async () => {
   ║   GET /health    → status geral                  ║
   ╚══════════════════════════════════════════════════╝
   `);
+  await conectarMongo();
   await conectarWhatsApp();
 });
