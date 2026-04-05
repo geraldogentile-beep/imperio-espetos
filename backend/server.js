@@ -67,10 +67,17 @@ const CardapioSchema = new mongoose.Schema({
 });
 
 const VendaSalaoSchema = new mongoose.Schema({
-  mesa: Number, cliente: String, garcom: String,
+  mesa: Number, cliente: String, garcom: String, garcomId: String,
   itens: Array, total: Number, pagamento: String,
   abertura: Date, fechamento: { type: Date, default: Date.now },
 }, { timestamps: true });
+
+const GarcomSchema = new mongoose.Schema({
+  nome: { type: String, required: true },
+  pin:  { type: String, required: true, unique: true },
+  ativo: { type: Boolean, default: true },
+  criadoEm: { type: Date, default: Date.now },
+});
 
 const PedidoDB    = mongoose.model("Pedido",    PedidoSchema);
 const CupomDB     = mongoose.model("Cupom",     CupomSchema);
@@ -79,6 +86,7 @@ const FidelidadeDB = mongoose.model("Fidelidade", FidelidadeSchema);
 const ConfigDB    = mongoose.model("Config",    ConfigSchema);
 const CardapioDB  = mongoose.model("Cardapio",  CardapioSchema);
 const VendaSalaoDB = mongoose.model("VendaSalao", VendaSalaoSchema);
+const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
 
 async function conectarMongo() {
   try {
@@ -704,6 +712,98 @@ app.get("/vendas-salao/historico", async (req, res) => {
     const lista = await VendaSalaoDB.find(filtro).sort({ fechamento: -1 }).lean();
     res.json(lista);
   } catch { res.json([]); }
+});
+
+// ── GARÇONS API ───────────────────────────────────────────────
+app.get("/garcons", async (req, res) => {
+  try {
+    const lista = await GarcomDB.find().lean();
+    res.json(lista.map(g => ({ ...g, pin: undefined }))); // nunca expõe o PIN
+  } catch { res.json([]); }
+});
+
+app.post("/garcons", async (req, res) => {
+  const { nome, pin } = req.body;
+  if (!nome || !pin) return res.status(400).json({ erro: "nome e pin são obrigatórios" });
+  if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter exatamente 4 dígitos" });
+  try {
+    const existe = await GarcomDB.findOne({ pin });
+    if (existe) return res.status(400).json({ erro: "Esse PIN já está em uso por outro garçom" });
+    const garcom = await GarcomDB.create({ nome: nome.trim(), pin, ativo: true });
+    const obj = garcom.toObject(); delete obj.pin;
+    res.status(201).json(obj);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.put("/garcons/:id", async (req, res) => {
+  const { nome, pin, ativo } = req.body;
+  const update = {};
+  if (nome) update.nome = nome.trim();
+  if (ativo !== undefined) update.ativo = ativo;
+  if (pin) {
+    if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN inválido" });
+    const existe = await GarcomDB.findOne({ pin, _id: { $ne: req.params.id } });
+    if (existe) return res.status(400).json({ erro: "PIN já em uso" });
+    update.pin = pin;
+  }
+  try {
+    const g = await GarcomDB.findByIdAndUpdate(req.params.id, update, { new: true }).lean();
+    if (!g) return res.status(404).json({ erro: "Garçom não encontrado" });
+    const obj = { ...g }; delete obj.pin;
+    res.json(obj);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.delete("/garcons/:id", async (req, res) => {
+  try { await GarcomDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Verifica PIN do garçom no login (não expõe lista de PINs)
+app.post("/garcons/verificar-pin", async (req, res) => {
+  const { pin } = req.body;
+  if (!pin) return res.status(400).json({ erro: "pin obrigatório" });
+  try {
+    const g = await GarcomDB.findOne({ pin, ativo: true }).lean();
+    if (!g) return res.status(404).json({ erro: "PIN não encontrado ou garçom inativo" });
+    res.json({ nome: g.nome, id: g._id });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Relatório de desempenho por garçom
+app.get("/garcons/relatorio", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = {};
+    if (de) filtro.fechamento = { $gte: new Date(de) };
+    if (ate) filtro.fechamento = { ...(filtro.fechamento || {}), $lte: new Date(ate) };
+
+    const vendas = await VendaSalaoDB.find(filtro).lean();
+    const porGarcom = {};
+
+    vendas.forEach(v => {
+      const nome = v.garcom && v.garcom !== "—" ? v.garcom : null;
+      if (!nome) return;
+      if (!porGarcom[nome]) porGarcom[nome] = { nome, vendas: 0, total: 0, mesas: new Set(), itens: {} };
+      porGarcom[nome].vendas += 1;
+      porGarcom[nome].total += v.total || 0;
+      porGarcom[nome].mesas.add(v.mesa);
+      (v.itens || []).forEach(it => {
+        porGarcom[nome].itens[it.nome] = (porGarcom[nome].itens[it.nome] || 0) + (it.qty || 1);
+      });
+    });
+
+    const resultado = Object.values(porGarcom).map(g => ({
+      nome: g.nome,
+      vendas: g.vendas,
+      total: parseFloat(g.total.toFixed(2)),
+      mesas: g.mesas.size,
+      ticketMedio: g.vendas > 0 ? parseFloat((g.total / g.vendas).toFixed(2)) : 0,
+      itemMaisVendido: Object.entries(g.itens).sort((a,b)=>b[1]-a[1])[0]?.[0] || "—",
+    })).sort((a,b) => b.total - a.total);
+
+    res.json(resultado);
+  } catch (e) { res.json([]); }
 });
 
 // ── HEALTH ────────────────────────────────────────────────────
