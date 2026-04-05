@@ -1699,7 +1699,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   <hr>
   <div class="info">
     Mesa: <strong>${mesaId}</strong>${scLabel !== "Comanda 1" ? ` &nbsp;|&nbsp; ${scLabel}` : ""}<br>
-    Garçom: <strong>${nomeGarcom}</strong><br>
+    ${sc.cliente ? `Cliente: <strong>${sc.cliente}</strong><br>` : ""}Garçom: <strong>${nomeGarcom}</strong><br>
     Data: <strong>${agora.toLocaleDateString('pt-BR')}</strong><br>
     Horário: <strong>${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</strong>
   </div>
