@@ -962,7 +962,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
 }
 
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
-function totMesaRel(m) { return m.itens.reduce((s,i)=>s+(i.qty||1)*i.preco,0)+m.rodadas.reduce((s,r)=>s+r.itens.reduce((ss,i)=>ss+(i.qty||1)*i.preco,0),0); }
+function totMesaRel(m) { return totMesaCompleta(m); }
 
 function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
   const [periodo, setPeriodo] = useState("semana");
@@ -1111,7 +1111,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
                     // Zera faturamento acumulado
                     if (setFaturadoSalaoRel) setFaturadoSalaoRel(0);
                     // Libera todas as mesas
-                    if (setMesasSalaoRel) setMesasSalaoRel(Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})));
+                    if (setMesasSalaoRel) setMesasSalaoRel(Array.from({length:16},(_,i)=>initMesa(i)));
                     // Limpa localStorage do salão
                     try {
                       localStorage.removeItem("imperio_faturado_salao");
@@ -1537,6 +1537,22 @@ const STATUS_MESA = {
 };
 
 function totMesa(itens=[]) { return itens.reduce((s,i)=>s+(i.qty||1)*i.preco,0); }
+function totMesaCompleta(mesa) {
+  const scs = mesa.subComandas || [];
+  return scs.reduce((total, sc) =>
+    total + totMesa(sc.itens) + (sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0)
+  , 0);
+}
+function initSubComanda(id=1) { return {id, label:`Comanda ${id}`, cliente:"", itens:[], rodadas:[]}; }
+function initMesa(i) {
+  return {id:i+1, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
+          subComandas:[initSubComanda(1)]};
+}
+function migrarMesa(m) {
+  if (m.subComandas) return m;
+  // migra formato antigo (itens/rodadas/cliente no nível da mesa)
+  return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
+}
 function fmtR(v) { return "R$ "+v.toFixed(2); }
 function tempoAberto(abertura) {
   if(!abertura) return null;
@@ -1608,7 +1624,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   const [catFiltro, setCatFiltro] = useState("todos");
   const [pagSalao, setPagSalao] = useState("pix");
   const [divSalao, setDivSalao] = useState(1);
-
+  const [selSC, setSelSC] = useState(0); // índice da sub-comanda ativa
   const [toastSalao, setToastSalao] = useState(null);
 
   const cardapio = (cardapioExterno && cardapioExterno.length > 0)
@@ -1616,58 +1632,154 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
     : CARDAPIO_SALAO;
 
   function msgSalao(txt,cor="#10b981"){setToastSalao({txt,cor});setTimeout(()=>setToastSalao(null),2500);}
-  const mesa = mesas.find(m=>m.id===sel);
+  const mesaRaw = mesas.find(m=>m.id===sel);
+  const mesa = mesaRaw ? migrarMesa(mesaRaw) : null;
   function upd(m){setMesas(p=>p.map(x=>x.id===m.id?m:x));}
 
+  // Sub-comanda ativa (com segurança para índice fora do range)
+  const scIdx = Math.min(selSC, (mesa?.subComandas?.length||1)-1);
+  const sc = mesa?.subComandas?.[scIdx] || initSubComanda(1);
+
+  // Atualiza apenas a sub-comanda ativa
+  function updSC(novoSC) {
+    const scs = [...(mesa.subComandas||[initSubComanda(1)])];
+    scs[scIdx] = novoSC;
+    upd({...mesa, subComandas: scs});
+  }
+
   function addItem(item){
-    const itens=[...mesa.itens];
+    const itens=[...sc.itens];
     const ex=itens.find(i=>i.id===item.id);
     if(ex) ex.qty+=1; else itens.push({...item,qty:1});
-    // Auto-preenche garçom logado se ainda não preenchido
     const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
-    upd({...mesa,itens,garcom:nomeGarcom,status:mesa.status==="livre"?"ocupada":mesa.status,abertura:mesa.abertura||new Date().toISOString()});
+    const novaAbertura = mesa.abertura||new Date().toISOString();
+    const novoStatus = mesa.status==="livre"?"ocupada":mesa.status;
+    updSC({...sc,itens});
+    upd({...mesa, garcom:nomeGarcom, status:novoStatus, abertura:novaAbertura,
+         subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
   }
   function chgQty(id,d){
-    const itens=mesa.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>(i.qty||1)>0);
-    upd({...mesa,itens,status:itens.length===0?"livre":mesa.status});
+    const itens=sc.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>(i.qty||1)>0);
+    const allEmpty = mesa.subComandas.every((s,i)=>i===scIdx?itens.length===0:s.itens.length===0&&(s.rodadas||[]).length===0);
+    upd({...mesa, status:allEmpty?"livre":mesa.status,
+         subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
   }
-  async function fecharMesa(){
-    const totalMesa=totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
-    const todosItens = [...mesa.rodadas.flatMap(r=>r.itens), ...mesa.itens].reduce((acc,it)=>{
+
+  // Adiciona nova sub-comanda à mesa
+  function novaComanda(){
+    const novoId = Math.max(...(mesa.subComandas||[]).map(s=>s.id), 0) + 1;
+    const novas = [...(mesa.subComandas||[]), initSubComanda(novoId)];
+    upd({...mesa, subComandas:novas});
+    setSelSC(novas.length-1);
+    msgSalao(`✅ Comanda ${novoId} criada!`);
+  }
+
+  // Imprime ticket de cozinha SEM VALORES
+  function imprimirCozinha(rodada, mesaId, scLabel){
+    const agora = new Date();
+    const win = window.open('','_blank','width=360,height=520');
+    const nomeGarcom = garcomLogado?.nome || mesa.garcom || "—";
+    win.document.write(`<!DOCTYPE html><html>
+<head><title>Cozinha — Mesa ${mesaId}</title>
+<style>
+  body{font-family:'Courier New',monospace;padding:16px;max-width:290px;margin:0 auto}
+  h2{text-align:center;font-size:16px;margin:0 0 2px}
+  .sub{text-align:center;font-size:11px;color:#555;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
+  hr{border:none;border-top:2px dashed #000;margin:8px 0}
+  .info{font-size:12px;margin-bottom:8px;line-height:1.6}
+  .item{display:flex;gap:6px;font-size:15px;font-weight:700;padding:5px 0;border-bottom:1px dashed #ccc}
+  .qty{font-size:18px;font-weight:900;min-width:28px}
+  .rodape{text-align:center;font-size:11px;color:#888;margin-top:14px}
+  @media print{button{display:none}}
+</style>
+</head>
+<body>
+  <h2>👑 Império dos Espetos</h2>
+  <div class="sub">🔥 Pedido — Cozinha / Churrasqueira</div>
+  <hr>
+  <div class="info">
+    Mesa: <strong>${mesaId}</strong>${scLabel !== "Comanda 1" ? ` &nbsp;|&nbsp; ${scLabel}` : ""}<br>
+    Garçom: <strong>${nomeGarcom}</strong><br>
+    Data: <strong>${agora.toLocaleDateString('pt-BR')}</strong><br>
+    Horário: <strong>${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</strong>
+  </div>
+  <hr>
+  ${rodada.itens.map(it=>`
+    <div class="item"><span class="qty">${it.qty||1}x</span><span>${it.nome}</span></div>
+  `).join('')}
+  <div class="rodape">— Fim do pedido —</div>
+  <br><button onclick="window.print()" style="width:100%;padding:10px;font-size:14px;cursor:pointer">🖨️ Imprimir</button>
+</body></html>`);
+    win.document.close();
+    setTimeout(()=>win.print(),400);
+  }
+
+  async function fecharComanda(idxSC, pagamento){
+    const scFechando = mesa.subComandas[idxSC];
+    const todosItens = [...(scFechando.rodadas||[]).flatMap(r=>r.itens), ...scFechando.itens].reduce((acc,it)=>{
       const ex=acc.find(i=>i.id===it.id); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
     }, []);
+    const totalSC = totMesa(scFechando.itens) + (scFechando.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0);
     const registro = {
       id: Date.now(),
       mesa: mesa.id,
-      cliente: mesa.cliente || "—",
+      cliente: scFechando.cliente || "—",
       garcom: garcomLogado?.nome || mesa.garcom || "—",
       garcomId: garcomLogado?.id || null,
+      subComanda: scFechando.label,
       itens: todosItens,
-      total: totalMesa,
-      pagamento: pagSalao,
-      abertura: mesa.abertura,
+      total: totalSC,
+      pagamento: pagamento||pagSalao,
+      abertura: scFechando.abertura||mesa.abertura,
       fechamento: new Date().toISOString(),
     };
-    // Salva no MongoDB
     try {
-      const res = await fetch(BACKEND_URL + "/vendas-salao", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(registro),
-      });
-      if (res.ok) {
-        const salvo = await res.json();
-        registro._id = salvo._id; // guarda o ID do banco para poder excluir
-      }
-    } catch (e) { console.warn("Falha ao salvar venda no banco:", e); }
-    if (setHistoricoSalao) setHistoricoSalao(h => [...h, registro]);
-    setFaturado(f=>f+totalMesa);
-    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
-    upd({id:mesa.id,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null});
-    setSel(null); setTelaSalao("mapa"); setDivSalao(1);
+      const res = await fetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
+      if(res.ok){const salvo=await res.json();registro._id=salvo._id;}
+    } catch(e){console.warn("Falha ao salvar venda:",e);}
+    if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
+    setFaturado(f=>f+totalSC);
+
+    // Remove a comanda fechada
+    const novasSCs = mesa.subComandas.filter((_,i)=>i!==idxSC);
+    const novoStatus = novasSCs.length===0||novasSCs.every(s=>s.itens.length===0&&(s.rodadas||[]).length===0)?"livre":"ocupada";
+    if(novasSCs.length===0) {
+      // Mesa totalmente liberada
+      upd(initMesa(mesa.id-1));
+      setSel(null); setTelaSalao("mapa");
+    } else {
+      upd({...mesa, subComandas:novasSCs, status:novoStatus, solicitadoPor:null, solicitadoEm:null});
+      setSelSC(Math.min(idxSC, novasSCs.length-1));
+      setTelaSalao("comanda");
+    }
+    msgSalao(`✅ ${scFechando.label} fechada! ${fmtR(totalSC)}`);
+    setDivSalao(1);
   }
 
-  const fat = faturado + mesas.reduce((s,m)=>s+totMesa(m.itens)+m.rodadas.reduce((ss,r)=>ss+totMesa(r.itens),0),0);
+  async function fecharMesa(){
+    // Fecha todas as comandas de uma vez
+    const todosItens = (mesa.subComandas||[]).flatMap(sc=>[...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens])
+      .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+    const totalMesa = totMesaCompleta(mesa);
+    const registro = {
+      id: Date.now(), mesa: mesa.id,
+      cliente: (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ")||"—",
+      garcom: garcomLogado?.nome||mesa.garcom||"—", garcomId:garcomLogado?.id||null,
+      itens:todosItens, total:totalMesa, pagamento:pagSalao,
+      abertura:mesa.abertura, fechamento:new Date().toISOString(),
+    };
+    try{const res=await fetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});if(res.ok){const salvo=await res.json();registro._id=salvo._id;}}catch(e){console.warn(e);}
+    if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
+    setFaturado(f=>f+totalMesa);
+    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
+    upd(initMesa(mesa.id-1));
+    setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
+  }
+
+  const totalAcumulado = totMesaCompleta(mesa||{subComandas:[]});
+  const totalSCAtual = sc ? totMesa(sc.itens)+(sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0) : 0;
+
+  const fat = faturado + mesas.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
   const ocup = mesas.filter(m=>m.status!=="livre").length;
   const alertas = mesas.filter(m=>m.status==="chamando"||m.status==="conta");
   const cats = ["todos",...new Set(cardapio.map(i=>i.cat||i.categoria))];
@@ -1687,8 +1799,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15,flex:1}}>Mesa {mesa.id} — Adicionar</div>
-          <div style={{fontWeight:800,color:"#f0c040"}}>{fmtR(totMesa(mesa.itens))}</div>
+          <div style={{fontWeight:800,fontSize:15,flex:1}}>Mesa {mesa.id} — {sc.label}</div>
+          <div style={{fontWeight:800,color:"#f0c040"}}>{fmtR(totMesa(sc.itens))}</div>
         </div>
       </div>
       <div style={{display:"flex",gap:5,flexWrap:"wrap",padding:"10px 14px",background:"#fff",borderBottom:"1px solid #eee"}}>
@@ -1701,7 +1813,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       </div>
       <div style={{padding:"10px 14px 80px",display:"flex",flexDirection:"column",gap:8}}>
         {cardapio.filter(i=>(catFiltro==="todos"||(i.cat||i.categoria)===catFiltro)).map(item=>{
-          const na=mesa.itens.find(i=>i.id===item.id);
+          const na=sc.itens.find(i=>i.id===item.id);
           return(
             <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":"transparent"}`}}>
               <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{item.nome}</div><div style={{fontSize:12,color:"#888"}}>{fmtR(item.preco)}</div></div>
@@ -1718,33 +1830,46 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           );
         })}
       </div>
-      {mesa.itens.length>0&&(
+      {sc.itens.length>0&&(
         <div style={{position:"sticky",bottom:0,padding:"10px 14px",background:"#fff",borderTop:"1px solid #f0f0f0"}}>
-          <button onClick={()=>setTelaSalao("comanda")} style={BP2("linear-gradient(135deg,#7b1a0a,#c0392b)")}>✅ Ver comanda — {fmtR(totMesa(mesa.itens))}</button>
+          <button onClick={()=>setTelaSalao("comanda")} style={BP2("linear-gradient(135deg,#7b1a0a,#c0392b)")}>✅ Ver comanda — {fmtR(totMesa(sc.itens))}</button>
         </div>
       )}
     </div>
   );
 
   // TELA FECHAR
-  if(telaSalao==="fechar") return (
+  if(telaSalao==="fechar") {
+    const fecharUma = mesa.subComandas.length > 1; // se há múltiplas, fecha só a ativa
+    const totalFechar = fecharUma ? totalSCAtual : totalAcumulado;
+    const todosItensFechar = fecharUma
+      ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
+      : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+    return (
     <div style={{background:T.cream,minHeight:"100%"}}>
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15}}>Mesa {mesa.id} — Fechar conta</div>
+          <div style={{fontWeight:800,fontSize:15}}>Mesa {mesa.id}{fecharUma?` — ${sc.label}`:""} — Fechar</div>
         </div>
       </div>
       <div style={{padding:"14px",display:"flex",flexDirection:"column",gap:10}}>
+        {/* Se há múltiplas comandas, mostra opção de fechar todas */}
+        {mesa.subComandas.length>1&&(
+          <div style={{background:"#ede9fe",borderRadius:12,padding:"10px 14px",fontSize:12,color:"#7c3aed",fontWeight:600,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span>📋 Fechando: {fecharUma?sc.label:"Todas as comandas"}</span>
+            <button onClick={fecharMesa} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>Fechar mesa inteira</button>
+          </div>
+        )}
         <div style={card2}>
           <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🧾 Resumo</div>
-          {[...mesa.rodadas.flatMap(r=>r.itens),...mesa.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]).map((it,i)=>(
+          {todosItensFechar.map((it,i)=>(
             <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px dashed #f0f0f0",fontSize:13}}>
               <span>{it.qty}x {it.nome}</span><span style={{fontWeight:600}}>{fmtR(it.qty*it.preco)}</span>
             </div>
           ))}
           <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,fontSize:16,fontWeight:800,color:"#7b1a0a"}}>
-            <span>Total</span><span>{fmtR(totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</span>
+            <span>Total</span><span>{fmtR(totalFechar)}</span>
           </div>
         </div>
         <div style={card2}>
@@ -1756,7 +1881,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           </div>
           {divSalao>1&&<div style={{marginTop:10,background:"#fef3c7",borderRadius:10,padding:10,textAlign:"center"}}>
             <div style={{fontSize:12,color:"#92400e"}}>Cada pessoa paga</div>
-            <div style={{fontWeight:800,fontSize:22,color:"#7b1a0a"}}>{fmtR((totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))/divSalao)}</div>
+            <div style={{fontWeight:800,fontSize:22,color:"#7b1a0a"}}>{fmtR(totalFechar/divSalao)}</div>
           </div>}
         </div>
         <div style={card2}>
@@ -1769,8 +1894,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={()=>{
-            const total = totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
-            const todosItens = [...mesa.rodadas.flatMap(r=>r.itens),...mesa.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+            const nomeGarcom = garcomLogado?.nome||mesa.garcom||"—";
+            const nomeCliente = fecharUma?sc.cliente:"";
+            const abertura = fecharUma?(sc.abertura||mesa.abertura):mesa.abertura;
             const win = window.open('','_blank','width=400,height=600');
             win.document.write(`<!DOCTYPE html><html><head><title>Comanda Mesa ${mesa.id}</title><style>
               body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
@@ -1783,10 +1909,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
               @media print{button{display:none}}
             </style></head><body>
               <h2>👑 Império dos Espetos</h2>
-              <div class="sub">Comanda — Mesa ${mesa.id}</div>
-              <div class="info">${mesa.cliente&&mesa.cliente!=='—'?'Cliente: '+mesa.cliente+'<br>':''}${mesa.garcom&&mesa.garcom!=='—'?'Garçom: '+mesa.garcom+'<br>':''}Abertura: ${mesa.abertura?new Date(mesa.abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
-              ${todosItens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
-              <div class="total"><span>TOTAL</span><span>R$ ${total.toFixed(2)}</span></div>
+              <div class="sub">Comanda — Mesa ${mesa.id}${fecharUma?` | ${sc.label}`:""}</div>
+              <div class="info">${nomeCliente&&nomeCliente!=="—"?'Cliente: '+nomeCliente+'<br>':''}${nomeGarcom&&nomeGarcom!=="—"?'Garçom: '+nomeGarcom+'<br>':''}Abertura: ${abertura?new Date(abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
+              ${todosItensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
+              <div class="total"><span>TOTAL</span><span>R$ ${totalFechar.toFixed(2)}</span></div>
               <div class="info" style="margin-top:12px">Pagamento: ${pagSalao==='pix'?'Pix':pagSalao==='cartao'?'Cartão':'Dinheiro'}</div>
               <div class="rodape">Obrigado pela visita! 🍢</div>
               <br><button onclick="window.print()">🖨️ Imprimir</button>
@@ -1794,15 +1920,15 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             win.document.close();
             setTimeout(()=>win.print(),500);
           }} style={{background:T.grayLL,color:T.gray,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"12px 0",fontWeight:600,fontSize:14,cursor:"pointer",flex:1}}>🖨️ Imprimir</button>
-          <button onClick={fecharMesa} style={{...BP2("linear-gradient(135deg,#065f46,#10b981)"),flex:2}}>✅ Confirmar — {fmtR(totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</button>
+          <button onClick={()=>fecharUma?fecharComanda(scIdx,pagSalao):fecharMesa()} style={{...BP2("linear-gradient(135deg,#065f46,#10b981)"),flex:2}}>✅ Confirmar — {fmtR(totalFechar)}</button>
         </div>
       </div>
     </div>
-  );
+    );
+  }
 
   // TELA COMANDA
   if(telaSalao==="comanda"&&mesa) {
-    const totalAcumulado = totMesa(mesa.itens)+mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0);
     return (
       <div style={{background:T.cream,minHeight:"100%"}}>
         {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
@@ -1810,10 +1936,37 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
             <button style={BK2} onClick={()=>{setSel(null);setTelaSalao("mapa");}}>← Salão</button>
             <div style={{fontWeight:800,fontSize:18,flex:1}}>Mesa {mesa.id}</div>
-            <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.7}}>Total</div><div style={{fontWeight:800,fontSize:18,color:"#f0c040"}}>{fmtR(totalAcumulado)}</div></div>
+            <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.7}}>Total mesa</div><div style={{fontWeight:800,fontSize:18,color:"#f0c040"}}>{fmtR(totalAcumulado)}</div></div>
           </div>
+
+          {/* Tabs de sub-comandas */}
+          <div style={{display:"flex",gap:5,flexWrap:"nowrap",overflowX:"auto",marginBottom:8,paddingBottom:2}}>
+            {(mesa.subComandas||[]).map((s,i)=>(
+              <button key={s.id} onClick={()=>setSelSC(i)} style={{
+                flexShrink:0, padding:"5px 12px", borderRadius:20,
+                border:"none", cursor:"pointer", fontSize:12, fontWeight:i===scIdx?700:500,
+                background:i===scIdx?"rgba(255,255,255,0.95)":"rgba(255,255,255,0.2)",
+                color:i===scIdx?"#7b1a0a":"rgba(255,255,255,0.85)",
+                position:"relative"
+              }}>
+                {s.label}
+                {(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))>0 &&
+                  <span style={{marginLeft:4,fontSize:10,opacity:0.8}}>
+                    {fmtR(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))}
+                  </span>
+                }
+              </button>
+            ))}
+            {(perfil==="garcom"||isDono)&&(
+              <button onClick={novaComanda} style={{flexShrink:0,padding:"5px 10px",borderRadius:20,border:"1px dashed rgba(255,255,255,0.5)",background:"transparent",color:"rgba(255,255,255,0.7)",fontSize:12,cursor:"pointer"}}>
+                + Comanda
+              </button>
+            )}
+          </div>
+
+          {/* Dados da sub-comanda ativa */}
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
-            <input value={mesa.cliente||""} onChange={e=>upd({...mesa,cliente:e.target.value})} placeholder="🧑 Nome do cliente..." style={{background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
+            <input value={sc.cliente||""} onChange={e=>{const scs=mesa.subComandas.map((s,i)=>i===scIdx?{...s,cliente:e.target.value}:s);upd({...mesa,subComandas:scs});}} placeholder={`🧑 Cliente — ${sc.label}...`} style={{background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
             <div style={{display:"flex",gap:8}}>
               {garcomLogado ? (
                 <div style={{flex:1,background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,display:"flex",alignItems:"center",gap:6}}>
@@ -1828,13 +1981,14 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             </div>
           </div>
         </div>
+
         <div style={{padding:"12px 14px"}}>
-          {mesa.itens.length===0&&mesa.rodadas.length===0?(
-            <div style={{textAlign:"center",padding:"30px 0",color:"#ccc"}}><div style={{fontSize:36}}>🍢</div><div style={{marginTop:6,fontSize:14}}>Comanda vazia</div></div>
+          {sc.itens.length===0&&(sc.rodadas||[]).length===0?(
+            <div style={{textAlign:"center",padding:"30px 0",color:"#ccc"}}><div style={{fontSize:36}}>🍢</div><div style={{marginTop:6,fontSize:14}}>{sc.label} vazia</div></div>
           ):(
             <div style={card2}>
-              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Itens na mesa</div>
-              {mesa.itens.map((it,i)=>(
+              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>{sc.label} — Itens</div>
+              {sc.itens.map((it,i)=>(
                 <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
                   <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{it.nome}</div><div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div></div>
                   <div style={{display:"flex",alignItems:"center",gap:5}}>
@@ -1845,40 +1999,43 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
                   <div style={{fontWeight:800,fontSize:13,color:"#7b1a0a",minWidth:50,textAlign:"right"}}>{fmtR((it.qty||1)*it.preco)}</div>
                 </div>
               ))}
-              {mesa.rodadas.length>0&&<div style={{fontSize:11,color:"#aaa",marginTop:6}}>+ {fmtR(mesa.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))} em {mesa.rodadas.length} rodada{mesa.rodadas.length>1?"s":""} anteriores</div>}
-              <div style={{display:"flex",justifyContent:"space-between",paddingTop:8,fontSize:15,fontWeight:800,color:"#7b1a0a"}}><span>Total</span><span>{fmtR(totalAcumulado)}</span></div>
+              {(sc.rodadas||[]).length>0&&<div style={{fontSize:11,color:"#aaa",marginTop:6}}>+ {fmtR((sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0))} em {(sc.rodadas||[]).length} rodada{(sc.rodadas||[]).length>1?"s":""} anteriores</div>}
+              <div style={{display:"flex",justifyContent:"space-between",paddingTop:8,fontSize:15,fontWeight:800,color:"#7b1a0a"}}><span>Total {sc.label}</span><span>{fmtR(totalSCAtual)}</span></div>
             </div>
           )}
-          {mesa.rodadas.length>0&&(
+          {(sc.rodadas||[]).length>0&&(
             <div style={card2}>
-              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Rodadas à cozinha</div>
-              {mesa.rodadas.map((r,ri)=>(
+              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Enviados à cozinha</div>
+              {(sc.rodadas||[]).map((r,ri)=>(
                 <div key={ri} style={{marginBottom:6,paddingBottom:6,borderBottom:"1px dashed #f0f0f0"}}>
                   <div style={{fontSize:11,color:"#aaa",marginBottom:3}}>Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</div>
-                  {r.itens.map((it,ii)=><div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#555"}}><span>{it.qty||1}x {it.nome}</span><span>{fmtR((it.qty||1)*it.preco)}</span></div>)}
+                  {r.itens.map((it,ii)=><div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#555"}}><span>{it.qty||1}x {it.nome}</span></div>)}
                 </div>
               ))}
             </div>
           )}
           <div style={{...card2}}>
-            <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observações..." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
+            <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observações da mesa..." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
           </div>
         </div>
+
         <div style={{padding:"0 14px 16px",display:"flex",flexDirection:"column",gap:8}}>
           <div style={{display:"flex",gap:8}}>
             {(perfil==="garcom"||isDono)&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
-            {(perfil==="garcom"||isDono)&&mesa.itens.length>0&&(
+            {(perfil==="garcom"||isDono)&&sc.itens.length>0&&(
               <button onClick={()=>{
-                const rodada={hora:new Date().toISOString(),itens:[...mesa.itens]};
-                upd({...mesa,rodadas:[...mesa.rodadas,rodada],itens:[]});
-                msgSalao(`🔥 Mesa ${mesa.id} enviada à cozinha!`);
+                const rodada={hora:new Date().toISOString(),itens:[...sc.itens]};
+                const novasRodadas=[...(sc.rodadas||[]),rodada];
+                upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens:[],rodadas:novasRodadas}:s)});
+                imprimirCozinha(rodada, mesa.id, sc.label);
+                msgSalao(`🔥 ${sc.label} enviada à cozinha!`);
               }} style={{...BP2("linear-gradient(135deg,#1d4ed8,#2563eb)",true)}}>🔥 Cozinha</button>
             )}
           </div>
           {(perfil==="caixa"||isDono)?(
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
-                {mesa.status==="conta"?"💳 Receber pagamento":"✅ Fechar comanda"}{totalAcumulado>0?` — ${fmtR(totalAcumulado)}`:""}
+                {mesa.status==="conta"?"💳 Receber pagamento":mesa.subComandas.length>1?`✅ Fechar ${sc.label}`:  "✅ Fechar comanda"}{totalSCAtual>0?` — ${fmtR(totalSCAtual)}`:""}
               </button>
               {mesa.status==="conta"&&mesa.solicitadoPor&&(
                 <div style={{background:"#ede9fe",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#7c3aed",fontWeight:600,textAlign:"center"}}>
@@ -1888,7 +2045,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             </div>
           ):(
             totalAcumulado>0&&(
-              <button onClick={()=>{upd({...mesa,status:"conta",solicitadoPor:mesa.garcom||"Garçom",solicitadoEm:new Date().toISOString()});msgSalao("📨 Fechamento solicitado ao caixa!","#8b5cf6");}} style={BP2(mesa.status==="conta"?"#8b5cf6":"linear-gradient(135deg,#7c3aed,#6d28d9)")}>
+              <button onClick={()=>{upd({...mesa,status:"conta",solicitadoPor:mesa.garcom||garcomLogado?.nome||"Garçom",solicitadoEm:new Date().toISOString()});msgSalao("📨 Fechamento solicitado ao caixa!","#8b5cf6");}} style={BP2(mesa.status==="conta"?"#8b5cf6":"linear-gradient(135deg,#7c3aed,#6d28d9)")}>
                 {mesa.status==="conta"?"✅ Fechamento já solicitado":"📨 Solicitar fechamento ao caixa"}
               </button>
             )
@@ -1925,7 +2082,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           </div>}
           <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
             {isDono&&<>
-              <button onClick={()=>{const n=mesas.length+1;setMesas(p=>[...p,{id:n,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}]);msgSalao("✅ Mesa "+n+" adicionada!");}} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
+              <button onClick={()=>{const n=mesas.length+1;setMesas(p=>[...p,initMesa(n-1)]);msgSalao("✅ Mesa "+n+" adicionada!");}} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
               <button onClick={()=>{const u=mesas[mesas.length-1];if(!u||u.status!=="livre"){msgSalao("❌ Só é possível remover mesa livre!","#ef4444");return;}setMesas(p=>p.slice(0,-1));msgSalao("Mesa "+u.id+" removida.","#f59e0b");}} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>− Mesa</button>
             </>}
             {!isDono&&<button onClick={()=>{if(onSairApp)onSairApp();else setPerfil(null);}} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 10px",fontSize:12,cursor:"pointer",fontWeight:600}}>🔒 Sair</button>}
@@ -1937,7 +2094,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           {alertas.map(m=>(
             <div key={m.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:"#5b21b6",marginBottom:2}}>
               <span>{m.status==="conta"?"💳":"🔔"} Mesa {m.id} — {m.status==="conta"?"fechamento solicitado":"chamando"}{m.solicitadoPor?` por ${m.solicitadoPor}`:""}</span>
-              <span>{fmtR(totMesa(m.itens)+m.rodadas.reduce((s,r)=>s+totMesa(r.itens),0))}</span>
+              <span>{fmtR(totMesaCompleta(m))}</span>
             </div>
           ))}
         </div>
@@ -1945,7 +2102,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,padding:14}}>
         {mesas.map(m=>{
           const s=STATUS_MESA[m.status];
-          const totM=totMesa(m.itens)+m.rodadas.reduce((ss,r)=>ss+totMesa(r.itens),0);
+          const totM=totMesaCompleta(m);
+          const nomeCliente = (m.subComandas||[]).map(sc=>sc.cliente).filter(Boolean).join(", ");
           return(
             <div key={m.id} onClick={()=>{setSel(m.id);setTelaSalao("comanda");}} style={{background:"#fff",borderRadius:14,padding:"10px 8px",textAlign:"center",cursor:"pointer",border:`2px solid ${m.status==="livre"?"#e8e8e8":s.c}`,boxShadow:m.status==="chamando"||m.status==="conta"?`0 0 0 2px ${s.c}`:"0 2px 8px rgba(0,0,0,0.07)",position:"relative"}}>
               {(m.status==="chamando"||m.status==="conta")&&<div style={{position:"absolute",top:-6,right:-6,width:16,height:16,background:s.c,borderRadius:"50%",fontSize:8,color:"#fff",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>!</div>}
@@ -1953,8 +2111,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
               <div style={{fontWeight:800,fontSize:16,color:"#1a1a1a"}}>{m.id}</div>
               <div style={{fontSize:8,background:s.bg,color:s.c,borderRadius:10,padding:"1px 5px",marginTop:3,fontWeight:700,display:"inline-block"}}>{s.l}</div>
               {m.status!=="livre"&&<div style={{fontSize:11,fontWeight:800,color:"#7b1a0a",marginTop:3}}>{fmtR(totM)}</div>}
+              {m.status!=="livre"&&(m.subComandas||[]).length>1&&<div style={{fontSize:9,color:"#8b5cf6",fontWeight:700,marginTop:1}}>{(m.subComandas||[]).length} comandas</div>}
               {m.abertura&&<div style={{fontSize:9,color:((Date.now()-new Date(m.abertura))/60000)>90?"#ef4444":"#aaa",marginTop:1}}>⏱️{tempoAberto(m.abertura)}</div>}
-              {m.cliente&&<div style={{fontSize:9,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.cliente}</div>}
+              {nomeCliente&&<div style={{fontSize:9,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nomeCliente}</div>}
             </div>
           );
         })}
@@ -2103,12 +2262,13 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       const hoje = new Date().toDateString();
       if (lastDay !== hoje) {
         localStorage.setItem("imperio_mesas_dia", hoje);
-        return Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}));
+        return Array.from({length:16},(_,i)=>initMesa(i));
       }
       const saved = localStorage.getItem("imperio_mesas_salao");
-      return saved ? JSON.parse(saved) : Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null}));
-    } catch { return Array.from({length:16},(_,i)=>({id:i+1,status:"livre",itens:[],garcom:"",obs:"",cliente:"",abertura:null,rodadas:[],solicitadoPor:null,solicitadoEm:null})); }
-  }); // persiste entre recargas, zera automaticamente a cada novo dia
+      // migra formato antigo se necessário
+      return saved ? JSON.parse(saved).map(migrarMesa) : Array.from({length:16},(_,i)=>initMesa(i));
+    } catch { return Array.from({length:16},(_,i)=>initMesa(i)); }
+  });
   const [historicoSalao, setHistoricoSalao] = useState(() => {
     try {
       const lastDay = localStorage.getItem("imperio_historico_dia");
@@ -2194,11 +2354,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidos.filter(p => p.status === s).length; return a; }, {});
   const totalDeliveryHoje = pedidos.filter(p => p.status === "entregue" && isMesmosDias(p.horario, new Date())).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
-  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => {
-    const itens = m.itens.reduce((ss, i) => ss + (i.qty||1) * i.preco, 0);
-    const rodadas = m.rodadas.reduce((ss, r) => ss + r.itens.reduce((sss, i) => sss + (i.qty||1) * i.preco, 0), 0);
-    return s + itens + rodadas;
-  }, 0);
+  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
   const totalHoje = totalDeliveryHoje + totalSalaoHoje;
   const novos = counts["novo"] || 0;
   const pf = (filtro === "todos" ? pedidos : pedidos.filter(p => p.status === filtro)).sort((a, b) => new Date(b.horario) - new Date(a.horario));
