@@ -1942,20 +1942,38 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           {/* Tabs de sub-comandas */}
           <div style={{display:"flex",gap:5,flexWrap:"nowrap",overflowX:"auto",marginBottom:8,paddingBottom:2}}>
             {(mesa.subComandas||[]).map((s,i)=>(
-              <button key={s.id} onClick={()=>setSelSC(i)} style={{
-                flexShrink:0, padding:"5px 12px", borderRadius:20,
-                border:"none", cursor:"pointer", fontSize:12, fontWeight:i===scIdx?700:500,
-                background:i===scIdx?"rgba(255,255,255,0.95)":"rgba(255,255,255,0.2)",
-                color:i===scIdx?"#7b1a0a":"rgba(255,255,255,0.85)",
-                position:"relative"
-              }}>
-                {s.label}
-                {(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))>0 &&
-                  <span style={{marginLeft:4,fontSize:10,opacity:0.8}}>
-                    {fmtR(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))}
-                  </span>
-                }
-              </button>
+              <div key={s.id} style={{flexShrink:0,display:"flex",alignItems:"center",gap:0}}>
+                <button onClick={()=>setSelSC(i)} style={{
+                  padding:"5px 10px", borderRadius:mesa.subComandas.length>1?"20px 0 0 20px":"20px",
+                  border:"none", cursor:"pointer", fontSize:12, fontWeight:i===scIdx?700:500,
+                  background:i===scIdx?"rgba(255,255,255,0.95)":"rgba(255,255,255,0.2)",
+                  color:i===scIdx?"#7b1a0a":"rgba(255,255,255,0.85)",
+                }}>
+                  {s.label}
+                  {(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))>0 &&
+                    <span style={{marginLeft:4,fontSize:10,opacity:0.8}}>
+                      {fmtR(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))}
+                    </span>
+                  }
+                </button>
+                {/* Botão remover comanda — só aparece quando há mais de 1 */}
+                {mesa.subComandas.length>1&&(perfil==="garcom"||isDono)&&(
+                  <button onClick={()=>{
+                    const temItens = s.itens.length>0||(s.rodadas||[]).length>0;
+                    if(temItens && !window.confirm(`Remover ${s.label}? Os itens serão perdidos.`)) return;
+                    const novas = mesa.subComandas.filter((_,idx)=>idx!==i);
+                    upd({...mesa, subComandas:novas});
+                    setSelSC(Math.min(i, novas.length-1));
+                    msgSalao(`${s.label} removida.`,"#f59e0b");
+                  }} style={{
+                    padding:"5px 7px", borderRadius:"0 20px 20px 0",
+                    border:"none", cursor:"pointer", fontSize:11,
+                    background:i===scIdx?"rgba(255,255,255,0.75)":"rgba(255,255,255,0.15)",
+                    color:i===scIdx?"#ef4444":"rgba(255,255,255,0.6)",
+                    borderLeft:`1px solid ${i===scIdx?"rgba(239,68,68,0.3)":"rgba(255,255,255,0.1)"}`,
+                  }}>✕</button>
+                )}
+              </div>
             ))}
             {(perfil==="garcom"||isDono)&&(
               <button onClick={novaComanda} style={{flexShrink:0,padding:"5px 10px",borderRadius:20,border:"1px dashed rgba(255,255,255,0.5)",background:"transparent",color:"rgba(255,255,255,0.7)",fontSize:12,cursor:"pointer"}}>
@@ -2032,6 +2050,22 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
               }} style={{...BP2("linear-gradient(135deg,#1d4ed8,#2563eb)",true)}}>🔥 Cozinha</button>
             )}
           </div>
+          {/* Botão enviar TODAS as comandas de uma vez — só aparece com 2+ comandas com itens pendentes */}
+          {(perfil==="garcom"||isDono)&&mesa.subComandas.length>1&&mesa.subComandas.filter(s=>s.itens.length>0).length>1&&(
+            <button onClick={()=>{
+              let novasSCs = [...mesa.subComandas];
+              mesa.subComandas.forEach((s,i)=>{
+                if(s.itens.length===0) return;
+                const rodada={hora:new Date().toISOString(),itens:[...s.itens]};
+                novasSCs[i]={...novasSCs[i],itens:[],rodadas:[...(novasSCs[i].rodadas||[]),rodada]};
+                imprimirCozinha(rodada, mesa.id, s.label);
+              });
+              upd({...mesa, subComandas:novasSCs});
+              msgSalao(`🔥 Todas as comandas enviadas à cozinha!`);
+            }} style={{...BP2("linear-gradient(135deg,#0e4fa8,#1d4ed8)"),display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+              🔥 Enviar todas à cozinha
+            </button>
+          )}
           {(perfil==="caixa"||isDono)?(
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
