@@ -646,8 +646,171 @@ function PinManager() {
   );
 }
 
+// ── GERENCIAR GARÇONS ─────────────────────────────────────────
+function GarcomManager({ garcons, onReload }) {
+  const [novoForm, setNovoForm] = useState(false);
+  const [novo, setNovo] = useState({ nome: "", pin: "" });
+  const [editando, setEditando] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const inp = { width: "100%", padding: "9px 11px", border: "1.5px solid #e0e0e0", borderRadius: 9, fontSize: 14, color: "#333", outline: "none", boxSizing: "border-box" };
+
+  function showMsg(texto, tipo = "ok") { setMsg({ texto, tipo }); setTimeout(() => setMsg(null), 3000); }
+
+  async function criarGarcom() {
+    if (!novo.nome.trim() || !novo.pin) return showMsg("Preencha nome e PIN.", "erro");
+    setSaving(true);
+    try {
+      const res = await fetch(BACKEND_URL + "/garcons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nome: novo.nome.trim(), pin: novo.pin }),
+      });
+      const data = await res.json();
+      if (!res.ok) return showMsg(data.erro || "Erro ao criar.", "erro");
+      showMsg(`✅ ${novo.nome} cadastrado com sucesso!`);
+      setNovo({ nome: "", pin: "" });
+      setNovoForm(false);
+      onReload();
+    } catch { showMsg("Erro de conexão.", "erro"); }
+    setSaving(false);
+  }
+
+  async function salvarEdicao() {
+    setSaving(true);
+    const body = { nome: editando.nome };
+    if (editando.novoPin) body.pin = editando.novoPin;
+    try {
+      const res = await fetch(BACKEND_URL + "/garcons/" + editando._id, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) return showMsg(data.erro || "Erro ao salvar.", "erro");
+      showMsg("✅ Alterações salvas!");
+      setEditando(null);
+      onReload();
+    } catch { showMsg("Erro de conexão.", "erro"); }
+    setSaving(false);
+  }
+
+  async function toggleAtivo(g) {
+    try {
+      await fetch(BACKEND_URL + "/garcons/" + g._id, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ativo: !g.ativo }),
+      });
+      onReload();
+    } catch {}
+  }
+
+  async function deletarGarcom(g) {
+    if (!window.confirm(`Remover ${g.nome}? Esta ação não pode ser desfeita.`)) return;
+    try {
+      await fetch(BACKEND_URL + "/garcons/" + g._id, { method: "DELETE" });
+      showMsg(`${g.nome} removido.`, "ok");
+      onReload();
+    } catch { showMsg("Erro ao remover.", "erro"); }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#92400e" }}>
+        ℹ️ Cada garçom tem um PIN único de 4 dígitos. Ao fazer login, todas as mesas abertas já saem com o nome dele.
+      </div>
+
+      {/* Métricas */}
+      <div style={{ display: "flex", gap: 8 }}>
+        <Metrica icon="🧑‍🍳" label="Garçons ativos" valor={garcons.filter(g => g.ativo).length} cor="#7b1a0a" />
+        <Metrica icon="😴" label="Inativos" valor={garcons.filter(g => !g.ativo).length} cor="#aaa" />
+      </div>
+
+      <button onClick={() => setNovoForm(true)} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+        + Cadastrar novo garçom
+      </button>
+
+      {novoForm && (
+        <div style={{ background: "#fff", borderRadius: 14, padding: 16, border: "1.5px solid #7b1a0a", boxShadow: "0 2px 12px rgba(0,0,0,0.1)" }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>🧑‍🍳 Novo garçom</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <div style={{ flex: 2 }}>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Nome *</div>
+              <input value={novo.nome} onChange={e => setNovo(p => ({ ...p, nome: e.target.value }))} placeholder="Ex: João Silva" style={inp} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>PIN (4 dígitos) *</div>
+              <input type="password" inputMode="numeric" maxLength={4} value={novo.pin} onChange={e => setNovo(p => ({ ...p, pin: e.target.value.replace(/\D/g,"").slice(0,4) }))} placeholder="••••" style={{ ...inp, letterSpacing: 6, textAlign: "center" }} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={criarGarcom} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              {saving ? "Salvando..." : "✅ Cadastrar"}
+            </button>
+            <button onClick={() => { setNovoForm(false); setNovo({ nome: "", pin: "" }); }} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {/* Lista */}
+      {garcons.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "30px 0", color: "#ccc", fontSize: 14 }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>🧑‍🍳</div>
+          Nenhum garçom cadastrado ainda
+        </div>
+      ) : garcons.map(g => (
+        <div key={g._id} style={{ background: "#fff", borderRadius: 14, padding: 14, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", opacity: g.ativo ? 1 : 0.55 }}>
+          {editando?._id === g._id ? (
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#7b1a0a", marginBottom: 10 }}>✏️ Editando: {g.nome}</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <div style={{ flex: 2 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Nome</div>
+                  <input value={editando.nome} onChange={e => setEditando(p => ({ ...p, nome: e.target.value }))} style={inp} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Novo PIN (opcional)</div>
+                  <input type="password" inputMode="numeric" maxLength={4} value={editando.novoPin || ""} onChange={e => setEditando(p => ({ ...p, novoPin: e.target.value.replace(/\D/g,"").slice(0,4) }))} placeholder="••••" style={{ ...inp, letterSpacing: 6, textAlign: "center" }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={salvarEdicao} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{saving ? "Salvando..." : "💾 Salvar"}</button>
+                <button onClick={() => setEditando(null)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 42, height: 42, borderRadius: "50%", background: corAvatar(g.nome), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 16, flexShrink: 0 }}>
+                {iniciais(g.nome)}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{g.nome}</div>
+                <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
+                  PIN: ••••  ·  <span style={{ color: g.ativo ? "#10b981" : "#ef4444", fontWeight: 600 }}>{g.ativo ? "Ativo" : "Inativo"}</span>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button onClick={() => setEditando({ ...g, novoPin: "" })} style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
+                <button onClick={() => toggleAtivo(g)} title={g.ativo ? "Desativar" : "Ativar"} style={{ background: g.ativo ? "#fee2e2" : "#d1fae5", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{g.ativo ? "🔒" : "✅"}</button>
+                <button onClick={() => deletarGarcom(g)} style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>🗑️</button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {msg && (
+        <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 13, fontWeight: 600 }}>
+          {msg.texto}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ABA CONFIGURAÇÕES ─────────────────────────────────────────
-function Configuracoes({ config, onSave, statusLoja }) {
+function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons }) {
   const [cfg, setCfg] = useState(config);
   const [subAba, setSubAba] = useState("horario");
   const [saving, setSaving] = useState(false);
@@ -676,7 +839,7 @@ function Configuracoes({ config, onSave, statusLoja }) {
         </div>
       </div>
       <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
+        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
       </div>
@@ -760,6 +923,13 @@ function Configuracoes({ config, onSave, statusLoja }) {
         </div>
       )}
 
+      {subAba === "garcons" && (
+        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🧑‍🍳 Gerenciar Garçons</div>
+          <GarcomManager garcons={garcons} onReload={onReloadGarcons} />
+        </div>
+      )}
+
       {subAba === "pins" && (
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🔑 PINs de acesso</div>
@@ -799,6 +969,21 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
   const [subAba, setSubAba] = useState("geral");
   const [vendaAberta, setVendaAberta] = useState(null);
   const [zerarAberto, setZerarAberto] = useState(false);
+  const [relGarcons, setRelGarcons] = useState([]);
+  const [loadingGarcons, setLoadingGarcons] = useState(false);
+
+  async function carregarRelGarcons() {
+    setLoadingGarcons(true);
+    try {
+      const res = await fetch(BACKEND_URL + "/garcons/relatorio");
+      if (res.ok) setRelGarcons(await res.json());
+    } catch {}
+    setLoadingGarcons(false);
+  }
+
+  useEffect(() => {
+    if (subAba === "garcons") carregarRelGarcons();
+  }, [subAba]);
 
   const entregues = pedidos.filter(p => p.status === "entregue");
   const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
@@ -874,7 +1059,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["geral","📊 Geral"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"]].map(([k,l]) => (
+        {[["geral","📊 Geral"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
@@ -1072,6 +1257,81 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
             </div>
         }
       </>}
+
+      {/* DESEMPENHO GARÇONS */}
+      {subAba === "garcons" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🧑‍🍳 Desempenho dos Garçons</div>
+            <button onClick={carregarRelGarcons} disabled={loadingGarcons} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#555" }}>
+              {loadingGarcons ? "⏳" : "↻ Atualizar"}
+            </button>
+          </div>
+
+          {/* Métricas gerais */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Metrica icon="🧑‍🍳" label="Garçons ativos" valor={relGarcons.length} cor="#7b1a0a" />
+            <Metrica icon="🧾" label="Total de vendas" valor={relGarcons.reduce((s,g)=>s+g.vendas,0)} cor="#3b82f6" />
+            <Metrica icon="💰" label="Faturamento" valor={"R$ " + relGarcons.reduce((s,g)=>s+g.total,0).toFixed(2)} cor="#10b981" />
+          </div>
+
+          {relGarcons.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "#ccc" }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>🧑‍🍳</div>
+              <div>{loadingGarcons ? "Carregando..." : "Nenhum dado encontrado. As vendas do salão precisam ter garçom identificado."}</div>
+            </div>
+          ) : (
+            <>
+              {/* Líder */}
+              {relGarcons[0] && (
+                <div style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", borderRadius: 14, padding: "16px", color: "#fff", display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ width: 52, height: 52, borderRadius: "50%", background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 }}>🥇</div>
+                  <div>
+                    <div style={{ fontSize: 11, opacity: 0.8, textTransform: "uppercase", letterSpacing: 1 }}>Melhor desempenho</div>
+                    <div style={{ fontWeight: 800, fontSize: 20 }}>{relGarcons[0].nome}</div>
+                    <div style={{ fontSize: 13, opacity: 0.9, marginTop: 2 }}>
+                      R$ {relGarcons[0].total.toFixed(2)} · {relGarcons[0].vendas} venda{relGarcons[0].vendas !== 1 ? "s" : ""} · ticket médio R$ {relGarcons[0].ticketMedio.toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Tabela de todos */}
+              <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>📊 Ranking completo</div>
+                {relGarcons.map((g, i) => {
+                  const maxTotal = relGarcons[0]?.total || 1;
+                  const pct = (g.total / maxTotal) * 100;
+                  return (
+                    <div key={g.nome} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: i < relGarcons.length - 1 ? "1px dashed #f0f0f0" : "none" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                        <div style={{ width: 40, height: 40, borderRadius: "50%", background: corAvatar(g.nome), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 15, flexShrink: 0 }}>
+                          {iniciais(g.nome)}
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div style={{ fontWeight: 700, fontSize: 14 }}>
+                              {["🥇","🥈","🥉"][i] || `${i+1}º`} {g.nome}
+                            </div>
+                            <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {g.total.toFixed(2)}</div>
+                          </div>
+                          <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
+                            {g.vendas} venda{g.vendas !== 1 ? "s" : ""} · {g.mesas} mesa{g.mesas !== 1 ? "s" : ""} · ticket médio R$ {g.ticketMedio.toFixed(2)}
+                            {g.itemMaisVendido && g.itemMaisVendido !== "—" && ` · ❤️ ${g.itemMaisVendido}`}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ height: 8, background: "#f0f0f0", borderRadius: 4 }}>
+                        <div style={{ height: "100%", width: pct + "%", background: i === 0 ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 4, transition: "width 0.6s" }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
     </div>
   );
@@ -1334,7 +1594,7 @@ function PinLogin({ onLogin }) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
-function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado }) {
   const perfil = perfilSalao;
   const setPerfil = setPerfilSalao;
   const mesas = mesasSalao;
@@ -1363,7 +1623,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
     const itens=[...mesa.itens];
     const ex=itens.find(i=>i.id===item.id);
     if(ex) ex.qty+=1; else itens.push({...item,qty:1});
-    upd({...mesa,itens,status:mesa.status==="livre"?"ocupada":mesa.status,abertura:mesa.abertura||new Date().toISOString()});
+    // Auto-preenche garçom logado se ainda não preenchido
+    const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
+    upd({...mesa,itens,garcom:nomeGarcom,status:mesa.status==="livre"?"ocupada":mesa.status,abertura:mesa.abertura||new Date().toISOString()});
   }
   function chgQty(id,d){
     const itens=mesa.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>(i.qty||1)>0);
@@ -1378,7 +1640,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       id: Date.now(),
       mesa: mesa.id,
       cliente: mesa.cliente || "—",
-      garcom: mesa.garcom || "—",
+      garcom: garcomLogado?.nome || mesa.garcom || "—",
+      garcomId: garcomLogado?.id || null,
       itens: todosItens,
       total: totalMesa,
       pagamento: pagSalao,
@@ -1552,7 +1815,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             <input value={mesa.cliente||""} onChange={e=>upd({...mesa,cliente:e.target.value})} placeholder="🧑 Nome do cliente..." style={{background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
             <div style={{display:"flex",gap:8}}>
-              <input value={mesa.garcom||""} onChange={e=>upd({...mesa,garcom:e.target.value})} placeholder="👤 Garçom..." style={{flex:1,background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
+              {garcomLogado ? (
+                <div style={{flex:1,background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,display:"flex",alignItems:"center",gap:6}}>
+                  🧑‍🍳 <strong>{garcomLogado.nome}</strong>
+                </div>
+              ) : (
+                <input value={mesa.garcom||""} onChange={e=>upd({...mesa,garcom:e.target.value})} placeholder="👤 Garçom..." style={{flex:1,background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
+              )}
               <button onClick={()=>upd({...mesa,status:mesa.status==="chamando"?"ocupada":"chamando"})} style={{background:mesa.status==="chamando"?"#f59e0b":"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontWeight:700,fontSize:12}}>
                 🔔 {mesa.status==="chamando"?"Cancelar":"Chamar"}
               </button>
@@ -1637,7 +1906,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       <div style={{background:`linear-gradient(135deg,${T.wineD},${T.wine})`,color:"#fff",padding:"12px 16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <div>
-            <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{isDono?"👑 Dono":perfil==="caixa"?"💁‍♀️ Caixa":"🧑‍🍳 Garçom"}</div>
+            <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{isDono?"👑 Dono":perfil==="caixa"?"💁‍♀️ Caixa":garcomLogado?`🧑‍🍳 ${garcomLogado.nome}`:"🧑‍🍳 Garçom"}</div>
             <div style={{fontWeight:800,fontSize:18}}>🍽️ Mapa do Salão</div>
           </div>
           <div style={{textAlign:"right"}}>
@@ -1812,11 +2081,12 @@ function WhatsAppConexao({ conexao, backendUrl }) {
 }
 
 // ── PAINEL PRINCIPAL ──────────────────────────────────────────
-export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSalao, onSair }) {
+export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSalao, onSair, garcomLogado }) {
   const [pedidos, setPedidos] = useState(MOCK_PEDIDOS);
   const [cardapio, setCardapio] = useState(MOCK_CARDAPIO);
   const [cupons, setCupons] = useState(MOCK_CUPONS);
   const [avaliacoes, setAvaliacoes] = useState(MOCK_AVALIACOES);
+  const [garcons, setGarcons] = useState([]);
   const [aba, setAba] = useState(abrirSalao ? "salao" : "pedidos");
   const [expanded, setExpanded] = useState(null);
   const [filtro, setFiltro] = useState("todos");
@@ -1879,13 +2149,14 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   const fetchAll = useCallback(async () => {
     try {
-      const [rp, rc, rcu, ra, rcfg, rs] = await Promise.all([
+      const [rp, rc, rcu, ra, rcfg, rs, rg] = await Promise.all([
         fetch(BACKEND_URL + "/pedidos"),
         fetch(BACKEND_URL + "/cardapio"),
         fetch(BACKEND_URL + "/cupons"),
         fetch(BACKEND_URL + "/avaliacoes"),
         fetch(BACKEND_URL + "/config"),
         fetch(BACKEND_URL + "/config/status-loja"),
+        fetch(BACKEND_URL + "/garcons"),
       ]);
       if (rp.ok) { const data = await rp.json(); const ids = new Set(data.map(p => p.id)); const novos = [...ids].filter(id => !ant.current.has(id)); if (novos.length > 0 && ant.current.size > 0) { setExpanded(novos[0]); tocarSom(); } ant.current = ids; setPedidos(data); }
       if (rc.ok) setCardapio(await rc.json());
@@ -1893,6 +2164,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       if (ra.ok) setAvaliacoes(await ra.json());
       if (rcfg.ok) setConfig(await rcfg.json());
       if (rs.ok) setStatusLoja(await rs.json());
+      if (rg.ok) setGarcons(await rg.json());
       setConexao("online"); setUltimaAtt(new Date());
     } catch { setConexao("offline"); }
   }, [tocarSom]);
@@ -2079,9 +2351,9 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} />}
           {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
-          {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} />}
+          {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
         </div>
       </div>
 
