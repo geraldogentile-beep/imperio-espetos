@@ -828,6 +828,70 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [ajusteQtd, setAjusteQtd] = useState("");
   const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
 
+  // Dropdown cascata para vínculo com cardápio
+  function CardapioDropdown({ valor, onChange }) {
+    const [busca, setBusca] = useState("");
+    const [aberto, setAberto] = useState(false);
+    const selecionados = Array.isArray(valor) ? valor : (valor||"").split(",").map(s=>s.trim()).filter(Boolean);
+    const itensCardapio = cardapio.filter(i=>i.ativo!==false);
+    const filtrados = busca.trim()
+      ? itensCardapio.filter(i=>i.nome.toLowerCase().includes(busca.toLowerCase()))
+      : itensCardapio;
+
+    function toggle(nome) {
+      const nova = selecionados.includes(nome)
+        ? selecionados.filter(n=>n!==nome)
+        : [...selecionados, nome];
+      onChange(nova);
+    }
+    function remover(nome) { onChange(selecionados.filter(n=>n!==nome)); }
+
+    return (
+      <div style={{position:"relative"}}>
+        {/* Tags dos itens selecionados */}
+        {selecionados.length>0&&(
+          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:6}}>
+            {selecionados.map(n=>(
+              <span key={n} style={{display:"inline-flex",alignItems:"center",gap:4,background:"#7b1a0a",color:"#fff",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>
+                {n}
+                <span onClick={()=>remover(n)} style={{cursor:"pointer",fontSize:14,lineHeight:1,opacity:0.8}}>×</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {/* Campo de busca */}
+        <div style={{position:"relative"}}>
+          <input
+            value={busca}
+            onChange={e=>{setBusca(e.target.value);setAberto(true);}}
+            onFocus={()=>setAberto(true)}
+            placeholder={selecionados.length===0?"Buscar item do cardápio...":"Adicionar mais itens..."}
+            style={{width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:aberto&&filtrados.length>0?"8px 8px 0 0":"8px",fontSize:13,color:"#333",outline:"none",boxSizing:"border-box"}}
+          />
+          {busca&&<span onClick={()=>{setBusca("");setAberto(false);}} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#aaa",fontSize:16}}>×</span>}
+        </div>
+        {/* Lista cascata */}
+        {aberto&&filtrados.length>0&&(
+          <div style={{position:"absolute",zIndex:99,width:"100%",maxHeight:200,overflowY:"auto",background:"#fff",border:"1.5px solid #e0e0e0",borderTop:"none",borderRadius:"0 0 8px 8px",boxShadow:"0 6px 20px rgba(0,0,0,0.12)"}}>
+            {filtrados.map(item=>{
+              const sel = selecionados.includes(item.nome);
+              return(
+                <div key={item.id} onClick={()=>{toggle(item.nome);setBusca("");}}
+                  style={{padding:"9px 12px",cursor:"pointer",fontSize:13,display:"flex",justifyContent:"space-between",alignItems:"center",background:sel?"#fef0ed":"#fff",borderBottom:"1px solid #f5f5f5"}}
+                  onMouseEnter={e=>e.currentTarget.style.background=sel?"#fde8e4":"#f8f7f5"}
+                  onMouseLeave={e=>e.currentTarget.style.background=sel?"#fef0ed":"#fff"}>
+                  <span style={{fontWeight:sel?600:400,color:sel?"#7b1a0a":"#333"}}>{item.nome}</span>
+                  {sel&&<span style={{color:"#7b1a0a",fontWeight:700,fontSize:12}}>✓</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {aberto&&<div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setAberto(false)}/>}
+      </div>
+    );
+  }
+
   function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),3500); }
 
   async function carregar() {
@@ -943,23 +1007,10 @@ function Estoque({ backendUrl, cardapio = [] }) {
             ))}
             <div style={{marginBottom:8}}>
               <div style={{fontSize:11,color:"#888",marginBottom:6}}>Itens do cardápio vinculados</div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:5,maxHeight:140,overflowY:"auto",padding:"8px",background:"#f8f7f5",borderRadius:8,border:"1.5px solid #e0e0e0"}}>
-                {cardapio.filter(i=>i.ativo!==false).map(item=>{
-                  const lista = Array.isArray(editando.cardapioNomes)
-                    ? editando.cardapioNomes
-                    : (editando.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);
-                  const selecionado = lista.includes(item.nome);
-                  return(
-                    <button key={item.id} type="button" onClick={()=>{
-                      const novaLista = selecionado ? lista.filter(n=>n!==item.nome) : [...lista, item.nome];
-                      setEditando(p=>({...p, cardapioNomes: novaLista}));
-                    }} style={{padding:"4px 10px",borderRadius:20,border:"none",cursor:"pointer",fontSize:11,fontWeight:selecionado?700:400,background:selecionado?"#7b1a0a":"#fff",color:selecionado?"#fff":"#555",boxShadow:"0 1px 4px rgba(0,0,0,0.08)"}}>
-                      {selecionado?"✓ ":""}{item.nome}
-                    </button>
-                  );
-                })}
-              </div>
-              {(()=>{const l=Array.isArray(editando.cardapioNomes)?editando.cardapioNomes:(editando.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);return l.length>0&&<div style={{fontSize:11,color:"#7b1a0a",marginTop:4}}>✓ Selecionados: {l.join(", ")}</div>;})()}
+              <CardapioDropdown
+                valor={editando.cardapioNomes}
+                onChange={lista=>setEditando(p=>({...p,cardapioNomes:lista}))}
+              />
             </div>
             {editando.tipo==="chopp"&&<div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={editando.capacidadeBarril||""} onChange={e=>setEditando(p=>({...p,capacidadeBarril:parseFloat(e.target.value)}))} style={inp}/></div>}
             <div style={{display:"flex",gap:8}}>
@@ -1124,22 +1175,10 @@ function Estoque({ backendUrl, cardapio = [] }) {
             </div>
             <div style={{marginBottom:12}}>
               <div style={{fontSize:11,color:"#888",marginBottom:6}}>Itens do cardápio vinculados</div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:5,maxHeight:160,overflowY:"auto",padding:"8px",background:"#f8f7f5",borderRadius:8,border:"1.5px solid #e0e0e0"}}>
-                {cardapio.filter(i=>i.ativo!==false).map(item=>{
-                  const selecionado = (novo.cardapioNomes||"").split(",").map(s=>s.trim()).includes(item.nome);
-                  return(
-                    <button key={item.id} type="button" onClick={()=>{
-                      const atual = (novo.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);
-                      const novo2 = selecionado ? atual.filter(n=>n!==item.nome) : [...atual, item.nome];
-                      setNovo(p=>({...p, cardapioNomes: novo2.join(", ")}));
-                    }} style={{padding:"4px 10px",borderRadius:20,border:"none",cursor:"pointer",fontSize:11,fontWeight:selecionado?700:400,background:selecionado?"#7b1a0a":"#fff",color:selecionado?"#fff":"#555",boxShadow:"0 1px 4px rgba(0,0,0,0.08)"}}>
-                      {selecionado?"✓ ":""}{item.nome}
-                    </button>
-                  );
-                })}
-                {cardapio.filter(i=>i.ativo!==false).length===0&&<div style={{fontSize:12,color:"#aaa",padding:"4px"}}>Carregando cardápio...</div>}
-              </div>
-              {novo.cardapioNomes&&<div style={{fontSize:11,color:"#7b1a0a",marginTop:4}}>✓ Selecionados: {novo.cardapioNomes}</div>}
+              <CardapioDropdown
+                valor={novo.cardapioNomes}
+                onChange={lista=>setNovo(p=>({...p, cardapioNomes: lista.join(", ")}))}
+              />
             </div>
             {novo.tipo==="chopp"&&<div style={{background:"#fef3c7",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#92400e",marginBottom:10}}>ℹ️ Para chopp, o consumo por venda = litros por caneca (400ml = 0.4)</div>}
             <div style={{display:"flex",gap:8}}>
