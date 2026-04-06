@@ -810,7 +810,7 @@ function GarcomManager({ garcons, onReload }) {
 }
 
 // ── ABA ESTOQUE ───────────────────────────────────────────────
-function Estoque({ backendUrl }) {
+function Estoque({ backendUrl, cardapio = [] }) {
   const [itens, setItens] = useState([]);
   const [movs, setMovs] = useState([]);
   const [relConsumo, setRelConsumo] = useState([]);
@@ -935,12 +935,32 @@ function Estoque({ backendUrl }) {
         {editando ? (
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>✏️ Editando: {editando.nome}</div>
-            {[["nome","Nome"],["unidade","Unidade"],["minimo","Estoque mínimo"],["consumoPorVenda","Consumo por venda"],["cardapioNomes","Itens do cardápio (separados por vírgula)"],["alertaTelefone","Telefone alerta WhatsApp"]].map(([k,l])=>(
+            {[["nome","Nome"],["unidade","Unidade"],["minimo","Estoque mínimo"],["consumoPorVenda","Consumo por venda"],["alertaTelefone","Telefone alerta WhatsApp"]].map(([k,l])=>(
               <div key={k} style={{marginBottom:8}}>
                 <div style={{fontSize:11,color:"#888",marginBottom:3}}>{l}</div>
-                <input value={typeof editando[k]==="object"?editando[k].join(", "):editando[k]||""} onChange={e=>setEditando(p=>({...p,[k]:e.target.value}))} style={inp}/>
+                <input value={editando[k]||""} onChange={e=>setEditando(p=>({...p,[k]:e.target.value}))} style={inp}/>
               </div>
             ))}
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:11,color:"#888",marginBottom:6}}>Itens do cardápio vinculados</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5,maxHeight:140,overflowY:"auto",padding:"8px",background:"#f8f7f5",borderRadius:8,border:"1.5px solid #e0e0e0"}}>
+                {cardapio.filter(i=>i.ativo!==false).map(item=>{
+                  const lista = Array.isArray(editando.cardapioNomes)
+                    ? editando.cardapioNomes
+                    : (editando.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);
+                  const selecionado = lista.includes(item.nome);
+                  return(
+                    <button key={item.id} type="button" onClick={()=>{
+                      const novaLista = selecionado ? lista.filter(n=>n!==item.nome) : [...lista, item.nome];
+                      setEditando(p=>({...p, cardapioNomes: novaLista}));
+                    }} style={{padding:"4px 10px",borderRadius:20,border:"none",cursor:"pointer",fontSize:11,fontWeight:selecionado?700:400,background:selecionado?"#7b1a0a":"#fff",color:selecionado?"#fff":"#555",boxShadow:"0 1px 4px rgba(0,0,0,0.08)"}}>
+                      {selecionado?"✓ ":""}{item.nome}
+                    </button>
+                  );
+                })}
+              </div>
+              {(()=>{const l=Array.isArray(editando.cardapioNomes)?editando.cardapioNomes:(editando.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);return l.length>0&&<div style={{fontSize:11,color:"#7b1a0a",marginTop:4}}>✓ Selecionados: {l.join(", ")}</div>;})()}
+            </div>
             {editando.tipo==="chopp"&&<div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={editando.capacidadeBarril||""} onChange={e=>setEditando(p=>({...p,capacidadeBarril:parseFloat(e.target.value)}))} style={inp}/></div>}
             <div style={{display:"flex",gap:8}}>
               <button onClick={salvarEdicao} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"💾 Salvar"}</button>
@@ -1102,7 +1122,25 @@ function Estoque({ backendUrl }) {
               <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4 (400ml)":"1"} style={inp}/></div>
               <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tel. alerta</div><input value={novo.alertaTelefone} onChange={e=>setNovo(p=>({...p,alertaTelefone:e.target.value}))} placeholder="5511..." style={inp}/></div>
             </div>
-            <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Itens do cardápio vinculados (separados por vírgula)</div><input value={novo.cardapioNomes} onChange={e=>setNovo(p=>({...p,cardapioNomes:e.target.value}))} placeholder="Chopp, Chopp Vinho" style={inp}/></div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:11,color:"#888",marginBottom:6}}>Itens do cardápio vinculados</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5,maxHeight:160,overflowY:"auto",padding:"8px",background:"#f8f7f5",borderRadius:8,border:"1.5px solid #e0e0e0"}}>
+                {cardapio.filter(i=>i.ativo!==false).map(item=>{
+                  const selecionado = (novo.cardapioNomes||"").split(",").map(s=>s.trim()).includes(item.nome);
+                  return(
+                    <button key={item.id} type="button" onClick={()=>{
+                      const atual = (novo.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);
+                      const novo2 = selecionado ? atual.filter(n=>n!==item.nome) : [...atual, item.nome];
+                      setNovo(p=>({...p, cardapioNomes: novo2.join(", ")}));
+                    }} style={{padding:"4px 10px",borderRadius:20,border:"none",cursor:"pointer",fontSize:11,fontWeight:selecionado?700:400,background:selecionado?"#7b1a0a":"#fff",color:selecionado?"#fff":"#555",boxShadow:"0 1px 4px rgba(0,0,0,0.08)"}}>
+                      {selecionado?"✓ ":""}{item.nome}
+                    </button>
+                  );
+                })}
+                {cardapio.filter(i=>i.ativo!==false).length===0&&<div style={{fontSize:12,color:"#aaa",padding:"4px"}}>Carregando cardápio...</div>}
+              </div>
+              {novo.cardapioNomes&&<div style={{fontSize:11,color:"#7b1a0a",marginTop:4}}>✓ Selecionados: {novo.cardapioNomes}</div>}
+            </div>
             {novo.tipo==="chopp"&&<div style={{background:"#fef3c7",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#92400e",marginBottom:10}}>ℹ️ Para chopp, o consumo por venda = litros por caneca (400ml = 0.4)</div>}
             <div style={{display:"flex",gap:8}}>
               <button onClick={criarItem} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Cadastrar"}</button>
@@ -3002,7 +3040,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           )}
 
           {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
-          {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} />}
+          {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} cardapio={cardapio} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
