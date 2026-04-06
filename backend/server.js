@@ -79,6 +79,25 @@ const GarcomSchema = new mongoose.Schema({
   criadoEm: { type: Date, default: Date.now },
 });
 
+// ── FECHAMENTO DO DIA ──────────────────────────────────────────
+const FechamentoDiaSchema = new mongoose.Schema({
+  data:            { type: Date, default: Date.now },
+  dataStr:         String,           // "2026-04-06" para busca fácil
+  totalDelivery:   { type: Number, default: 0 },
+  totalSalao:      { type: Number, default: 0 },
+  totalGeral:      { type: Number, default: 0 },
+  pedidosDelivery: { type: Number, default: 0 },
+  vendasSalao:     { type: Number, default: 0 },
+  porPagamento: {  // salão por forma de pagamento
+    pix:      { type: Number, default: 0 },
+    cartao:   { type: Number, default: 0 },
+    dinheiro: { type: Number, default: 0 },
+  },
+  porGarcom: Array,   // [{ nome, vendas, total }]
+  obs: String,
+  criadoPor: String,
+});
+
 // ── ESTOQUE ────────────────────────────────────────────────────
 const EstoqueSchema = new mongoose.Schema({
   nome:          { type: String, required: true },       // "Chopp", "Coca-Cola Lata"
@@ -113,8 +132,9 @@ const ConfigDB    = mongoose.model("Config",    ConfigSchema);
 const CardapioDB  = mongoose.model("Cardapio",  CardapioSchema);
 const VendaSalaoDB = mongoose.model("VendaSalao", VendaSalaoSchema);
 const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
-const EstoqueDB    = mongoose.model("Estoque",   EstoqueSchema);
-const MovEstoqueDB = mongoose.model("MovEstoque", MovEstoqueSchema);
+const EstoqueDB    = mongoose.model("Estoque",        EstoqueSchema);
+const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
+const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
 
 async function conectarMongo() {
   try {
@@ -991,6 +1011,110 @@ app.get("/garcons/relatorio", async (req, res) => {
 
     res.json(resultado);
   } catch (e) { res.json([]); }
+});
+
+// ── FECHAMENTO DO DIA API ─────────────────────────────────────
+app.post("/fechamento-dia", async (req, res) => {
+  try {
+    const { obs, criadoPor } = req.body;
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    const amanha = new Date(hoje); amanha.setDate(amanha.getDate() + 1);
+    const dataStr = hoje.toISOString().slice(0, 10);
+
+    // Verifica se já foi feito fechamento hoje
+    const jaFez = await FechamentoDB.findOne({ dataStr });
+    if (jaFez) return res.status(400).json({ erro: "Fechamento do dia já realizado hoje.", fechamento: jaFez });
+
+    // Pedidos delivery entregues hoje
+    const pedidosHoje = await PedidoDB.find({ status: "entregue", horario: { $gte: hoje, $lt: amanha } }).lean();
+    const totalDelivery = pedidosHoje.reduce((s, p) => s + (p.total || 0), 0);
+
+    // Vendas salão hoje
+    const vendasHoje = await VendaSalaoDB.find({ fechamento: { $gte: hoje, $lt: amanha } }).lean();
+    const totalSalao = vendasHoje.reduce((s, v) => s + (v.total || 0), 0);
+
+    // Por forma de pagamento
+    const porPagamento = { pix: 0, cartao: 0, dinheiro: 0 };
+    vendasHoje.forEach(v => {
+      const pag = v.pagamento || "dinheiro";
+      porPagamento[pag] = (porPagamento[pag] || 0) + (v.total || 0);
+    });
+
+    // Por garçom
+    const gMap = {};
+    vendasHoje.forEach(v => {
+      const g = v.garcom && v.garcom !== "—" ? v.garcom : "Sem garçom";
+      if (!gMap[g]) gMap[g] = { nome: g, vendas: 0, total: 0 };
+      gMap[g].vendas += 1;
+      gMap[g].total += v.total || 0;
+    });
+    const porGarcom = Object.values(gMap).sort((a, b) => b.total - a.total);
+
+    const fechamento = await FechamentoDB.create({
+      data: new Date(), dataStr,
+      totalDelivery: parseFloat(totalDelivery.toFixed(2)),
+      totalSalao: parseFloat(totalSalao.toFixed(2)),
+      totalGeral: parseFloat((totalDelivery + totalSalao).toFixed(2)),
+      pedidosDelivery: pedidosHoje.length,
+      vendasSalao: vendasHoje.length,
+      porPagamento: {
+        pix: parseFloat(porPagamento.pix.toFixed(2)),
+        cartao: parseFloat(porPagamento.cartao.toFixed(2)),
+        dinheiro: parseFloat(porPagamento.dinheiro.toFixed(2)),
+      },
+      porGarcom,
+      obs: obs || "",
+      criadoPor: criadoPor || "admin",
+    });
+
+    res.status(201).json(fechamento);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.get("/fechamento-dia", async (req, res) => {
+  try {
+    const lista = await FechamentoDB.find().sort({ data: -1 }).limit(90).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+
+app.get("/fechamento-dia/:dataStr", async (req, res) => {
+  try {
+    const f = await FechamentoDB.findOne({ dataStr: req.params.dataStr }).lean();
+    if (!f) return res.status(404).json({ erro: "Fechamento não encontrado" });
+    res.json(f);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── RESET (apagar dados de teste) ────────────────────────────
+app.post("/reset/dados-teste", async (req, res) => {
+  const { confirmar } = req.body;
+  if (confirmar !== "CONFIRMAR_RESET") return res.status(400).json({ erro: "Confirmação incorreta" });
+  try {
+    const [pedidos, vendas, avaliacoes, fidelidade, fechamentos, movEstoque] = await Promise.all([
+      PedidoDB.deleteMany({}),
+      VendaSalaoDB.deleteMany({}),
+      AvaliacaoDB.deleteMany({}),
+      FidelidadeDB.deleteMany({}),
+      FechamentoDB.deleteMany({}),
+      MovEstoqueDB.deleteMany({}),
+    ]);
+    // Zera quantidades do estoque mas mantém o cadastro
+    await EstoqueDB.updateMany({}, { quantidade: 0, alertaEnviado: false });
+    res.json({
+      ok: true,
+      apagados: {
+        pedidos: pedidos.deletedCount,
+        vendasSalao: vendas.deletedCount,
+        avaliacoes: avaliacoes.deletedCount,
+        fidelidade: fidelidade.deletedCount,
+        fechamentos: fechamentos.deletedCount,
+        movimentacoesEstoque: movEstoque.deletedCount,
+      },
+      mantidos: "cardápio, configurações, garçons, cupons e cadastro do estoque",
+    });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
 // ── HEALTH ────────────────────────────────────────────────────
