@@ -829,13 +829,15 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
 
   // Dropdown cascata para vínculo com cardápio
-  function CardapioDropdown({ valor, onChange }) {
+  function CardapioDropdown({ valor, onChange, nomeManual, onNomeManual }) {
     const [busca, setBusca] = useState("");
     const [aberto, setAberto] = useState(false);
     const selecionados = Array.isArray(valor) ? valor : (valor||"").split(",").map(s=>s.trim()).filter(Boolean);
     const itensCardapio = cardapio.filter(i=>i.ativo!==false);
-    const filtrados = busca.trim()
-      ? itensCardapio.filter(i=>i.nome.toLowerCase().includes(busca.toLowerCase()))
+    // Se tem campo de nome manual, filtra pela digitação nele; senão filtra pelo busca interno
+    const termoBusca = onNomeManual ? (nomeManual||"") : busca;
+    const filtrados = termoBusca.trim()
+      ? itensCardapio.filter(i=>i.nome.toLowerCase().includes(termoBusca.toLowerCase()))
       : itensCardapio;
 
     function toggle(nome) {
@@ -859,16 +861,22 @@ function Estoque({ backendUrl, cardapio = [] }) {
             ))}
           </div>
         )}
-        {/* Campo de busca */}
+        {/* Campo de busca / nome */}
         <div style={{position:"relative"}}>
           <input
-            value={busca}
-            onChange={e=>{setBusca(e.target.value);setAberto(true);}}
+            value={onNomeManual ? (nomeManual||"") : busca}
+            onChange={e=>{
+              if(onNomeManual) onNomeManual(e.target.value);
+              else setBusca(e.target.value);
+              setAberto(true);
+            }}
             onFocus={()=>setAberto(true)}
-            placeholder={selecionados.length===0?"Buscar item do cardápio...":"Adicionar mais itens..."}
+            placeholder={selecionados.length===0?"Buscar ou digitar nome...":"Adicionar mais itens..."}
             style={{width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:aberto&&filtrados.length>0?"8px 8px 0 0":"8px",fontSize:13,color:"#333",outline:"none",boxSizing:"border-box"}}
           />
-          {busca&&<span onClick={()=>{setBusca("");setAberto(false);}} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#aaa",fontSize:16}}>×</span>}
+          {(onNomeManual ? nomeManual : busca)&&(
+            <span onClick={()=>{if(onNomeManual)onNomeManual("");else setBusca("");setAberto(false);}} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#aaa",fontSize:16}}>×</span>
+          )}
         </div>
         {/* Lista cascata */}
         {aberto&&filtrados.length>0&&(
@@ -876,12 +884,17 @@ function Estoque({ backendUrl, cardapio = [] }) {
             {filtrados.map(item=>{
               const sel = selecionados.includes(item.nome);
               return(
-                <div key={item.id} onClick={()=>{toggle(item.nome);setBusca("");}}
+                <div key={item.id} onClick={()=>{
+                  toggle(item.nome);
+                  if(onNomeManual) onNomeManual(item.nome);
+                  else setBusca("");
+                  setAberto(false);
+                }}
                   style={{padding:"9px 12px",cursor:"pointer",fontSize:13,display:"flex",justifyContent:"space-between",alignItems:"center",background:sel?"#fef0ed":"#fff",borderBottom:"1px solid #f5f5f5"}}
                   onMouseEnter={e=>e.currentTarget.style.background=sel?"#fde8e4":"#f8f7f5"}
                   onMouseLeave={e=>e.currentTarget.style.background=sel?"#fef0ed":"#fff"}>
                   <span style={{fontWeight:sel?600:400,color:sel?"#7b1a0a":"#333"}}>{item.nome}</span>
-                  {sel&&<span style={{color:"#7b1a0a",fontWeight:700,fontSize:12}}>✓</span>}
+                  <span style={{fontSize:11,color:"#aaa"}}>R$ {item.preco?.toFixed(2)}</span>
                 </div>
               );
             })}
@@ -1153,7 +1166,19 @@ function Estoque({ backendUrl, cardapio = [] }) {
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📦 Novo item</div>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
-              <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Nome *</div><input value={novo.nome} onChange={e=>setNovo(p=>({...p,nome:e.target.value}))} placeholder="Ex: Coca-Cola Lata" style={inp}/></div>
+              <div style={{flex:2}}>
+                <div style={{fontSize:11,color:"#888",marginBottom:3}}>Nome * <span style={{color:"#bbb"}}>(selecione do cardápio ou digite)</span></div>
+                <CardapioDropdown
+                  valor={novo.cardapioNomes}
+                  onChange={lista=>{
+                    // Ao selecionar do cardápio, preenche nome e vínculo automaticamente
+                    const nomeAuto = lista.length===1 ? lista[0] : lista.length>1 ? lista[0] : novo.nome;
+                    setNovo(p=>({...p, cardapioNomes: lista.join(", "), nome: nomeAuto || p.nome}));
+                  }}
+                  nomeManual={novo.nome}
+                  onNomeManual={v=>setNovo(p=>({...p, nome:v}))}
+                />
+              </div>
               <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tipo</div>
                 <select value={novo.tipo} onChange={e=>setNovo(p=>({...p,tipo:e.target.value,unidade:e.target.value==="chopp"?"litros":"un"}))} style={inp}>
                   <option value="normal">Normal</option>
@@ -1172,13 +1197,6 @@ function Estoque({ backendUrl, cardapio = [] }) {
             <div style={{display:"flex",gap:8,marginBottom:8}}>
               <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4 (400ml)":"1"} style={inp}/></div>
               <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tel. alerta</div><input value={novo.alertaTelefone} onChange={e=>setNovo(p=>({...p,alertaTelefone:e.target.value}))} placeholder="5511..." style={inp}/></div>
-            </div>
-            <div style={{marginBottom:12}}>
-              <div style={{fontSize:11,color:"#888",marginBottom:6}}>Itens do cardápio vinculados</div>
-              <CardapioDropdown
-                valor={novo.cardapioNomes}
-                onChange={lista=>setNovo(p=>({...p, cardapioNomes: lista.join(", ")}))}
-              />
             </div>
             {novo.tipo==="chopp"&&<div style={{background:"#fef3c7",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#92400e",marginBottom:10}}>ℹ️ Para chopp, o consumo por venda = litros por caneca (400ml = 0.4)</div>}
             <div style={{display:"flex",gap:8}}>
