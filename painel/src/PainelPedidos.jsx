@@ -1163,26 +1163,40 @@ function Estoque({ backendUrl, cardapio = [] }) {
         {novoForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📦 Novo item</div>
-            <div style={{display:"flex",gap:8,marginBottom:8}}>
-              <div style={{flex:2}}>
-                <div style={{fontSize:11,color:"#888",marginBottom:3}}>Nome * <span style={{color:"#bbb"}}>(selecione do cardápio ou digite)</span></div>
-                <CardapioDropdown
-                  cardapio={cardapio}
-                  valor={novo.cardapioNomes}
-                  onChange={lista=>{
-                    const nomeAuto = lista.length===1 ? lista[0] : lista.length>1 ? lista[0] : novo.nome;
-                    setNovo(p=>({...p, cardapioNomes: lista.join(", "), nome: nomeAuto || p.nome}));
-                  }}
-                  nomeManual={novo.nome}
-                  onNomeManual={v=>setNovo(p=>({...p, nome:v}))}
-                />
-              </div>
-              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tipo</div>
-                <select value={novo.tipo} onChange={e=>setNovo(p=>({...p,tipo:e.target.value,unidade:e.target.value==="chopp"?"litros":"un"}))} style={inp}>
-                  <option value="normal">Normal</option>
-                  <option value="chopp">🍺 Chopp</option>
-                </select>
-              </div>
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Nome * <span style={{color:"#bbb"}}>(selecione do cardápio ou digite)</span></div>
+              <CardapioDropdown
+                cardapio={cardapio}
+                valor={novo.cardapioNomes}
+                onChange={lista=>{
+                  const nomeAuto = lista.length>=1 ? lista[0] : novo.nome;
+                  // Detecta chopp automaticamente pelo nome
+                  const eChopp = lista.some(n=>n.toLowerCase().includes("chopp"));
+                  setNovo(p=>({
+                    ...p,
+                    cardapioNomes: lista.join(", "),
+                    nome: nomeAuto || p.nome,
+                    tipo: eChopp ? "chopp" : "normal",
+                    unidade: eChopp ? "litros" : p.unidade,
+                    consumoPorVenda: eChopp ? "0.4" : p.consumoPorVenda,
+                  }));
+                }}
+                nomeManual={novo.nome}
+                onNomeManual={v=>{
+                  const eChopp = v.toLowerCase().includes("chopp");
+                  setNovo(p=>({
+                    ...p, nome:v,
+                    tipo: eChopp ? "chopp" : "normal",
+                    unidade: eChopp ? "litros" : (p.tipo==="chopp" ? "un" : p.unidade),
+                    consumoPorVenda: eChopp ? "0.4" : (p.tipo==="chopp" ? "1" : p.consumoPorVenda),
+                  }));
+                }}
+              />
+              {novo.tipo==="chopp"&&(
+                <div style={{marginTop:6,background:"#fef3c7",borderRadius:8,padding:"6px 10px",fontSize:11,color:"#92400e",display:"flex",alignItems:"center",gap:6}}>
+                  🍺 Modo chopp ativado — consumo por caneca (400ml = 0.4L)
+                </div>
+              )}
             </div>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
               <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Unidade</div><input value={novo.unidade} onChange={e=>setNovo(p=>({...p,unidade:e.target.value}))} placeholder="un / litros / kg" style={inp}/></div>
@@ -1193,10 +1207,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={novo.capacidadeBarril} onChange={e=>setNovo(p=>({...p,capacidadeBarril:e.target.value}))} placeholder="30 ou 50" style={inp}/></div>
             )}
             <div style={{display:"flex",gap:8,marginBottom:8}}>
-              <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4 (400ml)":"1"} style={inp}/></div>
+              <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda {novo.tipo==="chopp"&&<span style={{color:"#92400e"}}>(litros por caneca)</span>}</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4":"1"} style={inp}/></div>
               <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tel. alerta</div><input value={novo.alertaTelefone} onChange={e=>setNovo(p=>({...p,alertaTelefone:e.target.value}))} placeholder="5511..." style={inp}/></div>
             </div>
-            {novo.tipo==="chopp"&&<div style={{background:"#fef3c7",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#92400e",marginBottom:10}}>ℹ️ Para chopp, o consumo por venda = litros por caneca (400ml = 0.4)</div>}
             <div style={{display:"flex",gap:8}}>
               <button onClick={criarItem} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Cadastrar"}</button>
               <button onClick={()=>setNovoForm(false)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
