@@ -1199,12 +1199,41 @@ function Estoque({ backendUrl, cardapio = [] }) {
               )}
             </div>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
-              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Unidade</div><input value={novo.unidade} onChange={e=>setNovo(p=>({...p,unidade:e.target.value}))} placeholder="un / litros / kg" style={inp}/></div>
-              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Qtd. inicial</div><input type="number" step="0.1" value={novo.quantidade} onChange={e=>setNovo(p=>({...p,quantidade:e.target.value}))} placeholder="0" style={inp}/></div>
-              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Estoque mínimo</div><input type="number" step="0.1" value={novo.minimo} onChange={e=>setNovo(p=>({...p,minimo:e.target.value}))} placeholder="0" style={inp}/></div>
+              {novo.tipo==="chopp" ? (<>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>Qtd. de barris</div>
+                  <input type="number" min="0" step="1" value={novo.quantidade} onChange={e=>{
+                    const barris = parseFloat(e.target.value)||0;
+                    const cap = parseFloat(novo.capacidadeBarril)||0;
+                    setNovo(p=>({...p, quantidade: cap>0 ? String(barris*cap) : e.target.value, _barris: e.target.value}));
+                  }} placeholder="Ex: 2" style={inp}/>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div>
+                  <select value={novo.capacidadeBarril} onChange={e=>{
+                    const cap = parseFloat(e.target.value)||0;
+                    const barris = parseFloat(novo._barris)||0;
+                    setNovo(p=>({...p, capacidadeBarril: e.target.value, quantidade: barris>0 ? String(barris*cap) : p.quantidade}));
+                  }} style={inp}>
+                    <option value="">Selecione</option>
+                    <option value="30">30 litros</option>
+                    <option value="50">50 litros</option>
+                  </select>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>Estoque mínimo (litros)</div>
+                  <input type="number" step="0.1" value={novo.minimo} onChange={e=>setNovo(p=>({...p,minimo:e.target.value}))} placeholder="Ex: 5" style={inp}/>
+                </div>
+              </>) : (<>
+                <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Unidade</div><input value={novo.unidade} onChange={e=>setNovo(p=>({...p,unidade:e.target.value}))} placeholder="un / litros / kg" style={inp}/></div>
+                <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Qtd. inicial</div><input type="number" step="0.1" value={novo.quantidade} onChange={e=>setNovo(p=>({...p,quantidade:e.target.value}))} placeholder="0" style={inp}/></div>
+                <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Estoque mínimo</div><input type="number" step="0.1" value={novo.minimo} onChange={e=>setNovo(p=>({...p,minimo:e.target.value}))} placeholder="0" style={inp}/></div>
+              </>)}
             </div>
-            {novo.tipo==="chopp"&&(
-              <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={novo.capacidadeBarril} onChange={e=>setNovo(p=>({...p,capacidadeBarril:e.target.value}))} placeholder="30 ou 50" style={inp}/></div>
+            {novo.tipo==="chopp"&&novo.capacidadeBarril&&novo._barris&&(
+              <div style={{background:"#d1fae5",borderRadius:8,padding:"6px 10px",fontSize:12,color:"#065f46",marginBottom:8,fontWeight:600}}>
+                📊 Total em estoque: {parseFloat(novo._barris||0)*parseFloat(novo.capacidadeBarril||0)} litros
+              </div>
             )}
             <div style={{display:"flex",gap:8,marginBottom:8}}>
               <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda {novo.tipo==="chopp"&&<span style={{color:"#92400e"}}>(litros por caneca)</span>}</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4":"1"} style={inp}/></div>
