@@ -809,6 +809,79 @@ function GarcomManager({ garcons, onReload }) {
   );
 }
 
+// ── DROPDOWN CARDÁPIO ─────────────────────────────────────────
+function CardapioDropdown({ valor, onChange, nomeManual, onNomeManual, cardapio = [] }) {
+  const [busca, setBusca] = useState("");
+  const [aberto, setAberto] = useState(false);
+  const selecionados = Array.isArray(valor) ? valor : (valor||"").split(",").map(s=>s.trim()).filter(Boolean);
+  const itensCardapio = cardapio.filter(i=>i.ativo!==false);
+  const termoBusca = onNomeManual ? (nomeManual||"") : busca;
+  const filtrados = termoBusca.trim()
+    ? itensCardapio.filter(i=>i.nome.toLowerCase().includes(termoBusca.toLowerCase()))
+    : itensCardapio;
+
+  function toggle(nome) {
+    const nova = selecionados.includes(nome)
+      ? selecionados.filter(n=>n!==nome)
+      : [...selecionados, nome];
+    onChange(nova);
+  }
+  function remover(nome) { onChange(selecionados.filter(n=>n!==nome)); }
+
+  return (
+    <div style={{position:"relative"}}>
+      {selecionados.length>0&&(
+        <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:6}}>
+          {selecionados.map(n=>(
+            <span key={n} style={{display:"inline-flex",alignItems:"center",gap:4,background:"#7b1a0a",color:"#fff",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>
+              {n}
+              <span onClick={()=>remover(n)} style={{cursor:"pointer",fontSize:14,lineHeight:1,opacity:0.8}}>×</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <div style={{position:"relative"}}>
+        <input
+          value={onNomeManual ? (nomeManual||"") : busca}
+          onChange={e=>{
+            if(onNomeManual) onNomeManual(e.target.value);
+            else setBusca(e.target.value);
+            setAberto(true);
+          }}
+          onFocus={()=>setAberto(true)}
+          placeholder={selecionados.length===0?"Buscar ou digitar nome...":"Adicionar mais itens..."}
+          style={{width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:aberto&&filtrados.length>0?"8px 8px 0 0":"8px",fontSize:13,color:"#333",outline:"none",boxSizing:"border-box"}}
+        />
+        {(onNomeManual ? nomeManual : busca)&&(
+          <span onClick={()=>{if(onNomeManual)onNomeManual("");else setBusca("");setAberto(false);}} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#aaa",fontSize:16}}>×</span>
+        )}
+      </div>
+      {aberto&&filtrados.length>0&&(
+        <div style={{position:"absolute",zIndex:99,width:"100%",maxHeight:200,overflowY:"auto",background:"#fff",border:"1.5px solid #e0e0e0",borderTop:"none",borderRadius:"0 0 8px 8px",boxShadow:"0 6px 20px rgba(0,0,0,0.12)"}}>
+          {filtrados.map(item=>{
+            const sel = selecionados.includes(item.nome);
+            return(
+              <div key={item.id} onClick={()=>{
+                toggle(item.nome);
+                if(onNomeManual) onNomeManual(item.nome);
+                else setBusca("");
+                setAberto(false);
+              }}
+                style={{padding:"9px 12px",cursor:"pointer",fontSize:13,display:"flex",justifyContent:"space-between",alignItems:"center",background:sel?"#fef0ed":"#fff",borderBottom:"1px solid #f5f5f5"}}
+                onMouseEnter={e=>e.currentTarget.style.background=sel?"#fde8e4":"#f8f7f5"}
+                onMouseLeave={e=>e.currentTarget.style.background=sel?"#fef0ed":"#fff"}>
+                <span style={{fontWeight:sel?600:400,color:sel?"#7b1a0a":"#333"}}>{item.nome}</span>
+                <span style={{fontSize:11,color:"#aaa"}}>R$ {item.preco?.toFixed(2)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {aberto&&<div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setAberto(false)}/>}
+    </div>
+  );
+}
+
 // ── ABA ESTOQUE ───────────────────────────────────────────────
 function Estoque({ backendUrl, cardapio = [] }) {
   const [itens, setItens] = useState([]);
@@ -829,82 +902,6 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
 
   // Dropdown cascata para vínculo com cardápio
-  function CardapioDropdown({ valor, onChange, nomeManual, onNomeManual }) {
-    const [busca, setBusca] = useState("");
-    const [aberto, setAberto] = useState(false);
-    const selecionados = Array.isArray(valor) ? valor : (valor||"").split(",").map(s=>s.trim()).filter(Boolean);
-    const itensCardapio = cardapio.filter(i=>i.ativo!==false);
-    // Se tem campo de nome manual, filtra pela digitação nele; senão filtra pelo busca interno
-    const termoBusca = onNomeManual ? (nomeManual||"") : busca;
-    const filtrados = termoBusca.trim()
-      ? itensCardapio.filter(i=>i.nome.toLowerCase().includes(termoBusca.toLowerCase()))
-      : itensCardapio;
-
-    function toggle(nome) {
-      const nova = selecionados.includes(nome)
-        ? selecionados.filter(n=>n!==nome)
-        : [...selecionados, nome];
-      onChange(nova);
-    }
-    function remover(nome) { onChange(selecionados.filter(n=>n!==nome)); }
-
-    return (
-      <div style={{position:"relative"}}>
-        {/* Tags dos itens selecionados */}
-        {selecionados.length>0&&(
-          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:6}}>
-            {selecionados.map(n=>(
-              <span key={n} style={{display:"inline-flex",alignItems:"center",gap:4,background:"#7b1a0a",color:"#fff",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>
-                {n}
-                <span onClick={()=>remover(n)} style={{cursor:"pointer",fontSize:14,lineHeight:1,opacity:0.8}}>×</span>
-              </span>
-            ))}
-          </div>
-        )}
-        {/* Campo de busca / nome */}
-        <div style={{position:"relative"}}>
-          <input
-            value={onNomeManual ? (nomeManual||"") : busca}
-            onChange={e=>{
-              if(onNomeManual) onNomeManual(e.target.value);
-              else setBusca(e.target.value);
-              setAberto(true);
-            }}
-            onFocus={()=>setAberto(true)}
-            placeholder={selecionados.length===0?"Buscar ou digitar nome...":"Adicionar mais itens..."}
-            style={{width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:aberto&&filtrados.length>0?"8px 8px 0 0":"8px",fontSize:13,color:"#333",outline:"none",boxSizing:"border-box"}}
-          />
-          {(onNomeManual ? nomeManual : busca)&&(
-            <span onClick={()=>{if(onNomeManual)onNomeManual("");else setBusca("");setAberto(false);}} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#aaa",fontSize:16}}>×</span>
-          )}
-        </div>
-        {/* Lista cascata */}
-        {aberto&&filtrados.length>0&&(
-          <div style={{position:"absolute",zIndex:99,width:"100%",maxHeight:200,overflowY:"auto",background:"#fff",border:"1.5px solid #e0e0e0",borderTop:"none",borderRadius:"0 0 8px 8px",boxShadow:"0 6px 20px rgba(0,0,0,0.12)"}}>
-            {filtrados.map(item=>{
-              const sel = selecionados.includes(item.nome);
-              return(
-                <div key={item.id} onClick={()=>{
-                  toggle(item.nome);
-                  if(onNomeManual) onNomeManual(item.nome);
-                  else setBusca("");
-                  setAberto(false);
-                }}
-                  style={{padding:"9px 12px",cursor:"pointer",fontSize:13,display:"flex",justifyContent:"space-between",alignItems:"center",background:sel?"#fef0ed":"#fff",borderBottom:"1px solid #f5f5f5"}}
-                  onMouseEnter={e=>e.currentTarget.style.background=sel?"#fde8e4":"#f8f7f5"}
-                  onMouseLeave={e=>e.currentTarget.style.background=sel?"#fef0ed":"#fff"}>
-                  <span style={{fontWeight:sel?600:400,color:sel?"#7b1a0a":"#333"}}>{item.nome}</span>
-                  <span style={{fontSize:11,color:"#aaa"}}>R$ {item.preco?.toFixed(2)}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {aberto&&<div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setAberto(false)}/>}
-      </div>
-    );
-  }
-
   function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),3500); }
 
   async function carregar() {
@@ -1021,6 +1018,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             <div style={{marginBottom:8}}>
               <div style={{fontSize:11,color:"#888",marginBottom:6}}>Itens do cardápio vinculados</div>
               <CardapioDropdown
+                cardapio={cardapio}
                 valor={editando.cardapioNomes}
                 onChange={lista=>setEditando(p=>({...p,cardapioNomes:lista}))}
               />
@@ -1169,9 +1167,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <div style={{flex:2}}>
                 <div style={{fontSize:11,color:"#888",marginBottom:3}}>Nome * <span style={{color:"#bbb"}}>(selecione do cardápio ou digite)</span></div>
                 <CardapioDropdown
+                  cardapio={cardapio}
                   valor={novo.cardapioNomes}
                   onChange={lista=>{
-                    // Ao selecionar do cardápio, preenche nome e vínculo automaticamente
                     const nomeAuto = lista.length===1 ? lista[0] : lista.length>1 ? lista[0] : novo.nome;
                     setNovo(p=>({...p, cardapioNomes: lista.join(", "), nome: nomeAuto || p.nome}));
                   }}
