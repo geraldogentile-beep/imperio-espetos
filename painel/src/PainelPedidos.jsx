@@ -2871,6 +2871,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [avaliacoes, setAvaliacoes] = useState(MOCK_AVALIACOES);
   const [garcons, setGarcons] = useState([]);
   const [aba, setAba] = useState(abrirSalao ? "salao" : "pedidos");
+  const [maisAberto, setMaisAberto] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [filtro, setFiltro] = useState("todos");
   const [atualizando, setAtualizando] = useState({});
@@ -3151,16 +3152,71 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
       {/* BARRA INFERIOR MOBILE — oculta para garçom/caixa */}
       {!abrirSalao && <div className="mobile-nav" style={{ display: "none" }}>
-        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: T.white, borderTop: `1px solid ${T.grayL}`, display: "flex", zIndex: 50, boxShadow: "0 -4px 20px rgba(28,25,23,0.08)", paddingBottom: "env(safe-area-inset-bottom)" }}>
-          {abas.map(([k, icon, label]) => (
-            <button key={k} onClick={() => setAba(k)} style={{ flex: 1, padding: "8px 2px 10px", border: "none", background: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: aba === k ? T.wine : T.gray, position: "relative", transition: "color 0.15s" }}>
-              <span style={{ fontSize: aba === k ? 21 : 19, transition: "font-size 0.15s" }}>{icon}</span>
-              <span style={{ fontSize: 9, fontWeight: aba === k ? 700 : 400, whiteSpace: "nowrap" }}>{label}</span>
-              {aba === k && <div style={{ position: "absolute", top: 0, left: "20%", right: "20%", height: 2, background: T.wine, borderRadius: "0 0 4px 4px" }} />}
-              {k === "pedidos" && novos > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: T.amber, color: T.white, borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{novos}</span>}
-              {k === "salao" && mesasPendentes > 0 && <span style={{ position: "absolute", top: 5, right: "18%", background: T.purple, color: T.white, borderRadius: 10, padding: "0 4px", fontSize: 9, fontWeight: 800, minWidth: 14, textAlign: "center" }}>{mesasPendentes}</span>}
+
+        {/* Drawer "Mais" — abre por cima da barra */}
+        {maisAberto && (
+          <>
+            <div onClick={()=>setMaisAberto(false)} style={{ position:"fixed", inset:0, zIndex:48, background:"rgba(0,0,0,0.3)" }}/>
+            <div style={{ position:"fixed", bottom:56, left:0, right:0, zIndex:49, background:T.white, borderRadius:"20px 20px 0 0", boxShadow:"0 -4px 24px rgba(0,0,0,0.15)", padding:"8px 8px 4px" }}>
+              <div style={{ width:36, height:4, background:T.grayL, borderRadius:2, margin:"0 auto 12px" }}/>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:4, padding:"0 4px 8px" }}>
+                {[
+                  ["estoque",    "📦", "Estoque"],
+                  ["clientes",   "👥", "Clientes"],
+                  ["cardapio",   "🍢", "Cardápio"],
+                  ["cupons",     "🎟️", "Cupons"],
+                  ["fidelidade", "🏆", "Fidelid."],
+                  ["avaliacoes", "⭐", "Aval."],
+                  ["whatsapp",   "📱", "WhatsApp"],
+                  ["config",     "⚙️", "Config"],
+                ].map(([k, icon, label]) => (
+                  <button key={k} onClick={()=>{ setAba(k); setMaisAberto(false); }} style={{
+                    padding:"10px 4px 8px", border:"none", cursor:"pointer",
+                    borderRadius:12, display:"flex", flexDirection:"column", alignItems:"center", gap:4,
+                    background: aba===k ? T.wineL : T.grayLL,
+                    color: aba===k ? T.wine : T.gray,
+                  }}>
+                    <span style={{ fontSize:22 }}>{icon}</span>
+                    <span style={{ fontSize:10, fontWeight: aba===k ? 700 : 400 }}>{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Barra fixa com 5 abas principais + Mais */}
+        <div style={{ position:"fixed", bottom:0, left:0, right:0, background:T.white, borderTop:`1px solid ${T.grayL}`, display:"flex", zIndex:50, boxShadow:"0 -4px 20px rgba(28,25,23,0.08)", paddingBottom:"env(safe-area-inset-bottom)" }}>
+          {[
+            ["pedidos",    "📋", "Pedidos"],
+            ["salao",      "🍽️", "Salão"],
+            ["relatorios", "📊", "Rel."],
+          ].map(([k, icon, label]) => (
+            <button key={k} onClick={() => { setAba(k); setMaisAberto(false); }} style={{ flex:1, padding:"8px 2px 10px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, color: aba===k ? T.wine : T.gray, position:"relative", transition:"color 0.15s" }}>
+              <span style={{ fontSize: aba===k ? 21 : 19 }}>{icon}</span>
+              <span style={{ fontSize:9, fontWeight: aba===k ? 700 : 400, whiteSpace:"nowrap" }}>{label}</span>
+              {aba===k && <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:2, background:T.wine, borderRadius:"0 0 4px 4px" }}/>}
+              {k==="pedidos" && novos>0 && <span style={{ position:"absolute", top:5, right:"18%", background:T.amber, color:T.white, borderRadius:10, padding:"0 4px", fontSize:9, fontWeight:800, minWidth:14, textAlign:"center" }}>{novos}</span>}
+              {k==="salao" && mesasPendentes>0 && <span style={{ position:"absolute", top:5, right:"18%", background:T.purple, color:T.white, borderRadius:10, padding:"0 4px", fontSize:9, fontWeight:800, minWidth:14, textAlign:"center" }}>{mesasPendentes}</span>}
             </button>
           ))}
+
+          {/* Aba Estoque como 4ª fixa */}
+          <button onClick={()=>{ setAba("estoque"); setMaisAberto(false); }} style={{ flex:1, padding:"8px 2px 10px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, color: aba==="estoque" ? T.wine : T.gray, position:"relative" }}>
+            <span style={{ fontSize: aba==="estoque" ? 21 : 19 }}>📦</span>
+            <span style={{ fontSize:9, fontWeight: aba==="estoque" ? 700 : 400 }}>Estoque</span>
+            {aba==="estoque" && <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:2, background:T.wine, borderRadius:"0 0 4px 4px" }}/>}
+          </button>
+
+          {/* Botão Mais */}
+          <button onClick={()=>setMaisAberto(p=>!p)} style={{ flex:1, padding:"8px 2px 10px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, color: maisAberto ? T.wine : T.gray, position:"relative" }}>
+            <span style={{ fontSize:19 }}>⋯</span>
+            <span style={{ fontSize:9, fontWeight: maisAberto ? 700 : 400 }}>Mais</span>
+            {/* Badge se aba atual está no menu "mais" */}
+            {["clientes","cardapio","cupons","fidelidade","avaliacoes","whatsapp","config"].includes(aba) && (
+              <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:2, background:T.wine, borderRadius:"0 0 4px 4px" }}/>
+            )}
+          </button>
         </div>
       </div>}
 
