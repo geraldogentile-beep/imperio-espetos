@@ -1314,6 +1314,89 @@ function Estoque({ backendUrl, cardapio = [] }) {
   );
 }
 
+// ── RESET DE DADOS ────────────────────────────────────────────
+function ResetDados({ backendUrl }) {
+  const [etapa, setEtapa] = useState(0); // 0=botão, 1=aviso, 2=confirmação
+  const [digitado, setDigitado] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const SENHA = "LIMPAR TUDO";
+
+  async function confirmarReset() {
+    if (digitado !== SENHA) return;
+    setLoading(true);
+    try {
+      const r = await fetch(backendUrl + "/reset/dados-teste", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmar: "CONFIRMAR_RESET" }),
+      });
+      const data = await r.json();
+      if (!r.ok) { setResultado({ erro: data.erro }); return; }
+      setResultado(data);
+      setEtapa(0); setDigitado("");
+    } catch { setResultado({ erro: "Erro de conexão." }); }
+    setLoading(false);
+  }
+
+  if (resultado) return (
+    <div style={{ background: resultado.erro ? "#fee2e2" : "#d1fae5", borderRadius: 14, padding: 16, border: `1.5px solid ${resultado.erro ? "#ef4444" : "#10b981"}` }}>
+      {resultado.erro
+        ? <><div style={{ fontWeight: 700, fontSize: 14, color: "#991b1b", marginBottom: 4 }}>❌ {resultado.erro}</div></>
+        : <>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#065f46", marginBottom: 8 }}>✅ Dados de teste removidos com sucesso!</div>
+          <div style={{ fontSize: 12, color: "#065f46" }}>
+            {Object.entries(resultado.apagados||{}).map(([k,v])=>(
+              <div key={k}>• {v} {k} removidos</div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: "#065f46", marginTop: 6, fontStyle: "italic" }}>Mantidos: {resultado.mantidos}</div>
+        </>
+      }
+      <button onClick={()=>setResultado(null)} style={{ marginTop: 10, background: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Fechar</button>
+    </div>
+  );
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: "1.5px solid #fee2e2" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#991b1b", marginBottom: 6 }}>🗑️ Zerar dados de teste</div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+        Remove todos os pedidos, vendas e histórico gerados durante os testes. Mantém cardápio, configurações, garçons, cupons e estoque.
+      </div>
+
+      {etapa === 0 && (
+        <button onClick={() => setEtapa(1)} style={{ background: "#fee2e2", color: "#991b1b", border: "1.5px solid #ef4444", borderRadius: 10, padding: "9px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+          🗑️ Iniciar limpeza
+        </button>
+      )}
+
+      {etapa === 1 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e", fontWeight: 600 }}>
+            ⚠️ Esta ação não pode ser desfeita. Todos os dados de teste serão permanentemente removidos.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setEtapa(2)} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Entendi, continuar</button>
+            <button onClick={() => setEtapa(0)} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {etapa === 2 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 12, color: "#888" }}>Digite <strong style={{ color: "#ef4444" }}>{SENHA}</strong> para confirmar:</div>
+          <input value={digitado} onChange={e => setDigitado(e.target.value)} placeholder={SENHA} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${digitado === SENHA ? "#10b981" : "#e0e0e0"}`, borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={confirmarReset} disabled={digitado !== SENHA || loading} style={{ flex: 2, background: digitado === SENHA ? "#ef4444" : "#ccc", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: digitado === SENHA ? "pointer" : "not-allowed" }}>
+              {loading ? "Removendo..." : "🗑️ Confirmar limpeza"}
+            </button>
+            <button onClick={() => { setEtapa(0); setDigitado(""); }} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ABA CONFIGURAÇÕES ─────────────────────────────────────────
 function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons }) {
   const [cfg, setCfg] = useState(config);
@@ -1459,9 +1542,244 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         </div>
       )}
 
+      {/* RESET DE DADOS */}
+      {subAba === "geral" && <ResetDados backendUrl={BACKEND_URL} />}
+
       <button onClick={salvar} disabled={saving} style={{ background: saved ? "#10b981" : saving ? "#aaa" : "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 12, padding: "13px 0", fontWeight: 800, fontSize: 15, cursor: saving ? "not-allowed" : "pointer", transition: "all 0.2s" }}>
         {saved ? "✅ Salvo!" : saving ? "Salvando..." : "💾 Salvar configurações"}
       </button>
+    </div>
+  );
+}
+
+// ── FECHAMENTO DO DIA ─────────────────────────────────────────
+function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mesasSalao }) {
+  const [historico, setHistorico] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [confirmando, setConfirmando] = useState(false);
+  const [obs, setObs] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [aberto, setAberto] = useState(null); // _id do fechamento expandido
+
+  function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),4000); }
+
+  async function carregar() {
+    try {
+      const r = await fetch(backendUrl+"/fechamento-dia");
+      if(r.ok) setHistorico(await r.json());
+    } catch {}
+  }
+
+  useEffect(()=>{ carregar(); },[]);
+
+  // Resumo do dia atual (antes de fechar)
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const pedidosHoje = pedidos.filter(p=>p.status==="entregue"&&new Date(p.horario)>=hoje);
+  const totalDelivery = pedidosHoje.reduce((s,p)=>s+(p.total||0),0);
+  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
+  const totalGeral = totalDelivery + totalSalaoHoje;
+  const jaFezHoje = historico.some(f=>f.dataStr===hoje.toISOString().slice(0,10));
+
+  // Por garçom do dia
+  const gMap = {};
+  historicoSalao.forEach(v=>{
+    const g = v.garcom&&v.garcom!=="—"?v.garcom:"Sem garçom";
+    if(!gMap[g]) gMap[g]={nome:g,vendas:0,total:0};
+    gMap[g].vendas+=1; gMap[g].total+=(v.total||0);
+  });
+  const porGarcom = Object.values(gMap).sort((a,b)=>b.total-a.total);
+
+  // Por forma de pagamento
+  const porPag = {pix:0,cartao:0,dinheiro:0};
+  historicoSalao.forEach(v=>{ const p=v.pagamento||"dinheiro"; porPag[p]=(porPag[p]||0)+(v.total||0); });
+
+  async function fecharDia() {
+    setLoading(true);
+    try {
+      const r = await fetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs})});
+      const data = await r.json();
+      if(!r.ok) return showMsg(data.erro||"Erro ao fechar o dia.","erro");
+      showMsg("✅ Fechamento do dia realizado com sucesso!");
+      setConfirmando(false); setObs("");
+      carregar();
+    } catch { showMsg("Erro de conexão.","erro"); }
+    setLoading(false);
+  }
+
+  function imprimirFechamento(f) {
+    const win = window.open("","_blank","width=480,height=700");
+    const dataFmt = new Date(f.data).toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric"});
+    const horaFmt = new Date(f.data).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+    win.document.write(`<!DOCTYPE html><html>
+<head><title>Fechamento ${f.dataStr}</title>
+<style>
+  body{font-family:'Courier New',monospace;padding:20px;max-width:340px;margin:0 auto}
+  h2{text-align:center;font-size:16px;margin:0 0 2px}
+  .sub{text-align:center;font-size:12px;color:#555;margin-bottom:14px}
+  hr{border:none;border-top:2px dashed #000;margin:10px 0}
+  .linha{display:flex;justify-content:space-between;font-size:13px;padding:4px 0}
+  .total{display:flex;justify-content:space-between;font-size:16px;font-weight:bold;padding:8px 0;border-top:2px solid #000;margin-top:4px}
+  .sec{font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#888;margin:10px 0 4px}
+  .rodape{text-align:center;font-size:11px;color:#999;margin-top:14px}
+  @media print{button{display:none}}
+</style></head><body>
+  <h2>👑 Império dos Espetos</h2>
+  <div class="sub">Fechamento do Dia — ${dataFmt}</div>
+  <div style="text-align:center;font-size:11px;color:#888">Emitido às ${horaFmt}</div>
+  <hr>
+  <div class="sec">Resumo geral</div>
+  <div class="linha"><span>🛵 Delivery (${f.pedidosDelivery} pedidos)</span><span>R$ ${f.totalDelivery.toFixed(2)}</span></div>
+  <div class="linha"><span>🍽️ Salão (${f.vendasSalao} vendas)</span><span>R$ ${f.totalSalao.toFixed(2)}</span></div>
+  <div class="total"><span>TOTAL DO DIA</span><span>R$ ${f.totalGeral.toFixed(2)}</span></div>
+  <hr>
+  <div class="sec">Formas de pagamento (salão)</div>
+  ${f.porPagamento?.pix>0?`<div class="linha"><span>🟢 Pix</span><span>R$ ${f.porPagamento.pix.toFixed(2)}</span></div>`:""}
+  ${f.porPagamento?.cartao>0?`<div class="linha"><span>💳 Cartão</span><span>R$ ${f.porPagamento.cartao.toFixed(2)}</span></div>`:""}
+  ${f.porPagamento?.dinheiro>0?`<div class="linha"><span>💵 Dinheiro</span><span>R$ ${f.porPagamento.dinheiro.toFixed(2)}</span></div>`:""}
+  ${f.porGarcom?.length>0?`
+  <hr>
+  <div class="sec">Por garçom</div>
+  ${f.porGarcom.map(g=>`<div class="linha"><span>🧑‍🍳 ${g.nome} (${g.vendas}x)</span><span>R$ ${g.total.toFixed(2)}</span></div>`).join("")}
+  `:""}
+  ${f.obs?`<hr><div style="font-size:12px;color:#555">📝 ${f.obs}</div>`:""}
+  <div class="rodape">— Fim do relatório —</div>
+  <br><button onclick="window.print()" style="width:100%;padding:10px;font-size:14px;cursor:pointer">🖨️ Imprimir</button>
+</body></html>`);
+    win.document.close();
+    setTimeout(()=>win.print(),400);
+  }
+
+  const inp = {width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:8,fontSize:13,color:"#333",outline:"none",boxSizing:"border-box"};
+
+  return (
+    <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:14}}>
+
+      {/* Resumo do dia atual */}
+      <div style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",borderRadius:16,padding:16,color:"#fff"}}>
+        <div style={{fontSize:11,opacity:0.8,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>
+          {new Date().toLocaleDateString("pt-BR",{weekday:"long",day:"2-digit",month:"long"})}
+        </div>
+        <div style={{fontWeight:800,fontSize:22,marginBottom:12}}>Resumo do dia</div>
+        <div style={{display:"flex",gap:10,marginBottom:12}}>
+          <div style={{flex:1,background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"10px 12px"}}>
+            <div style={{fontSize:11,opacity:0.8}}>🛵 Delivery</div>
+            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>R$ {totalDelivery.toFixed(2)}</div>
+            <div style={{fontSize:10,opacity:0.7}}>{pedidosHoje.length} pedidos</div>
+          </div>
+          <div style={{flex:1,background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"10px 12px"}}>
+            <div style={{fontSize:11,opacity:0.8}}>🍽️ Salão</div>
+            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>R$ {totalSalaoHoje.toFixed(2)}</div>
+            <div style={{fontSize:10,opacity:0.7}}>{historicoSalao.length} vendas</div>
+          </div>
+        </div>
+        <div style={{background:"rgba(255,255,255,0.2)",borderRadius:12,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontWeight:700,fontSize:14}}>💰 Total geral</span>
+          <span style={{fontWeight:900,fontSize:20}}>R$ {totalGeral.toFixed(2)}</span>
+        </div>
+      </div>
+
+      {/* Formas de pagamento e garçons do dia */}
+      {(porGarcom.length>0||Object.values(porPag).some(v=>v>0))&&(
+        <div style={{display:"flex",gap:10}}>
+          {Object.values(porPag).some(v=>v>0)&&(
+            <div style={{flex:1,background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Pagamentos</div>
+              {porPag.pix>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>🟢 Pix</span><span style={{fontWeight:700}}>R$ {porPag.pix.toFixed(2)}</span></div>}
+              {porPag.cartao>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💳 Cartão</span><span style={{fontWeight:700}}>R$ {porPag.cartao.toFixed(2)}</span></div>}
+              {porPag.dinheiro>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💵 Dinheiro</span><span style={{fontWeight:700}}>R$ {porPag.dinheiro.toFixed(2)}</span></div>}
+            </div>
+          )}
+          {porGarcom.length>0&&(
+            <div style={{flex:1,background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Garçons</div>
+              {porGarcom.map(g=>(
+                <div key={g.nome} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}>
+                  <span>🧑‍🍳 {g.nome}</span><span style={{fontWeight:700}}>R$ {g.total.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Botão fechar o dia */}
+      {jaFezHoje ? (
+        <div style={{background:"#d1fae5",border:"1.5px solid #10b981",borderRadius:14,padding:"14px 16px",textAlign:"center"}}>
+          <div style={{fontSize:22,marginBottom:4}}>✅</div>
+          <div style={{fontWeight:700,fontSize:14,color:"#065f46"}}>Fechamento do dia já realizado!</div>
+          <div style={{fontSize:12,color:"#065f46",opacity:0.8,marginTop:2}}>Consulte o histórico abaixo.</div>
+        </div>
+      ) : (
+        !confirmando ? (
+          <button onClick={()=>setConfirmando(true)} style={{background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:14,padding:"14px 0",fontWeight:800,fontSize:15,cursor:"pointer"}}>
+            🔒 Fechar o dia
+          </button>
+        ) : (
+          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🔒 Confirmar fechamento do dia?</div>
+            <div style={{fontSize:12,color:"#888",marginBottom:12}}>Os dados do dia serão arquivados. O painel zera automaticamente amanhã.</div>
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Observação (opcional)</div>
+              <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Ex: Movimento fraco, faltou chopp..." style={inp}/>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={fecharDia} disabled={loading} style={{flex:2,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+                {loading?"Fechando...":"✅ Confirmar fechamento"}
+              </button>
+              <button onClick={()=>setConfirmando(false)} style={{flex:1,background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 0",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
+            </div>
+          </div>
+        )
+      )}
+
+      {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
+
+      {/* Histórico de fechamentos */}
+      <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+        <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:12}}>📅 Histórico de fechamentos</div>
+        {historico.length===0?(
+          <div style={{textAlign:"center",padding:"20px 0",color:"#ccc",fontSize:13}}>Nenhum fechamento registrado ainda</div>
+        ):historico.map(f=>(
+          <div key={f._id} style={{borderBottom:"1px dashed #f0f0f0",paddingBottom:10,marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setAberto(aberto===f._id?null:f._id)}>
+              <div>
+                <div style={{fontWeight:700,fontSize:13}}>{new Date(f.data).toLocaleDateString("pt-BR",{weekday:"short",day:"2-digit",month:"2-digit",year:"2-digit"})}</div>
+                <div style={{fontSize:11,color:"#888"}}>{f.pedidosDelivery} delivery · {f.vendasSalao} salão</div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{fontWeight:800,fontSize:15,color:"#7b1a0a"}}>R$ {f.totalGeral.toFixed(2)}</div>
+                <button onClick={e=>{e.stopPropagation();imprimirFechamento(f);}} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"5px 8px",cursor:"pointer",fontSize:13}}>🖨️</button>
+                <span style={{color:"#ddd",fontSize:14}}>{aberto===f._id?"▴":"▾"}</span>
+              </div>
+            </div>
+            {aberto===f._id&&(
+              <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f5f5f5"}}>
+                <div style={{display:"flex",gap:10,marginBottom:8}}>
+                  <div style={{flex:1,background:"#f8f7f5",borderRadius:8,padding:"8px 10px"}}>
+                    <div style={{fontSize:10,color:"#888"}}>🛵 Delivery</div>
+                    <div style={{fontWeight:700,fontSize:13}}>R$ {f.totalDelivery.toFixed(2)}</div>
+                  </div>
+                  <div style={{flex:1,background:"#f8f7f5",borderRadius:8,padding:"8px 10px"}}>
+                    <div style={{fontSize:10,color:"#888"}}>🍽️ Salão</div>
+                    <div style={{fontWeight:700,fontSize:13}}>R$ {f.totalSalao.toFixed(2)}</div>
+                  </div>
+                </div>
+                {f.porGarcom?.length>0&&(
+                  <div style={{marginBottom:6}}>
+                    <div style={{fontSize:10,color:"#888",marginBottom:4}}>Por garçom</div>
+                    {f.porGarcom.map(g=>(
+                      <div key={g.nome} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"2px 0"}}>
+                        <span>🧑‍🍳 {g.nome} ({g.vendas}x)</span><span style={{fontWeight:600}}>R$ {g.total.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {f.obs&&<div style={{fontSize:11,color:"#888",fontStyle:"italic"}}>📝 {f.obs}</div>}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -3000,6 +3318,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     ["pedidos",    "📋", "Pedidos"],
     ["salao",      "🍽️", "Salão"],
     ["relatorios", "📊", "Rel."],
+    ["fechamento", "🔒", "Fechamento"],
     ["estoque",    "📦", "Estoque"],
     ["clientes",   "👥", "Clientes"],
     ["cardapio",   "🍢", "Cardápio"],
@@ -3138,6 +3457,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           )}
 
           {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
+          {aba === "fechamento"  && <FechamentoDia backendUrl={BACKEND_URL} pedidos={pedidos} historicoSalao={historicoSalao} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} />}
           {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} cardapio={cardapio} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
@@ -3161,6 +3481,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
               <div style={{ width:36, height:4, background:T.grayL, borderRadius:2, margin:"0 auto 12px" }}/>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:4, padding:"0 4px 8px" }}>
                 {[
+                  ["fechamento", "🔒", "Fechamento"],
                   ["clientes",   "👥", "Clientes"],
                   ["cardapio",   "🍢", "Cardápio"],
                   ["cupons",     "🎟️", "Cupons"],
