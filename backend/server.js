@@ -79,6 +79,32 @@ const GarcomSchema = new mongoose.Schema({
   criadoEm: { type: Date, default: Date.now },
 });
 
+// ── ESTOQUE ────────────────────────────────────────────────────
+const EstoqueSchema = new mongoose.Schema({
+  nome:          { type: String, required: true },       // "Chopp", "Coca-Cola Lata"
+  unidade:       { type: String, default: "un" },        // "un", "litros", "kg"
+  quantidade:    { type: Number, default: 0 },           // quantidade atual
+  minimo:        { type: Number, default: 0 },           // alerta de estoque mínimo
+  alertaEnviado: { type: Boolean, default: false },      // evita spam de alerta
+  cardapioNomes: { type: [String], default: [] },        // nomes dos itens do cardápio que consomem este estoque
+  consumoPorVenda: { type: Number, default: 1 },         // quanto desconta por unidade vendida
+  tipo:          { type: String, default: "normal" },    // "normal" | "chopp"
+  capacidadeBarril: { type: Number, default: 0 },        // litros (só para chopp)
+  alertaTelefone: { type: String, default: "" },         // telefone do dono para alerta WhatsApp
+  ativo:         { type: Boolean, default: true },
+  criadoEm:      { type: Date, default: Date.now },
+});
+
+const MovEstoqueSchema = new mongoose.Schema({
+  estoqueId:   { type: mongoose.Schema.Types.ObjectId, ref: "Estoque" },
+  estoqueNome: String,
+  tipo:        { type: String, enum: ["entrada", "saida", "ajuste"] },
+  quantidade:  Number,
+  motivo:      String,   // "venda", "entrada mercadoria", "ajuste manual", "desperdício"
+  vendaId:     String,   // referência à venda quando for saída automática
+  horario:     { type: Date, default: Date.now },
+});
+
 const PedidoDB    = mongoose.model("Pedido",    PedidoSchema);
 const CupomDB     = mongoose.model("Cupom",     CupomSchema);
 const AvaliacaoDB = mongoose.model("Avaliacao", AvaliacaoSchema);
@@ -87,6 +113,8 @@ const ConfigDB    = mongoose.model("Config",    ConfigSchema);
 const CardapioDB  = mongoose.model("Cardapio",  CardapioSchema);
 const VendaSalaoDB = mongoose.model("VendaSalao", VendaSalaoSchema);
 const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
+const EstoqueDB    = mongoose.model("Estoque",   EstoqueSchema);
+const MovEstoqueDB = mongoose.model("MovEstoque", MovEstoqueSchema);
 
 async function conectarMongo() {
   try {
@@ -696,7 +724,12 @@ app.get("/vendas-salao", async (req, res) => {
   } catch { res.json([]); }
 });
 app.post("/vendas-salao", async (req, res) => {
-  try { const venda = await VendaSalaoDB.create(req.body); res.status(201).json(venda); }
+  try {
+    const venda = await VendaSalaoDB.create(req.body);
+    // Baixa automática no estoque
+    await baixarEstoqueVenda(req.body.itens, String(venda._id));
+    res.status(201).json(venda);
+  }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
 app.delete("/vendas-salao/:id", async (req, res) => {
@@ -711,6 +744,160 @@ app.get("/vendas-salao/historico", async (req, res) => {
     if (ate) filtro.fechamento = { ...filtro.fechamento, $lte: new Date(ate) };
     const lista = await VendaSalaoDB.find(filtro).sort({ fechamento: -1 }).lean();
     res.json(lista);
+  } catch { res.json([]); }
+});
+
+// ── ESTOQUE — BAIXA AUTOMÁTICA ────────────────────────────────
+async function baixarEstoqueVenda(itens, vendaId) {
+  if (!itens?.length) return;
+  try {
+    const estoques = await EstoqueDB.find({ ativo: true }).lean();
+    for (const item of itens) {
+      const qty = item.qty || 1;
+      // Encontra estoque vinculado a este item do cardápio
+      const est = estoques.find(e =>
+        e.cardapioNomes.some(n => n.toLowerCase() === item.nome?.toLowerCase())
+      );
+      if (!est) continue;
+      const desconto = qty * (est.consumoPorVenda || 1);
+      const novaQtd = Math.max(0, est.quantidade - desconto);
+      await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: novaQtd });
+      await MovEstoqueDB.create({
+        estoqueId: est._id, estoqueNome: est.nome,
+        tipo: "saida", quantidade: desconto,
+        motivo: "venda", vendaId,
+      });
+      // Alerta de estoque mínimo
+      if (novaQtd <= est.minimo && !est.alertaEnviado) {
+        await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: true });
+        const unid = est.tipo === "chopp" ? "litros" : est.unidade;
+        const msg = `⚠️ *Estoque Baixo — Império dos Espetos*\n\n` +
+          `📦 *${est.nome}*\n` +
+          `Quantidade atual: *${novaQtd.toFixed(est.tipo === "chopp" ? 1 : 0)} ${unid}*\n` +
+          `Estoque mínimo: *${est.minimo} ${unid}*\n\n` +
+          `Por favor, verifique o estoque! 🚨`;
+        if (est.alertaTelefone) await enviarMsg(est.alertaTelefone, msg);
+      }
+      // Reseta flag de alerta quando estoque é reposto acima do mínimo
+      if (novaQtd > est.minimo && est.alertaEnviado) {
+        await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: false });
+      }
+    }
+  } catch (e) { console.error("Erro na baixa de estoque:", e.message); }
+}
+
+// ── ESTOQUE API ───────────────────────────────────────────────
+app.get("/estoque", async (req, res) => {
+  try {
+    const lista = await EstoqueDB.find({ ativo: true }).sort({ nome: 1 }).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+
+app.post("/estoque", async (req, res) => {
+  const { nome, unidade, quantidade, minimo, cardapioNomes, consumoPorVenda, tipo, capacidadeBarril, alertaTelefone } = req.body;
+  if (!nome) return res.status(400).json({ erro: "nome é obrigatório" });
+  try {
+    const item = await EstoqueDB.create({
+      nome, unidade: unidade || "un",
+      quantidade: parseFloat(quantidade) || 0,
+      minimo: parseFloat(minimo) || 0,
+      cardapioNomes: cardapioNomes || [],
+      consumoPorVenda: parseFloat(consumoPorVenda) || 1,
+      tipo: tipo || "normal",
+      capacidadeBarril: parseFloat(capacidadeBarril) || 0,
+      alertaTelefone: alertaTelefone || "",
+      ativo: true,
+    });
+    res.status(201).json(item);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.put("/estoque/:id", async (req, res) => {
+  try {
+    const item = await EstoqueDB.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean();
+    if (!item) return res.status(404).json({ erro: "Item não encontrado" });
+    res.json(item);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.delete("/estoque/:id", async (req, res) => {
+  try {
+    await EstoqueDB.findByIdAndUpdate(req.params.id, { ativo: false });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Entrada de mercadoria
+app.post("/estoque/:id/entrada", async (req, res) => {
+  const { quantidade, motivo } = req.body;
+  if (!quantidade || quantidade <= 0) return res.status(400).json({ erro: "quantidade inválida" });
+  try {
+    const est = await EstoqueDB.findById(req.params.id);
+    if (!est) return res.status(404).json({ erro: "Item não encontrado" });
+    const novaQtd = est.quantidade + parseFloat(quantidade);
+    await EstoqueDB.findByIdAndUpdate(est._id, {
+      quantidade: novaQtd,
+      alertaEnviado: novaQtd > est.minimo ? false : est.alertaEnviado,
+    });
+    await MovEstoqueDB.create({
+      estoqueId: est._id, estoqueNome: est.nome,
+      tipo: "entrada", quantidade: parseFloat(quantidade),
+      motivo: motivo || "entrada mercadoria",
+    });
+    res.json({ quantidade: novaQtd });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Ajuste manual (inventário)
+app.post("/estoque/:id/ajuste", async (req, res) => {
+  const { quantidade, motivo } = req.body;
+  if (quantidade === undefined) return res.status(400).json({ erro: "quantidade obrigatória" });
+  try {
+    const est = await EstoqueDB.findById(req.params.id);
+    if (!est) return res.status(404).json({ erro: "Item não encontrado" });
+    const diff = parseFloat(quantidade) - est.quantidade;
+    await EstoqueDB.findByIdAndUpdate(est._id, {
+      quantidade: parseFloat(quantidade),
+      alertaEnviado: parseFloat(quantidade) > est.minimo ? false : est.alertaEnviado,
+    });
+    await MovEstoqueDB.create({
+      estoqueId: est._id, estoqueNome: est.nome,
+      tipo: "ajuste", quantidade: diff,
+      motivo: motivo || "ajuste manual",
+    });
+    res.json({ quantidade: parseFloat(quantidade) });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Movimentações / histórico
+app.get("/estoque/:id/movimentacoes", async (req, res) => {
+  try {
+    const lista = await MovEstoqueDB.find({ estoqueId: req.params.id })
+      .sort({ horario: -1 }).limit(100).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+
+// Relatório geral de consumo
+app.get("/estoque/relatorio/consumo", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = { tipo: "saida" };
+    if (de || ate) {
+      filtro.horario = {};
+      if (de) filtro.horario.$gte = new Date(de);
+      if (ate) filtro.horario.$lte = new Date(ate);
+    }
+    const movs = await MovEstoqueDB.find(filtro).sort({ horario: -1 }).lean();
+    // Agrupa por item
+    const porItem = {};
+    movs.forEach(m => {
+      if (!porItem[m.estoqueNome]) porItem[m.estoqueNome] = { nome: m.estoqueNome, total: 0, movs: 0 };
+      porItem[m.estoqueNome].total += Math.abs(m.quantidade);
+      porItem[m.estoqueNome].movs += 1;
+    });
+    res.json(Object.values(porItem).sort((a, b) => b.total - a.total));
   } catch { res.json([]); }
 });
 
