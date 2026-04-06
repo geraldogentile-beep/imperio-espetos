@@ -1111,7 +1111,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
                     // Zera faturamento acumulado
                     if (setFaturadoSalaoRel) setFaturadoSalaoRel(0);
                     // Libera todas as mesas
-                    if (setMesasSalaoRel) setMesasSalaoRel(Array.from({length:16},(_,i)=>initMesa(i)));
+                    if (setMesasSalaoRel) setMesasSalaoRel(p => [...MESAS_ESPECIAIS_BASE, ...p.filter(m=>!m.tipo).map((_,i)=>initMesa(i))]);
                     // Limpa localStorage do salão
                     try {
                       localStorage.removeItem("imperio_faturado_salao");
@@ -1548,6 +1548,14 @@ function initMesa(i) {
   return {id:i+1, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
           subComandas:[initSubComanda(1)]};
 }
+function initMesaEspecial(id, nome, tipo, icon) {
+  return {id, nome, tipo, icon, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
+          subComandas:[initSubComanda(1)]};
+}
+const MESAS_ESPECIAIS_BASE = [
+  initMesaEspecial(901, "Funcionários", "funcionarios", "👥"),
+  initMesaEspecial(902, "Caixa Direto", "caixa_direto", "🛒"),
+];
 function migrarMesa(m) {
   if (m.subComandas) return m;
   // migra formato antigo (itens/rodadas/cliente no nível da mesa)
@@ -1799,7 +1807,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15,flex:1}}>Mesa {mesa.id} — {sc.label}</div>
+          <div style={{fontWeight:800,fontSize:15,flex:1}}>{mesa.nome || `Mesa ${mesa.id}`} — {sc.label}</div>
           <div style={{fontWeight:800,color:"#f0c040"}}>{fmtR(totMesa(sc.itens))}</div>
         </div>
       </div>
@@ -1850,7 +1858,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15}}>Mesa {mesa.id}{fecharUma?` — ${sc.label}`:""} — Fechar</div>
+          <div style={{fontWeight:800,fontSize:15}}>{mesa.nome || `Mesa ${mesa.id}`}{fecharUma?` — ${sc.label}`:""} — Fechar</div>
         </div>
       </div>
       <div style={{padding:"14px",display:"flex",flexDirection:"column",gap:10}}>
@@ -1935,7 +1943,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
         <div style={H2}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
             <button style={BK2} onClick={()=>{setSel(null);setTelaSalao("mapa");}}>← Salão</button>
-            <div style={{fontWeight:800,fontSize:18,flex:1}}>Mesa {mesa.id}</div>
+            <div style={{fontWeight:800,fontSize:18,flex:1}}>{mesa.nome || `Mesa ${mesa.id}`}</div>
             <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.7}}>Total mesa</div><div style={{fontWeight:800,fontSize:18,color:"#f0c040"}}>{fmtR(totalAcumulado)}</div></div>
           </div>
 
@@ -2068,6 +2076,48 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           )}
           {(perfil==="caixa"||isDono)?(
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {/* Botão imprimir comanda para conferência */}
+              {totalAcumulado>0&&(
+                <button onClick={()=>{
+                  const nomeGarcom = garcomLogado?.nome||mesa.garcom||"—";
+                  const todosItens = (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens])
+                    .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+                  const win = window.open('','_blank','width=400,height=650');
+                  const agora = new Date();
+                  win.document.write(`<!DOCTYPE html><html>
+<head><title>Comanda Mesa ${mesa.id}</title>
+<style>
+  body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
+  h2{text-align:center;font-size:16px;margin:0 0 2px}
+  .sub{text-align:center;font-size:12px;color:#666;margin-bottom:14px}
+  hr{border:none;border-top:2px dashed #000;margin:8px 0}
+  .info{font-size:12px;color:#555;margin-bottom:10px;line-height:1.7}
+  .linha{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px dashed #eee}
+  .total{display:flex;justify-content:space-between;font-size:16px;font-weight:bold;padding:10px 0;border-top:2px solid #000;margin-top:6px}
+  .rodape{text-align:center;font-size:11px;color:#999;margin-top:14px}
+  @media print{button{display:none}}
+</style>
+</head>
+<body>
+  <h2>👑 Império dos Espetos</h2>
+  <div class="sub">Comanda — Mesa ${mesa.id}</div>
+  <hr>
+  <div class="info">
+    ${(mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).length>0?`Cliente: <strong>${(mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ")}</strong><br>`:""}
+    ${nomeGarcom&&nomeGarcom!=="—"?`Garçom: <strong>${nomeGarcom}</strong><br>`:""}
+    Data: <strong>${agora.toLocaleDateString('pt-BR')}</strong> &nbsp; ${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
+  </div>
+  <hr>
+  ${todosItens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
+  <div class="total"><span>TOTAL</span><span>R$ ${totalAcumulado.toFixed(2)}</span></div>
+  <div class="rodape">Obrigado pela visita! 🍢</div>
+</body></html>`);
+                  win.document.close();
+                  setTimeout(()=>win.print(),400);
+                }} style={{background:T.grayLL,color:T.dark,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"11px 0",fontWeight:600,fontSize:14,cursor:"pointer",width:"100%"}}>
+                  🖨️ Imprimir comanda
+                </button>
+              )}
               <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
                 {mesa.status==="conta"?"💳 Receber pagamento":mesa.subComandas.length>1?`✅ Fechar ${sc.label}`:  "✅ Fechar comanda"}{totalSCAtual>0?` — ${fmtR(totalSCAtual)}`:""}
               </button>
@@ -2116,8 +2166,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           </div>}
           <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
             {isDono&&<>
-              <button onClick={()=>{const n=mesas.length+1;setMesas(p=>[...p,initMesa(n-1)]);msgSalao("✅ Mesa "+n+" adicionada!");}} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
-              <button onClick={()=>{const u=mesas[mesas.length-1];if(!u||u.status!=="livre"){msgSalao("❌ Só é possível remover mesa livre!","#ef4444");return;}setMesas(p=>p.slice(0,-1));msgSalao("Mesa "+u.id+" removida.","#f59e0b");}} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>− Mesa</button>
+              <button onClick={()=>{const comuns=mesas.filter(m=>!m.tipo);const n=comuns.length+1;setMesas(p=>[...p,initMesa(n-1)]);msgSalao("✅ Mesa "+n+" adicionada!");}} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
+              <button onClick={()=>{const comuns=mesas.filter(m=>!m.tipo);const u=comuns[comuns.length-1];if(!u||u.status!=="livre"){msgSalao("❌ Só é possível remover mesa livre!","#ef4444");return;}setMesas(p=>p.filter(m=>m.id!==u.id));msgSalao("Mesa "+u.id+" removida.","#f59e0b");}} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>− Mesa</button>
             </>}
             {!isDono&&<button onClick={()=>{if(onSairApp)onSairApp();else setPerfil(null);}} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 10px",fontSize:12,cursor:"pointer",fontWeight:600}}>🔒 Sair</button>}
           </div>
@@ -2133,8 +2183,47 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           ))}
         </div>
       )}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,padding:14}}>
-        {mesas.map(m=>{
+
+      {/* MESAS ESPECIAIS */}
+      {(()=>{
+        const CORES_ESPECIAL = {
+          funcionarios: {bg:"#ede9fe",border:"#7c3aed",text:"#5b21b6",iconBg:"#ddd6fe"},
+          caixa_direto: {bg:"#fef3c7",border:"#d97706",text:"#92400e",iconBg:"#fde68a"},
+        };
+        const especiais = mesas.filter(m=>m.tipo);
+        if(!especiais.length) return null;
+        return (
+          <div style={{padding:"10px 14px 0"}}>
+            <div style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.5)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Mesas Especiais</div>
+            <div style={{display:"flex",gap:10}}>
+              {especiais.map(m=>{
+                const cor = CORES_ESPECIAL[m.tipo]||{bg:"#f0f0f0",border:"#aaa",text:"#555",iconBg:"#e0e0e0"};
+                const totM = totMesaCompleta(m);
+                const s = STATUS_MESA[m.status];
+                return(
+                  <div key={m.id} onClick={()=>{setSel(m.id);setSelSC(0);setTelaSalao("comanda");}} style={{flex:1,background:cor.bg,borderRadius:14,padding:"12px 10px",textAlign:"center",cursor:"pointer",border:`2px solid ${m.status==="livre"?cor.border:s.c}`,boxShadow:m.status!=="livre"?`0 0 0 2px ${s.c}40`:"none",position:"relative"}}>
+                    {(m.status==="chamando"||m.status==="conta")&&<div style={{position:"absolute",top:-6,right:-6,width:16,height:16,background:s.c,borderRadius:"50%",fontSize:8,color:"#fff",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>!</div>}
+                    <div style={{fontSize:24,marginBottom:2}}>{m.icon}</div>
+                    <div style={{fontWeight:800,fontSize:13,color:cor.text}}>{m.nome}</div>
+                    <div style={{fontSize:8,background:m.status==="livre"?cor.iconBg:s.bg,color:m.status==="livre"?cor.text:s.c,borderRadius:10,padding:"1px 7px",marginTop:3,fontWeight:700,display:"inline-block"}}>
+                      {m.status==="livre"?"Livre":s.l}
+                    </div>
+                    {totM>0&&<div style={{fontSize:12,fontWeight:800,color:cor.text,marginTop:4}}>{fmtR(totM)}</div>}
+                    {m.abertura&&<div style={{fontSize:9,color:cor.text,opacity:0.6,marginTop:2}}>⏱️{tempoAberto(m.abertura)}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MESAS COMUNS */}
+      <div style={{padding:"10px 14px 0"}}>
+        <div style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.5)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Mesas</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,padding:"0 14px 14px"}}>
+        {mesas.filter(m=>!m.tipo).map(m=>{
           const s=STATUS_MESA[m.status];
           const totM=totMesaCompleta(m);
           const nomeCliente = (m.subComandas||[]).map(sc=>sc.cliente).filter(Boolean).join(", ");
@@ -2294,14 +2383,24 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     try {
       const lastDay = localStorage.getItem("imperio_mesas_dia");
       const hoje = new Date().toDateString();
+      const regulares = Array.from({length:16},(_,i)=>initMesa(i));
       if (lastDay !== hoje) {
         localStorage.setItem("imperio_mesas_dia", hoje);
-        return Array.from({length:16},(_,i)=>initMesa(i));
+        return [...MESAS_ESPECIAIS_BASE, ...regulares];
       }
       const saved = localStorage.getItem("imperio_mesas_salao");
-      // migra formato antigo se necessário
-      return saved ? JSON.parse(saved).map(migrarMesa) : Array.from({length:16},(_,i)=>initMesa(i));
-    } catch { return Array.from({length:16},(_,i)=>initMesa(i)); }
+      if (!saved) return [...MESAS_ESPECIAIS_BASE, ...regulares];
+      const parsed = JSON.parse(saved).map(migrarMesa);
+      // Garante que as mesas especiais sempre existem
+      const temFunc = parsed.some(m=>m.tipo==="funcionarios");
+      const temCaixa = parsed.some(m=>m.tipo==="caixa_direto");
+      const especiais = [
+        temFunc ? parsed.find(m=>m.tipo==="funcionarios") : MESAS_ESPECIAIS_BASE[0],
+        temCaixa ? parsed.find(m=>m.tipo==="caixa_direto") : MESAS_ESPECIAIS_BASE[1],
+      ];
+      const comuns = parsed.filter(m=>!m.tipo);
+      return [...especiais, ...comuns];
+    } catch { return [...MESAS_ESPECIAIS_BASE, ...Array.from({length:16},(_,i)=>initMesa(i))]; }
   });
   const [historicoSalao, setHistoricoSalao] = useState(() => {
     try {
