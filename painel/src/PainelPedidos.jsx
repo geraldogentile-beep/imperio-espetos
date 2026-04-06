@@ -3161,7 +3161,6 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
               <div style={{ width:36, height:4, background:T.grayL, borderRadius:2, margin:"0 auto 12px" }}/>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:4, padding:"0 4px 8px" }}>
                 {[
-                  ["estoque",    "📦", "Estoque"],
                   ["clientes",   "👥", "Clientes"],
                   ["cardapio",   "🍢", "Cardápio"],
                   ["cupons",     "🎟️", "Cupons"],
