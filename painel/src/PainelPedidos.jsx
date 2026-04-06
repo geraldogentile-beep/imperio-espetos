@@ -1364,11 +1364,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
   const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
 
   // Faturamento do salão — mesas abertas + já fechadas
-  const totalSalaoAberto = mesasSalao.reduce((s, m) => {
-    const itens = m.itens.reduce((ss, i) => ss + (i.qty||1) * i.preco, 0);
-    const rodadas = m.rodadas.reduce((ss, r) => ss + r.itens.reduce((sss, i) => sss + (i.qty||1) * i.preco, 0), 0);
-    return s + itens + rodadas;
-  }, 0);
+  const totalSalaoAberto = mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
   const totalSalao = faturadoSalao + totalSalaoAberto;
   const totalGeral = totalDelivery + totalSalao;
 
