@@ -809,6 +809,376 @@ function GarcomManager({ garcons, onReload }) {
   );
 }
 
+// ── ABA ESTOQUE ───────────────────────────────────────────────
+function Estoque({ backendUrl }) {
+  const [itens, setItens] = useState([]);
+  const [movs, setMovs] = useState([]);
+  const [relConsumo, setRelConsumo] = useState([]);
+  const [subAba, setSubAba] = useState("painel");
+  const [selItem, setSelItem] = useState(null);
+  const [novoForm, setNovoForm] = useState(false);
+  const [entradaForm, setEntradaForm] = useState(null);
+  const [ajusteForm, setAjusteForm] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [novo, setNovo] = useState({ nome:"", unidade:"un", quantidade:"", minimo:"", cardapioNomes:"", consumoPorVenda:"1", tipo:"normal", capacidadeBarril:"", alertaTelefone:"" });
+  const [entradaQtd, setEntradaQtd] = useState("");
+  const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
+  const [ajusteQtd, setAjusteQtd] = useState("");
+  const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
+
+  function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),3500); }
+
+  async function carregar() {
+    try {
+      const r = await fetch(backendUrl+"/estoque");
+      if(r.ok) setItens(await r.json());
+    } catch {}
+  }
+
+  async function carregarConsumo() {
+    try {
+      const r = await fetch(backendUrl+"/estoque/relatorio/consumo");
+      if(r.ok) setRelConsumo(await r.json());
+    } catch {}
+  }
+
+  async function carregarMovs(id) {
+    try {
+      const r = await fetch(backendUrl+`/estoque/${id}/movimentacoes`);
+      if(r.ok) setMovs(await r.json());
+    } catch {}
+  }
+
+  useEffect(() => { carregar(); }, []);
+  useEffect(() => { if(subAba==="consumo") carregarConsumo(); }, [subAba]);
+  useEffect(() => { if(selItem) carregarMovs(selItem._id); }, [selItem]);
+
+  const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
+
+  async function criarItem() {
+    if(!novo.nome.trim()) return showMsg("Nome é obrigatório.","erro");
+    setSaving(true);
+    try {
+      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) };
+      const r = await fetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      if(!r.ok) return showMsg((await r.json()).erro||"Erro ao criar.","erro");
+      showMsg(`✅ ${novo.nome} cadastrado!`);
+      setNovo({nome:"",unidade:"un",quantidade:"",minimo:"",cardapioNomes:"",consumoPorVenda:"1",tipo:"normal",capacidadeBarril:"",alertaTelefone:""});
+      setNovoForm(false);
+      carregar();
+    } catch { showMsg("Erro de conexão.","erro"); }
+    setSaving(false);
+  }
+
+  async function salvarEdicao() {
+    setSaving(true);
+    try {
+      const body = { ...editando, cardapioNomes: typeof editando.cardapioNomes === "string" ? editando.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) : editando.cardapioNomes };
+      const r = await fetch(backendUrl+`/estoque/${editando._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      if(!r.ok) return showMsg("Erro ao salvar.","erro");
+      showMsg("✅ Alterações salvas!");
+      setEditando(null);
+      if(selItem) setSelItem(itens.find(i=>i._id===selItem._id));
+      carregar();
+    } catch { showMsg("Erro de conexão.","erro"); }
+    setSaving(false);
+  }
+
+  async function darEntrada() {
+    if(!entradaQtd||parseFloat(entradaQtd)<=0) return showMsg("Informe a quantidade.","erro");
+    setSaving(true);
+    try {
+      await fetch(backendUrl+`/estoque/${entradaForm._id}/entrada`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(entradaQtd),motivo:entradaMotivo})});
+      showMsg(`✅ +${entradaQtd} ${entradaForm.unidade} adicionados!`);
+      setEntradaForm(null); setEntradaQtd(""); carregar();
+      if(selItem?._id===entradaForm._id) carregarMovs(entradaForm._id);
+    } catch { showMsg("Erro de conexão.","erro"); }
+    setSaving(false);
+  }
+
+  async function darAjuste() {
+    if(ajusteQtd===""||isNaN(parseFloat(ajusteQtd))) return showMsg("Informe a quantidade.","erro");
+    setSaving(true);
+    try {
+      await fetch(backendUrl+`/estoque/${ajusteForm._id}/ajuste`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(ajusteQtd),motivo:ajusteMotivo})});
+      showMsg(`✅ Estoque ajustado para ${ajusteQtd} ${ajusteForm.unidade}.`);
+      setAjusteForm(null); setAjusteQtd(""); carregar();
+      if(selItem?._id===ajusteForm._id) carregarMovs(ajusteForm._id);
+    } catch { showMsg("Erro de conexão.","erro"); }
+    setSaving(false);
+  }
+
+  async function deletarItem(id) {
+    if(!window.confirm("Remover este item do estoque?")) return;
+    try { await fetch(backendUrl+`/estoque/${id}`,{method:"DELETE"}); carregar(); }
+    catch { showMsg("Erro ao remover.","erro"); }
+  }
+
+  // Cálculo do barril de chopp
+  function pctBarril(item) {
+    if(item.tipo!=="chopp"||!item.capacidadeBarril) return null;
+    return Math.min(100, Math.max(0, (item.quantidade/item.capacidadeBarril)*100));
+  }
+
+  const criticos = itens.filter(i=>i.quantidade<=i.minimo);
+
+  // ── DETALHE DO ITEM
+  if(selItem) {
+    const it = itens.find(i=>i._id===selItem._id)||selItem;
+    const pct = pctBarril(it);
+    return (
+      <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:12}}>
+        <button onClick={()=>setSelItem(null)} style={{background:"none",border:"none",color:"#7b1a0a",fontWeight:700,fontSize:14,cursor:"pointer",textAlign:"left",padding:0}}>← Voltar</button>
+
+        {editando ? (
+          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>✏️ Editando: {editando.nome}</div>
+            {[["nome","Nome"],["unidade","Unidade"],["minimo","Estoque mínimo"],["consumoPorVenda","Consumo por venda"],["cardapioNomes","Itens do cardápio (separados por vírgula)"],["alertaTelefone","Telefone alerta WhatsApp"]].map(([k,l])=>(
+              <div key={k} style={{marginBottom:8}}>
+                <div style={{fontSize:11,color:"#888",marginBottom:3}}>{l}</div>
+                <input value={typeof editando[k]==="object"?editando[k].join(", "):editando[k]||""} onChange={e=>setEditando(p=>({...p,[k]:e.target.value}))} style={inp}/>
+              </div>
+            ))}
+            {editando.tipo==="chopp"&&<div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={editando.capacidadeBarril||""} onChange={e=>setEditando(p=>({...p,capacidadeBarril:parseFloat(e.target.value)}))} style={inp}/></div>}
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={salvarEdicao} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"💾 Salvar"}</button>
+              <button onClick={()=>setEditando(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:18,color:"#1a1a1a"}}>{it.nome}</div>
+                <div style={{fontSize:12,color:"#888",marginTop:2}}>{it.tipo==="chopp"?"🍺 Chopp":"📦"} · {it.unidade} · Mín: {it.minimo}</div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>setEditando({...it,cardapioNomes:it.cardapioNomes?.join(", ")||""})} style={{background:"#dbeafe",border:"none",borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:14}}>✏️</button>
+                <button onClick={()=>deletarItem(it._id)} style={{background:"#fee2e2",border:"none",borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:14}}>🗑️</button>
+              </div>
+            </div>
+
+            {/* Barril de chopp */}
+            {pct!==null&&(
+              <div style={{marginBottom:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:6}}>
+                  <span style={{fontWeight:600}}>🍺 Barril</span>
+                  <span style={{fontWeight:800,color:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981"}}>{it.quantidade.toFixed(1)}L / {it.capacidadeBarril}L</span>
+                </div>
+                <div style={{height:20,background:"#f0f0f0",borderRadius:10,overflow:"hidden",position:"relative"}}>
+                  <div style={{height:"100%",width:pct+"%",background:pct<20?"linear-gradient(90deg,#ef4444,#dc2626)":pct<50?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#10b981,#059669)",borderRadius:10,transition:"width 0.6s"}}/>
+                  <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:pct>30?"#fff":"#555"}}>{pct.toFixed(0)}%</div>
+                </div>
+                {pct<20&&<div style={{fontSize:11,color:"#ef4444",fontWeight:600,marginTop:4}}>⚠️ Barril quase vazio!</div>}
+              </div>
+            )}
+
+            {/* Quantidade atual */}
+            <div style={{display:"flex",gap:10,marginBottom:14}}>
+              <Metrica icon="📦" label="Em estoque" valor={it.quantidade+(it.tipo==="chopp"?" L":" "+it.unidade)} cor={it.quantidade<=it.minimo?"#ef4444":"#10b981"}/>
+              <Metrica icon="⚠️" label="Mínimo" valor={it.minimo+" "+it.unidade} cor="#f59e0b"/>
+            </div>
+
+            {it.cardapioNomes?.length>0&&(
+              <div style={{background:"#f8f7f5",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#555",marginBottom:10}}>
+                🔗 Cardápio: <strong>{it.cardapioNomes.join(", ")}</strong>
+              </div>
+            )}
+
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{setEntradaForm(it);setEntradaQtd("");}} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>📥 Entrada</button>
+              <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(it.quantidade));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
+            </div>
+          </div>
+        )}
+
+        {/* Modais de entrada e ajuste */}
+        {entradaForm&&(
+          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📥 Entrada — {entradaForm.nome}</div>
+            <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade ({entradaForm.unidade})</div><input type="number" step="0.1" value={entradaQtd} onChange={e=>setEntradaQtd(e.target.value)} placeholder="Ex: 30" style={inp}/></div>
+            <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Motivo</div><input value={entradaMotivo} onChange={e=>setEntradaMotivo(e.target.value)} style={inp}/></div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={darEntrada} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Confirmar entrada"}</button>
+              <button onClick={()=>setEntradaForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
+            </div>
+          </div>
+        )}
+        {ajusteForm&&(
+          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #3b82f6",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>🔧 Ajuste — {ajusteForm.nome}</div>
+            <div style={{fontSize:12,color:"#888",marginBottom:10}}>Estoque atual: <strong>{ajusteForm.quantidade} {ajusteForm.unidade}</strong>. Informe a quantidade real contada no inventário.</div>
+            <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade real ({ajusteForm.unidade})</div><input type="number" step="0.1" value={ajusteQtd} onChange={e=>setAjusteQtd(e.target.value)} style={inp}/></div>
+            <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Motivo</div><input value={ajusteMotivo} onChange={e=>setAjusteMotivo(e.target.value)} style={inp}/></div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={darAjuste} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Confirmar ajuste"}</button>
+              <button onClick={()=>setAjusteForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
+            </div>
+          </div>
+        )}
+
+        {/* Histórico de movimentações */}
+        <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:12}}>📋 Histórico de movimentações</div>
+          {movs.length===0?(
+            <div style={{textAlign:"center",padding:"20px 0",color:"#ccc",fontSize:13}}>Nenhuma movimentação ainda</div>
+          ):movs.map((m,i)=>{
+            const cor = m.tipo==="entrada"?"#10b981":m.tipo==="ajuste"?"#3b82f6":"#ef4444";
+            const icon = m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":"📤";
+            const sinal = m.tipo==="entrada"?"+":m.tipo==="ajuste"?(m.quantidade>=0?"+":""):"−";
+            return(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px dashed #f0f0f0"}}>
+                <div style={{width:32,height:32,borderRadius:"50%",background:cor+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{icon}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{m.motivo||m.tipo}</div>
+                  <div style={{fontSize:11,color:"#aaa"}}>{new Date(m.horario).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>
+                </div>
+                <div style={{fontWeight:800,fontSize:14,color:cor}}>{sinal}{Math.abs(m.quantidade).toFixed(m.quantidade%1===0?0:1)} {it.unidade}</div>
+              </div>
+            );
+          })}
+        </div>
+        {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
+      </div>
+    );
+  }
+
+  // ── PAINEL PRINCIPAL
+  return (
+    <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:14}}>
+      {/* Sub-abas */}
+      <div style={{display:"flex",gap:6}}>
+        {[["painel","📦 Estoque"],["consumo","📊 Consumo"]].map(([k,l])=>(
+          <button key={k} onClick={()=>setSubAba(k)} style={{flex:1,padding:"9px 0",borderRadius:10,border:"none",background:subAba===k?"#7b1a0a":"#f0f0f0",color:subAba===k?"#fff":"#666",fontWeight:subAba===k?700:500,fontSize:13,cursor:"pointer"}}>{l}</button>
+        ))}
+      </div>
+
+      {subAba==="painel"&&<>
+        {/* Alertas críticos */}
+        {criticos.length>0&&(
+          <div style={{background:"#fee2e2",border:"1.5px solid #ef4444",borderRadius:14,padding:"12px 14px"}}>
+            <div style={{fontWeight:700,fontSize:13,color:"#991b1b",marginBottom:6}}>🚨 Estoque crítico!</div>
+            {criticos.map(i=>(
+              <div key={i._id} onClick={()=>setSelItem(i)} style={{fontSize:12,color:"#991b1b",cursor:"pointer",padding:"3px 0",display:"flex",justifyContent:"space-between"}}>
+                <span>⚠️ {i.nome}</span>
+                <span style={{fontWeight:700}}>{i.quantidade} {i.unidade} (mín: {i.minimo})</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Métricas */}
+        <div style={{display:"flex",gap:10}}>
+          <Metrica icon="📦" label="Itens cadastrados" valor={itens.length} cor="#7b1a0a"/>
+          <Metrica icon="🚨" label="Estoque crítico" valor={criticos.length} cor={criticos.length>0?"#ef4444":"#10b981"}/>
+          <Metrica icon="🍺" label="Barris de chopp" valor={itens.filter(i=>i.tipo==="chopp").length} cor="#f59e0b"/>
+        </div>
+
+        <button onClick={()=>setNovoForm(true)} style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>+ Cadastrar item no estoque</button>
+
+        {novoForm&&(
+          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📦 Novo item</div>
+            <div style={{display:"flex",gap:8,marginBottom:8}}>
+              <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Nome *</div><input value={novo.nome} onChange={e=>setNovo(p=>({...p,nome:e.target.value}))} placeholder="Ex: Coca-Cola Lata" style={inp}/></div>
+              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tipo</div>
+                <select value={novo.tipo} onChange={e=>setNovo(p=>({...p,tipo:e.target.value,unidade:e.target.value==="chopp"?"litros":"un"}))} style={inp}>
+                  <option value="normal">Normal</option>
+                  <option value="chopp">🍺 Chopp</option>
+                </select>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:8}}>
+              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Unidade</div><input value={novo.unidade} onChange={e=>setNovo(p=>({...p,unidade:e.target.value}))} placeholder="un / litros / kg" style={inp}/></div>
+              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Qtd. inicial</div><input type="number" step="0.1" value={novo.quantidade} onChange={e=>setNovo(p=>({...p,quantidade:e.target.value}))} placeholder="0" style={inp}/></div>
+              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Estoque mínimo</div><input type="number" step="0.1" value={novo.minimo} onChange={e=>setNovo(p=>({...p,minimo:e.target.value}))} placeholder="0" style={inp}/></div>
+            </div>
+            {novo.tipo==="chopp"&&(
+              <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={novo.capacidadeBarril} onChange={e=>setNovo(p=>({...p,capacidadeBarril:e.target.value}))} placeholder="30 ou 50" style={inp}/></div>
+            )}
+            <div style={{display:"flex",gap:8,marginBottom:8}}>
+              <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4 (400ml)":"1"} style={inp}/></div>
+              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tel. alerta</div><input value={novo.alertaTelefone} onChange={e=>setNovo(p=>({...p,alertaTelefone:e.target.value}))} placeholder="5511..." style={inp}/></div>
+            </div>
+            <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Itens do cardápio vinculados (separados por vírgula)</div><input value={novo.cardapioNomes} onChange={e=>setNovo(p=>({...p,cardapioNomes:e.target.value}))} placeholder="Chopp, Chopp Vinho" style={inp}/></div>
+            {novo.tipo==="chopp"&&<div style={{background:"#fef3c7",borderRadius:8,padding:"8px 10px",fontSize:11,color:"#92400e",marginBottom:10}}>ℹ️ Para chopp, o consumo por venda = litros por caneca (400ml = 0.4)</div>}
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={criarItem} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Cadastrar"}</button>
+              <button onClick={()=>setNovoForm(false)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
+            </div>
+          </div>
+        )}
+
+        {/* Lista de itens */}
+        {itens.length===0?(
+          <div style={{textAlign:"center",padding:"40px 0",color:"#ccc"}}><div style={{fontSize:40,marginBottom:8}}>📦</div><div>Nenhum item cadastrado ainda</div></div>
+        ):itens.map(it=>{
+          const pct = pctBarril(it);
+          const critico = it.quantidade<=it.minimo;
+          return(
+            <div key={it._id} onClick={()=>setSelItem(it)} style={{background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)",cursor:"pointer",border:`1.5px solid ${critico?"#ef4444":"transparent"}`}}>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <div style={{width:42,height:42,borderRadius:10,background:critico?"#fee2e2":it.tipo==="chopp"?"#fef3c7":"#f0f0f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>
+                  {it.tipo==="chopp"?"🍺":"📦"}
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:14,color:"#1a1a1a"}}>{it.nome}</div>
+                  <div style={{fontSize:11,color:"#888",marginTop:1}}>{it.cardapioNomes?.length>0?`🔗 ${it.cardapioNomes.join(", ")}`:"Sem vínculo com cardápio"}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontWeight:800,fontSize:15,color:critico?"#ef4444":it.tipo==="chopp"?"#d97706":"#10b981"}}>{it.quantidade}{it.tipo==="chopp"?`L`:` ${it.unidade}`}</div>
+                  <div style={{fontSize:10,color:"#aaa"}}>mín: {it.minimo}</div>
+                  {critico&&<div style={{fontSize:9,fontWeight:700,color:"#ef4444"}}>⚠️ CRÍTICO</div>}
+                </div>
+              </div>
+              {pct!==null&&(
+                <div style={{marginTop:8}}>
+                  <div style={{height:6,background:"#f0f0f0",borderRadius:3}}>
+                    <div style={{height:"100%",width:pct+"%",background:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981",borderRadius:3,transition:"width 0.6s"}}/>
+                  </div>
+                  <div style={{fontSize:9,color:"#aaa",marginTop:2,textAlign:"right"}}>{pct.toFixed(0)}% do barril</div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </>}
+
+      {/* RELATÓRIO DE CONSUMO */}
+      {subAba==="consumo"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#333"}}>📊 Consumo por item</div>
+            <button onClick={carregarConsumo} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,cursor:"pointer",color:"#555"}}>↻ Atualizar</button>
+          </div>
+          {relConsumo.length===0?(
+            <div style={{textAlign:"center",padding:"40px 0",color:"#ccc"}}><div style={{fontSize:36,marginBottom:8}}>📊</div><div>Nenhum dado de consumo ainda</div></div>
+          ):(
+            <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+              {relConsumo.map((r,i)=>(
+                <div key={r.nome} style={{marginBottom:14,paddingBottom:14,borderBottom:i<relConsumo.length-1?"1px dashed #f0f0f0":"none"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:5}}>
+                    <span style={{fontWeight:i<3?700:400}}>{["🥇","🥈","🥉"][i]||"  "} {r.nome}</span>
+                    <span style={{fontWeight:700,color:"#7b1a0a"}}>{r.total.toFixed(r.total%1===0?0:1)} un.</span>
+                  </div>
+                  <div style={{height:6,background:"#f0f0f0",borderRadius:3}}>
+                    <div style={{height:"100%",width:((r.total/relConsumo[0].total)*100)+"%",background:i===0?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#c0392b,#7b1a0a)",borderRadius:3}}/>
+                  </div>
+                  <div style={{fontSize:10,color:"#aaa",marginTop:2}}>{r.movs} movimentaç{r.movs===1?"ão":"ões"}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
+    </div>
+  );
+}
+
 // ── ABA CONFIGURAÇÕES ─────────────────────────────────────────
 function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons }) {
   const [cfg, setCfg] = useState(config);
@@ -2498,6 +2868,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     ["pedidos",    "📋", "Pedidos"],
     ["salao",      "🍽️", "Salão"],
     ["relatorios", "📊", "Rel."],
+    ["estoque",    "📦", "Estoque"],
     ["clientes",   "👥", "Clientes"],
     ["cardapio",   "🍢", "Cardápio"],
     ["cupons",     "🎟️", "Cupons"],
@@ -2635,6 +3006,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           )}
 
           {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
+          {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
