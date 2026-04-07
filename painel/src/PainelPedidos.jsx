@@ -1345,6 +1345,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             const cor = m.tipo==="entrada"?"#10b981":m.tipo==="ajuste"?"#3b82f6":"#ef4444";
             const icon = m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":"📤";
             const sinal = m.tipo==="entrada"?"+":m.tipo==="ajuste"?(m.quantidade>=0?"+":""):"−";
+            const podeExcluir = m.tipo !== "saida"; // não exclui baixas automáticas de venda
             return(
               <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px dashed #f0f0f0"}}>
                 <div style={{width:32,height:32,borderRadius:"50%",background:cor+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{icon}</div>
@@ -1352,7 +1353,17 @@ function Estoque({ backendUrl, cardapio = [] }) {
                   <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{m.motivo||m.tipo}</div>
                   <div style={{fontSize:11,color:"#aaa"}}>{new Date(m.horario).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>
                 </div>
-                <div style={{fontWeight:800,fontSize:14,color:cor}}>{sinal}{Math.abs(m.quantidade).toFixed(m.quantidade%1===0?0:1)} {it.unidade}</div>
+                <div style={{fontWeight:800,fontSize:14,color:cor,marginRight:4}}>{sinal}{Math.abs(m.quantidade).toFixed(m.quantidade%1===0?0:1)} {it.unidade}</div>
+                {podeExcluir&&(
+                  <button onClick={async()=>{
+                    if(!window.confirm(`Excluir esta movimentação? A quantidade no estoque será revertida.`)) return;
+                    try {
+                      const r = await fetch(backendUrl+`/estoque/movimentacoes/${m._id}`,{method:"DELETE"});
+                      if(r.ok){ await carregar(); await carregarMovs(it._id); showMsg("✅ Movimentação excluída e estoque revertido."); }
+                      else showMsg("❌ Erro ao excluir.","erro");
+                    } catch { showMsg("❌ Erro de conexão.","erro"); }
+                  }} style={{background:"#fee2e2",border:"none",borderRadius:7,padding:"4px 7px",cursor:"pointer",fontSize:13,flexShrink:0}}>🗑️</button>
+                )}
               </div>
             );
           })}
