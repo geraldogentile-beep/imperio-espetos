@@ -1,61 +1,195 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+// ============================================================
+// IMPÉRIO DOS ESPETOS — Backend v5
+// WhatsApp via Baileys direto (sem Evolution API)
+// ============================================================
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
+import express from "express";
+import fetch from "node-fetch";
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
+import { Boom } from "@hapi/boom";
+import pino from "pino";
+import qrcode from "qrcode";
+import fs from "fs";
+import path from "path";
+import mongoose from "mongoose";
 
-// ── DESIGN TOKENS ─────────────────────────────────────────────
-const T = {
-  cream:   "#FAFAF8",
-  wine:    "#8B2635",
-  wineD:   "#6B1A28",
-  wineL:   "#F5E8EA",
-  amber:   "#D4842A",
-  amberL:  "#FDF3E7",
-  gray:    "#6B6560",
-  grayL:   "#F2F1EF",
-  grayLL:  "#F8F7F5",
-  dark:    "#1C1917",
-  white:   "#FFFFFF",
-  green:   "#2D7A4F",
-  greenL:  "#E8F5EE",
-  red:     "#C0392B",
-  redL:    "#FEE8E6",
-  blue:    "#1D4ED8",
-  blueL:   "#EFF6FF",
-  purple:  "#6D28D9",
-  purpleL: "#EDE9FE",
-  shadow:  "0 2px 16px rgba(28,25,23,0.07)",
-  shadowM: "0 4px 24px rgba(28,25,23,0.1)",
-  radius:  "16px",
-  radiusS: "10px",
-  radiusL: "24px",
-};
-const POLLING_INTERVAL = 8000;
-const DIAS_SEMANA = ["Domingo","Segunda","Terça","Quarta","Quinta","Sexta","Sábado"];
+const app = express();
+app.use(express.json());
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 
-const STATUS_CONFIG = {
-  novo:       { label: "Novo",       color: "#f59e0b", bg: "#fef3c7", icon: "🔔" },
-  preparando: { label: "Preparando", color: "#3b82f6", bg: "#dbeafe", icon: "🔥" },
-  entrega:    { label: "Na entrega", color: "#8b5cf6", bg: "#ede9fe", icon: "🛵" },
-  entregue:   { label: "Entregue",   color: "#10b981", bg: "#d1fae5", icon: "✅" },
-  cancelado:  { label: "Cancelado",  color: "#ef4444", bg: "#fee2e2", icon: "❌" },
+// ── ENV ───────────────────────────────────────────────────────
+const ENV = {
+  ANTHROPIC_KEY: process.env.ANTHROPIC_KEY || "sua-chave-anthropic-aqui",
+  MONGO_URI:     process.env.MONGO_URI     || "mongodb+srv://geraldogentile_db_user:p6AEJhBDgj9YXOgm@cluster0.l4v1ubi.mongodb.net/imperioespetos?appName=Cluster0",
+  PORT:          process.env.PORT          || 3000,
 };
 
-const hoje = new Date();
-function diasAtras(n) { const d = new Date(hoje); d.setDate(d.getDate() - n); return d.toISOString(); }
-function isMesmosDias(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
+// ── MONGODB — SCHEMAS & CONEXÃO ──────────────────────────────
+const PedidoSchema = new mongoose.Schema({
+  id: String, cliente: String, telefone: String, endereco: String,
+  itens: Array, subtotal: Number, desconto: Number, cupom: String,
+  total: Number, obs: String, tempoPreparo: Number,
+  status: { type: String, default: "novo" },
+  horario: { type: Date, default: Date.now },
+}, { timestamps: true });
 
-const MOCK_PEDIDOS    = [];
-const MOCK_CARDAPIO   = [];
-const MOCK_CUPONS     = [];
-const MOCK_AVALIACOES = [];
+const CupomSchema = new mongoose.Schema({
+  codigo: String, tipo: String, valor: Number, ativo: Boolean,
+  usoMax: Number, usoAtual: { type: Number, default: 0 },
+  validade: Date, descricao: String,
+});
 
-const DEFAULT_CONFIG = {
+const AvaliacaoSchema = new mongoose.Schema({
+  pedidoId: String, telefone: String, cliente: String,
+  nota: Number, horario: { type: Date, default: Date.now },
+});
+
+const FidelidadeSchema = new mongoose.Schema({
+  telefone: { type: String, unique: true },
+  pedidosEntregues: { type: Number, default: 0 },
+  brindesGanhos: { type: Number, default: 0 },
+});
+
+const ConfigSchema = new mongoose.Schema({
+  chave: { type: String, unique: true },
+  valor: mongoose.Schema.Types.Mixed,
+});
+
+const CardapioSchema = new mongoose.Schema({
+  id: Number, categoria: String, nome: String, preco: Number,
+  tempoPreparo: Number, ativo: Boolean, obs: String,
+});
+
+const VendaSalaoSchema = new mongoose.Schema({
+  mesa: Number, cliente: String, garcom: String, garcomId: String,
+  itens: Array, total: Number, pagamento: String,
+  abertura: Date, fechamento: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+const GarcomSchema = new mongoose.Schema({
+  nome: { type: String, required: true },
+  pin:  { type: String, required: true, unique: true },
+  ativo: { type: Boolean, default: true },
+  criadoEm: { type: Date, default: Date.now },
+});
+
+// ── FECHAMENTO DO DIA ──────────────────────────────────────────
+const FechamentoDiaSchema = new mongoose.Schema({
+  data:            { type: Date, default: Date.now },
+  dataStr:         String,           // "2026-04-06" para busca fácil
+  totalDelivery:   { type: Number, default: 0 },
+  totalSalao:      { type: Number, default: 0 },
+  totalGeral:      { type: Number, default: 0 },
+  pedidosDelivery: { type: Number, default: 0 },
+  vendasSalao:     { type: Number, default: 0 },
+  porPagamento: {  // salão por forma de pagamento
+    pix:      { type: Number, default: 0 },
+    cartao:   { type: Number, default: 0 },
+    dinheiro: { type: Number, default: 0 },
+  },
+  porGarcom: Array,   // [{ nome, vendas, total }]
+  obs: String,
+  criadoPor: String,
+});
+
+// ── ESTOQUE ────────────────────────────────────────────────────
+const EstoqueSchema = new mongoose.Schema({
+  nome:          { type: String, required: true },       // "Chopp", "Coca-Cola Lata"
+  unidade:       { type: String, default: "un" },        // "un", "litros", "kg"
+  quantidade:    { type: Number, default: 0 },           // quantidade atual
+  minimo:        { type: Number, default: 0 },           // alerta de estoque mínimo
+  alertaEnviado: { type: Boolean, default: false },      // evita spam de alerta
+  cardapioNomes: { type: [String], default: [] },        // nomes dos itens do cardápio que consomem este estoque
+  consumoPorVenda: { type: Number, default: 1 },         // quanto desconta por unidade vendida
+  tipo:          { type: String, default: "normal" },    // "normal" | "chopp"
+  capacidadeBarril: { type: Number, default: 0 },        // litros (só para chopp)
+  alertaTelefone: { type: String, default: "" },         // telefone do dono para alerta WhatsApp
+  ativo:         { type: Boolean, default: true },
+  criadoEm:      { type: Date, default: Date.now },
+});
+
+const MovEstoqueSchema = new mongoose.Schema({
+  estoqueId:   { type: mongoose.Schema.Types.ObjectId, ref: "Estoque" },
+  estoqueNome: String,
+  tipo:        { type: String, enum: ["entrada", "saida", "ajuste"] },
+  quantidade:  Number,
+  motivo:      String,   // "venda", "entrada mercadoria", "ajuste manual", "desperdício"
+  vendaId:     String,   // referência à venda quando for saída automática
+  horario:     { type: Date, default: Date.now },
+});
+
+const PedidoDB    = mongoose.model("Pedido",    PedidoSchema);
+const CupomDB     = mongoose.model("Cupom",     CupomSchema);
+const AvaliacaoDB = mongoose.model("Avaliacao", AvaliacaoSchema);
+const FidelidadeDB = mongoose.model("Fidelidade", FidelidadeSchema);
+const ConfigDB    = mongoose.model("Config",    ConfigSchema);
+const CardapioDB  = mongoose.model("Cardapio",  CardapioSchema);
+const VendaSalaoDB = mongoose.model("VendaSalao", VendaSalaoSchema);
+const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
+const EstoqueDB    = mongoose.model("Estoque",        EstoqueSchema);
+const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
+const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
+
+async function conectarMongo() {
+  try {
+    await mongoose.connect(ENV.MONGO_URI);
+    console.log("✅ MongoDB conectado!");
+    await inicializarDados();
+  } catch (e) {
+    console.error("⚠️  MongoDB falhou — usando memória:", e.message);
+  }
+}
+
+async function inicializarDados() {
+  // Inicializa cardápio se vazio
+  const totalCardapio = await CardapioDB.countDocuments();
+  if (totalCardapio === 0) {
+    await CardapioDB.insertMany(CARDAPIO);
+    console.log("📦 Cardápio inicializado no banco!");
+  } else {
+    CARDAPIO = await CardapioDB.find().lean();
+  }
+
+  // Inicializa cupons se vazio
+  const totalCupons = await CupomDB.countDocuments();
+  if (totalCupons === 0) {
+    await CupomDB.insertMany(cupons);
+    console.log("🎟️  Cupons inicializados no banco!");
+  } else {
+    cupons = await CupomDB.find().lean();
+  }
+
+  // Carrega config salva
+  const cfgSalva = await ConfigDB.findOne({ chave: "config" });
+  if (cfgSalva) CONFIG = { ...CONFIG, ...cfgSalva.valor };
+
+  // Carrega counter de pedidos
+  const ultimoPedido = await PedidoDB.findOne().sort({ horario: -1 }).lean();
+  if (ultimoPedido?.id) counter = parseInt(ultimoPedido.id) + 1;
+
+  console.log("✅ Dados carregados do banco!");
+}
+
+// ── ESTADO DO WHATSAPP ────────────────────────────────────────
+let sock = null;
+let qrCodeBase64 = null;
+let whatsappStatus = "disconnected"; // disconnected | qr | connected
+let authDir = "./auth_info";
+
+// ── CONFIG ────────────────────────────────────────────────────
+let CONFIG = {
   nomeEstabelecimento: "Império dos Espetos e Grill",
   nomeAgente: "Imperador",
   taxaEntrega: 5.00,
   tempoEntregaMin: 30,
   tempoEntregaMax: 45,
-  entregaCEP: { ativo: true, cepBase: "01310100", raioKm: 5, mensagemForaRaio: "😕 Fora do nosso raio de {raio}km." },
+  entregaCEP: { ativo: false, cepBase: "01310100", raioKm: 5, mensagemForaRaio: "😕 Fora do nosso raio de {raio}km." },
   horarioFuncionamento: {
     0: { aberto: false, abertura: "18:00", fechamento: "23:00" },
     1: { aberto: false, abertura: "18:00", fechamento: "23:00" },
@@ -67,3505 +201,945 @@ const DEFAULT_CONFIG = {
   },
   mensagensAutomaticas: {
     ativo: true,
-    preparando: "👨‍🍳 Seu pedido *#{id}* está sendo preparado! 🔥",
-    entrega:    "🛵 Seu pedido *#{id}* saiu para entrega!",
-    entregue:   "✅ Pedido *#{id}* entregue! Obrigado, {cliente}! 🍢",
-    cancelado:  "❌ Seu pedido *#{id}* foi cancelado.",
+    preparando: "👨‍🍳 Seu pedido *#{id}* está sendo preparado! Em breve sai quentinho 🔥",
+    entrega:    "🛵 Seu pedido *#{id}* saiu para entrega! Chegará em instantes 😄",
+    entregue:   "✅ Pedido *#{id}* entregue! Obrigado, {cliente}! Bom apetite! 🍢",
+    cancelado:  "❌ Seu pedido *#{id}* foi cancelado. Entre em contato conosco.",
   },
-  fidelidade: {
-    ativo: true,
-    pedidosParaGanhar: 5,
-    brinde: "1 espetinho grátis",
-    mensagemGanhou: "🎉 Parabéns {cliente}! Você ganhou *{brinde}*! Mencione no próximo pedido 😄",
-  },
-  avaliacao: {
-    ativo: true,
-    delayMinutos: 10,
-    mensagem: "Olá {cliente}! Como foi seu pedido? Responda com uma nota de *1 a 5* ⭐",
-    mensagemObrigado: "Obrigado pela avaliação, {cliente}! 💛",
-  },
+  fidelidade: { ativo: true, pedidosParaGanhar: 5, brinde: "1 espetinho grátis", mensagemGanhou: "🎉 Parabéns {cliente}! Você ganhou *{brinde}*! Mencione no próximo pedido 😄" },
+  avaliacao:  { ativo: true, delayMinutos: 10, mensagem: "Olá {cliente}! Como foi seu pedido? Responda com uma nota de *1 a 5* ⭐", mensagemObrigado: "Obrigado pela avaliação, {cliente}! 💛" },
 };
+
+// ── CARDÁPIO ──────────────────────────────────────────────────
+let CARDAPIO = [
+  { id: 1,  categoria: "Tradicionais",    nome: "Alcatra",                 preco: 9.00,  tempoPreparo: 15, ativo: true, obs: null },
+  { id: 2,  categoria: "Tradicionais",    nome: "Alcatra com legumes",     preco: 9.00,  tempoPreparo: 15, ativo: true, obs: null },
+  { id: 3,  categoria: "Tradicionais",    nome: "Frango",                  preco: 9.00,  tempoPreparo: 12, ativo: true, obs: null },
+  { id: 4,  categoria: "Tradicionais",    nome: "Frango com legumes",      preco: 9.00,  tempoPreparo: 12, ativo: true, obs: null },
+  { id: 5,  categoria: "Tradicionais",    nome: "Tulipa na mostarda",      preco: 9.00,  tempoPreparo: 12, ativo: true, obs: null },
+  { id: 6,  categoria: "Tradicionais",    nome: "Linguiça",                preco: 9.00,  tempoPreparo: 10, ativo: true, obs: null },
+  { id: 7,  categoria: "Tradicionais",    nome: "Coraçãozinho de frango",  preco: 9.00,  tempoPreparo: 10, ativo: true, obs: null },
+  { id: 8,  categoria: "Tradicionais",    nome: "Panceta suína",           preco: 9.00,  tempoPreparo: 15, ativo: true, obs: null },
+  { id: 9,  categoria: "Tradicionais",    nome: "Pão de alho",             preco: 8.00,  tempoPreparo: 5,  ativo: true, obs: null },
+  { id: 10, categoria: "Especiais",       nome: "Picanha meia lua",        preco: 15.00, tempoPreparo: 20, ativo: true, obs: "no sal grosso" },
+  { id: 11, categoria: "Especiais",       nome: "Cordeiro",                preco: 13.00, tempoPreparo: 25, ativo: true, obs: null },
+  { id: 12, categoria: "Especiais",       nome: "Kafta com queijo",        preco: 11.00, tempoPreparo: 15, ativo: true, obs: null },
+  { id: 13, categoria: "Especiais",       nome: "Medalhão frango",         preco: 11.00, tempoPreparo: 15, ativo: true, obs: null },
+  { id: 14, categoria: "Especiais",       nome: "Medalhão mignon",         preco: 11.00, tempoPreparo: 18, ativo: true, obs: null },
+  { id: 15, categoria: "Especiais",       nome: "Medalhão suíno",          preco: 11.00, tempoPreparo: 18, ativo: true, obs: null },
+  { id: 16, categoria: "Especiais",       nome: "Queijo coalho",           preco: 10.00, tempoPreparo: 8,  ativo: true, obs: null },
+  { id: 17, categoria: "Doces",           nome: "Romeu e Julieta",         preco: 11.00, tempoPreparo: 8,  ativo: true, obs: null },
+  { id: 18, categoria: "Doces",           nome: "Morango com chocolate",   preco: 10.00, tempoPreparo: 8,  ativo: true, obs: null },
+  { id: 19, categoria: "Doces",           nome: "Uva com chocolate",       preco: 10.00, tempoPreparo: 8,  ativo: true, obs: null },
+  { id: 20, categoria: "Churrasco Grego", nome: "Churrasco Grego",         preco: 18.00, tempoPreparo: 25, ativo: true, obs: null },
+  { id: 21, categoria: "Acompanhamentos", nome: "Vinagrete",               preco: 2.00,  tempoPreparo: 2,  ativo: true, obs: null },
+  { id: 22, categoria: "Acompanhamentos", nome: "Farofa",                  preco: 1.00,  tempoPreparo: 2,  ativo: true, obs: null },
+  { id: 23, categoria: "Acompanhamentos", nome: "Molho alho",              preco: 2.00,  tempoPreparo: 2,  ativo: true, obs: null },
+  { id: 24, categoria: "Água",            nome: "Água com gás",            preco: 4.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 25, categoria: "Água",            nome: "Água sem gás",            preco: 4.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 26, categoria: "Suco",            nome: "Suco 200ml",              preco: 6.00,  tempoPreparo: 5,  ativo: true, obs: "Super Suco" },
+  { id: 27, categoria: "Suco",            nome: "Suco 900ml",              preco: 12.00, tempoPreparo: 5,  ativo: true, obs: "Super Suco" },
+  { id: 28, categoria: "Suco",            nome: "Suco 1.700ml",            preco: 20.00, tempoPreparo: 5,  ativo: true, obs: "Super Suco" },
+  { id: 29, categoria: "Refrigerantes",   nome: "Coca-Cola 2L",            preco: 14.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 30, categoria: "Refrigerantes",   nome: "Coca-Cola Zero 2L",       preco: 14.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 31, categoria: "Refrigerantes",   nome: "Guaraná 2L",              preco: 14.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 32, categoria: "Refrigerantes",   nome: "Coca-Cola 1L",            preco: 10.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 33, categoria: "Refrigerantes",   nome: "Coca-Cola Lata",          preco: 6.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 34, categoria: "Refrigerantes",   nome: "Coca-Cola Zero Lata",     preco: 6.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 35, categoria: "Refrigerantes",   nome: "Sprite Lata",             preco: 6.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 36, categoria: "Refrigerantes",   nome: "Guaraná Lata",            preco: 6.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 37, categoria: "Refrigerantes",   nome: "Fanta Laranja Lata",      preco: 6.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 38, categoria: "Refrigerantes",   nome: "Fanta Uva Lata",          preco: 6.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 39, categoria: "Cervejas",        nome: "Sol Long Neck",           preco: 8.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 40, categoria: "Cervejas",        nome: "Heineken Long Neck",      preco: 10.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 41, categoria: "Cervejas",        nome: "Heineken Zero Long Neck", preco: 10.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 42, categoria: "Cervejas",        nome: "Brahma Lata",             preco: 7.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 43, categoria: "Cervejas",        nome: "Skol Lata",               preco: 7.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 44, categoria: "Cervejas",        nome: "Amstel Lata",             preco: 7.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 45, categoria: "Cervejas",        nome: "Chopp",                   preco: 10.00, tempoPreparo: 3,  ativo: true, obs: "caneca" },
+  { id: 46, categoria: "Cervejas",        nome: "Chopp Vinho",             preco: 12.00, tempoPreparo: 3,  ativo: true, obs: "caneca" },
+  { id: 47, categoria: "Energético",      nome: "Monster",                 preco: 12.00, tempoPreparo: 1,  ativo: true, obs: null },
+];
+let nextItemId = 48;
+
+// ── CUPONS ────────────────────────────────────────────────────
+let cupons = [
+  { codigo: "BEMVINDO10", tipo: "percentual", valor: 10, ativo: true, usoMax: 100, usoAtual: 0, validade: null, descricao: "10% de desconto boas-vindas" },
+  { codigo: "FRETE0",     tipo: "frete",      valor: 0,  ativo: true, usoMax: 50,  usoAtual: 0, validade: null, descricao: "Frete grátis" },
+];
+
+// ── FIDELIDADE ────────────────────────────────────────────────
+const fidelidadeClientes = new Map();
+function getFidelidade(tel) {
+  if (!fidelidadeClientes.has(tel)) fidelidadeClientes.set(tel, { pedidosEntregues: 0, brindesGanhos: 0 });
+  return fidelidadeClientes.get(tel);
+}
+async function salvarFidelidade(tel, dados) {
+  try { await FidelidadeDB.updateOne({ telefone: tel }, { $set: dados }, { upsert: true }); } catch {}
+}
+
+// ── AVALIAÇÕES ────────────────────────────────────────────────
+const avaliacoes = [];
+const aguardandoAvaliacao = new Map();
+const timersAvaliacao = new Map();
+
+// ── PEDIDOS ───────────────────────────────────────────────────
+const pedidos = [];
+let counter = 1;
+
+// ── MEMÓRIA CONVERSAS ─────────────────────────────────────────
+const conversas = new Map();
+function getHist(tel) { if (!conversas.has(tel)) conversas.set(tel, []); return conversas.get(tel); }
+function addMsg(tel, role, content) {
+  const h = getHist(tel);
+  h.push({ role, content });
+  if (h.length > 40) h.splice(0, h.length - 40);
+}
 
 // ── HELPERS ───────────────────────────────────────────────────
-function calcTotal(itens = [], desconto = 0) { return itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0) + 5 - (desconto || 0); }
-function horaFmt(iso) { return new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }); }
-function dataFmt(iso) { return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" }); }
-function dtFmt(iso) { return dataFmt(iso) + " às " + horaFmt(iso); }
-function tempoAtras(iso) {
-  const m = Math.floor((Date.now() - new Date(iso)) / 60000);
-  if (m < 1) return "agora"; if (m < 60) return m + "min atrás";
-  if (m < 1440) return Math.floor(m / 60) + "h atrás"; return Math.floor(m / 1440) + "d atrás";
-}
-function iniciais(nome) { return nome.split(" ").slice(0, 2).map(x => x[0]).join("").toUpperCase(); }
-function corAvatar(nome) {
-  const cores = ["#7b1a0a","#1d4ed8","#065f46","#7c3aed","#b45309","#be185d","#0e7490"];
-  let h = 0; for (const x of nome) h = x.charCodeAt(0) + ((h << 5) - h);
-  return cores[Math.abs(h) % cores.length];
-}
-function estrelas(nota) { return "⭐".repeat(nota) + "☆".repeat(5 - nota); }
-
-// ── COMPONENTES BASE ──────────────────────────────────────────
-function Badge({ status }) {
-  const c = STATUS_CONFIG[status] || STATUS_CONFIG.novo;
-  return <span style={{ background: c.bg, color: c.color, border: `1px solid ${c.color}40`, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3, fontFamily:"'DM Sans',sans-serif" }}>{c.icon} {c.label}</span>;
+function estaAberto() {
+  const agora = new Date();
+  const h = CONFIG.horarioFuncionamento[agora.getDay()];
+  if (!h?.aberto) return false;
+  const [hAb, mAb] = h.abertura.split(":").map(Number);
+  const [hFe, mFe] = h.fechamento.split(":").map(Number);
+  const now = agora.getHours() * 60 + agora.getMinutes();
+  const ab = hAb * 60 + mAb;
+  const fe = hFe === 0 && mFe === 0 ? 1440 : hFe * 60 + mFe;
+  return now >= ab && now < fe;
 }
 
-function Toggle({ value, onChange, label, sub }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
-      <div>
-        <div style={{ fontSize: 14, fontWeight: 500, color: T.dark, fontFamily:"'DM Sans',sans-serif" }}>{label}</div>
-        {sub && <div style={{ fontSize: 12, color: T.gray, marginTop: 2 }}>{sub}</div>}
-      </div>
-      <div onClick={() => onChange(!value)} style={{ width: 48, height: 28, borderRadius: 14, background: value ? T.wine : T.grayL, cursor: "pointer", position: "relative", transition: "background 0.25s", flexShrink: 0, boxShadow: value ? `0 2px 8px ${T.wine}40` : "none" }}>
-        <div style={{ position: "absolute", top: 4, left: value ? 24 : 4, width: 20, height: 20, borderRadius: "50%", background: T.white, transition: "left 0.25s", boxShadow: "0 1px 4px rgba(0,0,0,0.15)" }} />
-      </div>
-    </div>
-  );
-}
-
-function Metrica({ icon, label, valor, sub, cor }) {
-  return (
-    <div style={{ background: T.white, borderRadius: T.radius, padding: "16px", flex: 1, minWidth: 110, boxShadow: T.shadow, border: `1px solid ${T.grayL}`, position: "relative", overflow: "hidden" }}>
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: cor, borderRadius: "16px 16px 0 0" }} />
-      <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: T.dark, fontFamily:"'DM Sans',sans-serif", lineHeight:1 }}>{valor}</div>
-      <div style={{ fontSize: 11, color: T.gray, marginTop: 4, textTransform:"uppercase", letterSpacing:0.5 }}>{label}</div>
-      {sub && <div style={{ fontSize: 11, color: cor, fontWeight: 600, marginTop: 4 }}>{sub}</div>}
-    </div>
-  );
-}
-
-function Barra({ label, valor, maximo, destaque }) {
-  const pct = maximo > 0 ? (valor / maximo) * 100 : 0;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: 1 }}>
-      <div style={{ fontSize: 10, fontWeight: 600, color: destaque ? T.wine : T.gray }}>{valor > 0 ? "R$" + valor.toFixed(0) : "—"}</div>
-      <div style={{ width: "100%", height: 80, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-        <div style={{ width: "60%", height: Math.max(pct, valor > 0 ? 4 : 0) + "%", background: destaque ? `linear-gradient(180deg,${T.amber},${T.wine})` : `linear-gradient(180deg,${T.wineL},${T.wineL.replace("F5","E0")})`, borderRadius: "6px 6px 0 0", transition: "height 0.6s ease", minHeight: valor > 0 ? 4 : 0 }} />
-      </div>
-      <div style={{ fontSize: 10, color: destaque ? T.wine : T.gray, fontWeight: destaque ? 700 : 400 }}>{label}</div>
-    </div>
-  );
-}
-
-// ── ABA CUPONS ────────────────────────────────────────────────
-function Cupons({ cupons, onReload }) {
-  const [novoForm, setNovoForm] = useState(false);
-  const [novo, setNovo] = useState({ codigo: "", tipo: "percentual", valor: "", usoMax: "", validade: "", descricao: "" });
-  const [saving, setSaving] = useState(false);
-  const [testeCodigo, setTesteCodigo] = useState("");
-  const [testeSubtotal, setTesteSubtotal] = useState("50");
-  const [resultadoTeste, setResultadoTeste] = useState(null);
-
-  async function criarCupom() {
-    if (!novo.codigo || !novo.valor) return;
-    setSaving(true);
-    try {
-      await fetch(BACKEND_URL + "/cupons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novo, valor: parseFloat(novo.valor), usoMax: novo.usoMax ? parseInt(novo.usoMax) : null }) });
-      onReload();
-    } catch { onReload(); }
-    setSaving(false);
-    setNovoForm(false);
-    setNovo({ codigo: "", tipo: "percentual", valor: "", usoMax: "", validade: "", descricao: "" });
+function proximaAbertura() {
+  const dias = ["Domingo","Segunda","Terça","Quarta","Quinta","Sexta","Sábado"];
+  for (let i = 1; i <= 7; i++) {
+    const dia = (new Date().getDay() + i) % 7;
+    const h = CONFIG.horarioFuncionamento[dia];
+    if (h?.aberto) return `${dias[dia]} a partir das ${h.abertura}`;
   }
-
-  async function toggleCupom(codigo, ativo) {
-    try { await fetch(BACKEND_URL + "/cupons/" + codigo + "/ativo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo }) }); onReload(); } catch { onReload(); }
-  }
-
-  async function deletarCupom(codigo) {
-    if (!window.confirm("Remover cupom " + codigo + "?")) return;
-    try { await fetch(BACKEND_URL + "/cupons/" + codigo, { method: "DELETE" }); onReload(); } catch { onReload(); }
-  }
-
-  async function testarCupom() {
-    try {
-      const res = await fetch(BACKEND_URL + "/cupons/validar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codigo: testeCodigo, subtotal: parseFloat(testeSubtotal) }) });
-      setResultadoTeste(await res.json());
-    } catch { setResultadoTeste({ erro: "Erro ao testar" }); }
-  }
-
-  const inputStyle = { width: "100%", padding: "7px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
-  const tipoLabel = { percentual: "% Desconto", fixo: "R$ Fixo", frete: "Frete grátis" };
-
-  return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "flex", gap: 10 }}>
-        <Metrica icon="🎟️" label="Cupons ativos" valor={cupons.filter(c => c.ativo).length} cor="#7b1a0a" />
-        <Metrica icon="📊" label="Total de usos" valor={cupons.reduce((s, c) => s + c.usoAtual, 0)} cor="#3b82f6" />
-        <Metrica icon="💸" label="Cupons inativos" valor={cupons.filter(c => !c.ativo).length} cor="#aaa" />
-      </div>
-
-      <button onClick={() => setNovoForm(true)} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-        + Criar novo cupom
-      </button>
-
-      {novoForm && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 12px rgba(0,0,0,0.1)", border: "1.5px solid #7b1a0a" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#333", marginBottom: 12 }}>🎟️ Novo cupom</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Código *</div>
-              <input value={novo.codigo} onChange={e => setNovo(p => ({ ...p, codigo: e.target.value.toUpperCase() }))} placeholder="Ex: NATAL20" style={inputStyle} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Tipo *</div>
-              <select value={novo.tipo} onChange={e => setNovo(p => ({ ...p, tipo: e.target.value }))} style={inputStyle}>
-                <option value="percentual">% Percentual</option>
-                <option value="fixo">R$ Valor fixo</option>
-                <option value="frete">Frete grátis</option>
-              </select>
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>{novo.tipo === "percentual" ? "Desconto (%)" : novo.tipo === "fixo" ? "Valor (R$)" : "Valor"} *</div>
-              <input type="number" value={novo.valor} onChange={e => setNovo(p => ({ ...p, valor: e.target.value }))} placeholder={novo.tipo === "frete" ? "0" : "10"} disabled={novo.tipo === "frete"} style={{ ...inputStyle, background: novo.tipo === "frete" ? "#f5f5f5" : "#fff" }} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Uso máximo</div>
-              <input type="number" value={novo.usoMax} onChange={e => setNovo(p => ({ ...p, usoMax: e.target.value }))} placeholder="Ilimitado" style={inputStyle} />
-            </div>
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Descrição</div>
-            <input value={novo.descricao} onChange={e => setNovo(p => ({ ...p, descricao: e.target.value }))} placeholder="Ex: Desconto de fim de ano" style={inputStyle} />
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={criarCupom} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-              {saving ? "Criando..." : "✅ Criar cupom"}
-            </button>
-            <button onClick={() => setNovoForm(false)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
-              Cancelar
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Lista de cupons */}
-      {cupons.map(c => (
-        <div key={c.codigo} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", opacity: c.ativo ? 1 : 0.55 }}>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a", fontFamily: "monospace", letterSpacing: 1 }}>{c.codigo}</span>
-                <span style={{ background: c.ativo ? "#d1fae5" : "#f0f0f0", color: c.ativo ? "#065f46" : "#888", borderRadius: 10, padding: "2px 8px", fontSize: 11, fontWeight: 700 }}>
-                  {c.ativo ? "Ativo" : "Inativo"}
-                </span>
-                <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 10, padding: "2px 8px", fontSize: 11, fontWeight: 600 }}>
-                  {tipoLabel[c.tipo]}
-                </span>
-              </div>
-              <div style={{ fontSize: 13, color: "#333", marginTop: 4, fontWeight: 600 }}>
-                {c.tipo === "percentual" ? c.valor + "% de desconto" : c.tipo === "fixo" ? "R$ " + c.valor + " de desconto" : "Frete grátis"}
-              </div>
-              {c.descricao && <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{c.descricao}</div>}
-              <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>
-                Usado {c.usoAtual}x{c.usoMax ? " de " + c.usoMax : " (ilimitado)"}
-                {c.usoMax && (
-                  <span style={{ marginLeft: 8 }}>
-                    <span style={{ display: "inline-block", width: 60, height: 4, background: "#f0f0f0", borderRadius: 2, verticalAlign: "middle" }}>
-                      <span style={{ display: "block", width: Math.min((c.usoAtual / c.usoMax) * 100, 100) + "%", height: "100%", background: "#7b1a0a", borderRadius: 2 }} />
-                    </span>
-                  </span>
-                )}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-              <button onClick={() => toggleCupom(c.codigo, !c.ativo)} title={c.ativo ? "Desativar" : "Ativar"} style={{ background: c.ativo ? "#fee2e2" : "#d1fae5", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>
-                {c.ativo ? "❌" : "✅"}
-              </button>
-              <button onClick={() => deletarCupom(c.codigo)} title="Remover" style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>
-                🗑️
-              </button>
-            </div>
-          </div>
-        </div>
-      ))}
-
-      {/* Testar cupom */}
-      <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>🧪 Simular cupom</div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <div style={{ flex: 2 }}>
-            <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Código</div>
-            <input value={testeCodigo} onChange={e => { setTesteCodigo(e.target.value.toUpperCase()); setResultadoTeste(null); }} placeholder="BEMVINDO10" style={inputStyle} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Subtotal (R$)</div>
-            <input type="number" value={testeSubtotal} onChange={e => setTesteSubtotal(e.target.value)} style={inputStyle} />
-          </div>
-        </div>
-        <button onClick={testarCupom} disabled={!testeCodigo} style={{ width: "100%", background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-          Simular desconto
-        </button>
-        {resultadoTeste && (
-          <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: resultadoTeste.erro ? "#fee2e2" : "#d1fae5", border: "1px solid " + (resultadoTeste.erro ? "#ef4444" : "#10b981") }}>
-            {resultadoTeste.erro
-              ? <div style={{ fontWeight: 700, fontSize: 13, color: "#991b1b" }}>❌ {resultadoTeste.erro}</div>
-              : <>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#065f46" }}>✅ Cupom válido!</div>
-                <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>
-                  Desconto: <strong>R$ {resultadoTeste.desconto?.toFixed(2)}</strong>
-                  {" · "}Total final: <strong>R$ {(parseFloat(testeSubtotal) + 5 - (resultadoTeste.desconto || 0)).toFixed(2)}</strong>
-                </div>
-              </>
-            }
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  return "em breve";
 }
 
-// ── ABA FIDELIDADE ────────────────────────────────────────────
-function Fidelidade({ pedidos, config }) {
-  const meta = config?.fidelidade?.pedidosParaGanhar || 5;
-  const brinde = config?.fidelidade?.brinde || "1 espetinho grátis";
+function calcularTempoPreparo(itens) {
+  if (!itens?.length) return CONFIG.tempoEntregaMin;
+  const max = Math.max(...itens.map(i => {
+    const item = CARDAPIO.find(c => c.nome.toLowerCase() === i.nome?.toLowerCase());
+    return item ? item.tempoPreparo : 10;
+  }));
+  return max + CONFIG.tempoEntregaMin;
+}
 
-  // Calcula fidelidade a partir dos pedidos entregues
-  const fm = {};
-  pedidos.filter(p => p.status === "entregue").forEach(p => {
-    if (!fm[p.telefone]) fm[p.telefone] = { nome: p.cliente, telefone: p.telefone, total: 0 };
-    fm[p.telefone].total += 1;
+function aplicarCupom(subtotal, codigo) {
+  if (!codigo) return { desconto: 0 };
+  const cupom = cupons.find(c => c.codigo.toUpperCase() === codigo.toUpperCase() && c.ativo);
+  if (!cupom) return { desconto: 0, erro: "Cupom inválido." };
+  if (cupom.usoMax && cupom.usoAtual >= cupom.usoMax) return { desconto: 0, erro: "Cupom esgotado." };
+  let desconto = 0;
+  if (cupom.tipo === "percentual") desconto = subtotal * (cupom.valor / 100);
+  else if (cupom.tipo === "fixo") desconto = Math.min(cupom.valor, subtotal);
+  else if (cupom.tipo === "frete") desconto = CONFIG.taxaEntrega;
+  return { desconto: parseFloat(desconto.toFixed(2)), cupom };
+}
+
+function formatMsg(tpl, pedido) {
+  return tpl
+    .replace(/{id}/g, pedido.id)
+    .replace(/{cliente}/g, pedido.cliente)
+    .replace(/{brinde}/g, CONFIG.fidelidade.brinde)
+    .replace(/{total}/g, pedido.total?.toFixed(2));
+}
+
+function cardapioTexto() {
+  const ativos = CARDAPIO.filter(i => i.ativo);
+  return Object.entries(
+    ativos.reduce((acc, item) => {
+      if (!acc[item.categoria]) acc[item.categoria] = [];
+      acc[item.categoria].push(`  • ${item.nome}${item.obs ? ` (${item.obs})` : ""}: R$${item.preco.toFixed(2)}`);
+      return acc;
+    }, {})
+  ).map(([cat, items]) => `${cat}:\n${items.join("\n")}`).join("\n\n");
+}
+
+function buildSystemPrompt(tel) {
+  const aberto = estaAberto();
+  const cuponsAtivos = cupons.filter(c => c.ativo).map(c => `${c.codigo} — ${c.descricao}`).join(", ");
+  const telLimpo = tel ? tel.replace("@s.whatsapp.net","").replace("@lid","").replace(/\D/g,"") : "";
+  return `Você é o assistente virtual do *${CONFIG.nomeEstabelecimento}* 👑🔥
+Seu nome é *${CONFIG.nomeAgente}*.
+
+STATUS: ${aberto ? "✅ LOJA ABERTA" : `🔴 LOJA FECHADA — próxima abertura: ${proximaAbertura()}. NÃO aceite pedidos.`}
+
+TELEFONE DO CLIENTE: ${telLimpo} (já capturado automaticamente — NUNCA peça o número de telefone ao cliente)
+
+FIDELIDADE: A cada ${CONFIG.fidelidade.pedidosParaGanhar} pedidos o cliente ganha ${CONFIG.fidelidade.brinde}.
+
+CUPONS: Só aplique desconto se o cliente mencionar um cupom espontaneamente. NUNCA ofereça, sugira ou mencione cupons por iniciativa própria.
+
+Seu trabalho (apenas quando ABERTO):
+1. Recepcionar o cliente de forma calorosa
+2. Apresentar cardápio quando pedido
+3. Anotar pedido, calcular total
+4. Coletar apenas nome e endereço (telefone já capturado automaticamente)
+5. Confirmar pedido com resumo
+
+CARDÁPIO:
+${cardapioTexto()}
+
+Taxa de entrega: R$ ${CONFIG.taxaEntrega.toFixed(2)}
+Tempo estimado: ${CONFIG.tempoEntregaMin} a ${CONFIG.tempoEntregaMax} minutos
+
+Ao finalizar inclua exatamente:
+<PEDIDO_FINALIZADO>
+{"cliente":"nome","telefone":"${telLimpo}","endereco":"endereço","itens":[{"nome":"item","qty":1,"preco":9.00}],"subtotal":0.00,"desconto":0.00,"cupom":"","total":0.00,"obs":"","tempoPreparo":0}
+</PEDIDO_FINALIZADO>
+
+Responda SEMPRE em português brasileiro.`;
+}
+
+// ── CLAUDE API ────────────────────────────────────────────────
+async function chamarClaude(historico, tel) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": ENV.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: buildSystemPrompt(tel), messages: historico }),
   });
-  const clientes = Object.values(fm).sort((a, b) => b.total - a.total);
-
-  return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* Regra atual */}
-      <div style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", borderRadius: 14, padding: "16px", color: "#fff" }}>
-        <div style={{ fontSize: 22, marginBottom: 6 }}>🏆</div>
-        <div style={{ fontWeight: 800, fontSize: 16 }}>Programa de Fidelidade</div>
-        <div style={{ fontSize: 13, opacity: 0.9, marginTop: 4 }}>
-          A cada <strong>{meta} pedidos</strong> entregues, o cliente ganha:
-        </div>
-        <div style={{ fontSize: 15, fontWeight: 700, marginTop: 6, background: "rgba(255,255,255,0.2)", borderRadius: 10, padding: "6px 12px", display: "inline-block" }}>
-          🎁 {brinde}
-        </div>
-      </div>
-
-      {/* Métricas */}
-      <div style={{ display: "flex", gap: 10 }}>
-        <Metrica icon="👥" label="Clientes no programa" valor={clientes.length} cor="#7b1a0a" />
-        <Metrica icon="🎁" label="Brindes gerados" valor={clientes.reduce((s, c) => s + Math.floor(c.total / meta), 0)} cor="#10b981" />
-        <Metrica icon="🔥" label="Perto do brinde" valor={clientes.filter(c => (c.total % meta) >= meta - 1).length} sub={"falta 1 pedido"} cor="#f59e0b" />
-      </div>
-
-      {/* Ranking de clientes */}
-      <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📊 Progresso dos clientes</div>
-        {clientes.length === 0
-          ? <div style={{ textAlign: "center", padding: "20px 0", color: "#ccc", fontSize: 14 }}>Nenhum pedido entregue ainda</div>
-          : clientes.map(c => {
-            const progresso = c.total % meta;
-            const brindesGanhos = Math.floor(c.total / meta);
-            const pct = (progresso / meta) * 100;
-            return (
-              <div key={c.telefone} style={{ marginBottom: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 34, height: 34, borderRadius: "50%", background: corAvatar(c.nome), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 13, flexShrink: 0 }}>
-                      {iniciais(c.nome)}
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 13, color: "#1a1a1a" }}>{c.nome}</div>
-                      <div style={{ fontSize: 11, color: "#aaa" }}>{c.total} pedido{c.total !== 1 ? "s" : ""} entregue{c.total !== 1 ? "s" : ""}{brindesGanhos > 0 ? " · 🎁 " + brindesGanhos + " brinde" + (brindesGanhos > 1 ? "s" : "") + " ganho" + (brindesGanhos > 1 ? "s" : "") : ""}</div>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right", fontSize: 12 }}>
-                    {progresso === 0 && c.total > 0
-                      ? <span style={{ color: "#10b981", fontWeight: 700 }}>🎁 Ganhou!</span>
-                      : <span style={{ color: "#888" }}>{progresso}/{meta}</span>
-                    }
-                  </div>
-                </div>
-                <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}>
-                  <div style={{ height: "100%", width: pct + "%", background: pct >= 80 ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 3, transition: "width 0.6s" }} />
-                </div>
-                {pct >= 80 && pct < 100 && (
-                  <div style={{ fontSize: 10, color: "#d97706", fontWeight: 600, marginTop: 3 }}>
-                    🔥 Falta {meta - progresso} pedido{meta - progresso !== 1 ? "s" : ""} para o brinde!
-                  </div>
-                )}
-              </div>
-            );
-          })
-        }
-      </div>
-    </div>
-  );
+  if (!res.ok) throw new Error(`Claude error ${res.status}`);
+  const data = await res.json();
+  return data.content?.[0]?.text || "Desculpe, tive um probleminha. Pode repetir?";
 }
 
-// ── ABA AVALIAÇÕES ────────────────────────────────────────────
-function Avaliacoes({ avaliacoes }) {
-  const media = avaliacoes.length > 0 ? avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length : 0;
-  const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  avaliacoes.forEach(a => dist[a.nota]++);
-  const max = Math.max(...Object.values(dist), 1);
-
-  return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* Nota geral */}
-      <div style={{ background: "#fff", borderRadius: 14, padding: "20px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", alignItems: "center", gap: 20 }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 48, fontWeight: 900, color: "#7b1a0a", lineHeight: 1 }}>{media.toFixed(1)}</div>
-          <div style={{ fontSize: 20, marginTop: 4 }}>{"⭐".repeat(Math.round(media))}</div>
-          <div style={{ fontSize: 12, color: "#aaa", marginTop: 4 }}>{avaliacoes.length} avaliação{avaliacoes.length !== 1 ? "ões" : ""}</div>
-        </div>
-        <div style={{ flex: 1 }}>
-          {[5, 4, 3, 2, 1].map(n => (
-            <div key={n} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-              <div style={{ fontSize: 12, color: "#888", width: 16, textAlign: "right" }}>{n}</div>
-              <span style={{ fontSize: 12 }}>⭐</span>
-              <div style={{ flex: 1, height: 8, background: "#f0f0f0", borderRadius: 4 }}>
-                <div style={{ height: "100%", width: ((dist[n] || 0) / max * 100) + "%", background: n >= 4 ? "linear-gradient(90deg,#10b981,#059669)" : n === 3 ? "#f59e0b" : "#ef4444", borderRadius: 4, transition: "width 0.6s" }} />
-              </div>
-              <div style={{ fontSize: 11, color: "#aaa", width: 20 }}>{dist[n] || 0}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Métricas */}
-      <div style={{ display: "flex", gap: 10 }}>
-        <Metrica icon="😍" label="Nota 5" valor={dist[5] || 0} sub={avaliacoes.length > 0 ? Math.round((dist[5] || 0) / avaliacoes.length * 100) + "%" : "0%"} cor="#10b981" />
-        <Metrica icon="😐" label="Nota 3" valor={dist[3] || 0} cor="#f59e0b" />
-        <Metrica icon="😞" label="Notas 1-2" valor={(dist[1] || 0) + (dist[2] || 0)} cor="#ef4444" />
-      </div>
-
-      {/* Lista de avaliações */}
-      <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📝 Últimas avaliações</div>
-        {avaliacoes.length === 0
-          ? <div style={{ textAlign: "center", padding: "20px 0", color: "#ccc", fontSize: 14 }}>Nenhuma avaliação ainda</div>
-          : [...avaliacoes].sort((a, b) => new Date(b.horario) - new Date(a.horario)).map((a, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px dashed #f0f0f0" }}>
-              <div style={{ width: 36, height: 36, borderRadius: "50%", background: corAvatar(a.cliente), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 13, flexShrink: 0 }}>
-                {iniciais(a.cliente)}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#1a1a1a" }}>{a.cliente}</div>
-                <div style={{ fontSize: 11, color: "#aaa" }}>Pedido #{a.pedidoId} · {dtFmt(a.horario)}</div>
-                {a.comentario && <div style={{ fontSize: 12, color: "#555", marginTop: 3, fontStyle: "italic" }}>"{a.comentario}"</div>}
-              </div>
-              <div style={{ fontSize: 18, flexShrink: 0 }}>
-                {["😞","😕","😐","😊","😍"][a.nota - 1]}
-              </div>
-              <div style={{ fontWeight: 800, fontSize: 14, color: a.nota >= 4 ? "#10b981" : a.nota === 3 ? "#f59e0b" : "#ef4444", flexShrink: 0 }}>
-                {a.nota}/5
-              </div>
-            </div>
-          ))
-        }
-      </div>
-    </div>
-  );
+function extrairPedido(texto) {
+  const match = texto.match(/<PEDIDO_FINALIZADO>([\s\S]*?)<\/PEDIDO_FINALIZADO>/);
+  if (!match) return null;
+  try { return JSON.parse(match[1].trim()); } catch { return null; }
 }
 
-// ── ABA CARDÁPIO ──────────────────────────────────────────────
-function Cardapio({ cardapio, onReload }) {
-  const [filtro, setFiltro] = useState("todos");
-  const [busca, setBusca] = useState("");
-  const [editando, setEditando] = useState(null);
-  const [adicionando, setAdicionando] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [novoItem, setNovoItem] = useState({ categoria: "", nome: "", preco: "", tempoPreparo: 10, obs: "" });
-
-  const categorias = ["todos", ...new Set(cardapio.map(i => i.categoria))];
-  const itens = cardapio.filter(i => filtro === "todos" || i.categoria === filtro).filter(i => i.nome.toLowerCase().includes(busca.toLowerCase()));
-  const inputStyle = { width: "100%", padding: "7px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
-
-  async function toggleAtivo(item) {
-    try { await fetch(BACKEND_URL + "/cardapio/" + item.id + "/ativo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo: !item.ativo }) }); onReload(); } catch { onReload(); }
+// ── ENVIAR MENSAGEM WHATSAPP ──────────────────────────────────
+async function enviarMsg(tel, texto) {
+  if (!sock || whatsappStatus !== "connected") {
+    console.log("⚠️ WhatsApp não conectado, mensagem não enviada para", tel);
+    return;
   }
-  async function salvarEdicao(item) {
-    setSaving(true);
-    try { await fetch(BACKEND_URL + "/cardapio/" + item.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(item) }); onReload(); } catch { onReload(); }
-    setSaving(false); setEditando(null);
-  }
-  async function deletarItem(id) {
-    if (!window.confirm("Remover item?")) return;
-    try { await fetch(BACKEND_URL + "/cardapio/" + id, { method: "DELETE" }); onReload(); } catch { onReload(); }
-  }
-  async function adicionarItem() {
-    if (!novoItem.categoria || !novoItem.nome || !novoItem.preco) return;
-    setSaving(true);
-    try { await fetch(BACKEND_URL + "/cardapio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novoItem, preco: parseFloat(novoItem.preco), tempoPreparo: parseInt(novoItem.tempoPreparo) }) }); onReload(); } catch { onReload(); }
-    setSaving(false); setAdicionando(false); setNovoItem({ categoria: "", nome: "", preco: "", tempoPreparo: 10, obs: "" });
-  }
-
-  return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "flex", gap: 10 }}>
-        <Metrica icon="🍢" label="Total" valor={cardapio.length} cor="#7b1a0a" />
-        <Metrica icon="✅" label="Ativos" valor={cardapio.filter(i => i.ativo).length} cor="#10b981" />
-        <Metrica icon="❌" label="Em falta" valor={cardapio.filter(i => !i.ativo).length} cor="#ef4444" />
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <div style={{ flex: 1, background: "#fff", borderRadius: 12, padding: "9px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.07)", display: "flex", alignItems: "center", gap: 8 }}>
-          <span>🔍</span>
-          <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar item..." style={{ border: "none", outline: "none", flex: 1, fontSize: 13, background: "transparent" }} />
-        </div>
-        <button onClick={() => setAdicionando(true)} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 12, padding: "0 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>+ Novo</button>
-      </div>
-      {adicionando && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 12px rgba(0,0,0,0.1)", border: "1.5px solid #7b1a0a" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#333", marginBottom: 12 }}>➕ Novo item</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Categoria *</div><input value={novoItem.categoria} onChange={e => setNovoItem(p => ({ ...p, categoria: e.target.value }))} placeholder="Ex: Tradicionais" style={inputStyle} /></div>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Nome *</div><input value={novoItem.nome} onChange={e => setNovoItem(p => ({ ...p, nome: e.target.value }))} placeholder="Ex: Cordeiro" style={inputStyle} /></div>
-          </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Preço (R$) *</div><input type="number" step="0.50" value={novoItem.preco} onChange={e => setNovoItem(p => ({ ...p, preco: e.target.value }))} style={inputStyle} /></div>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>⏱️ Preparo (min)</div><input type="number" value={novoItem.tempoPreparo} onChange={e => setNovoItem(p => ({ ...p, tempoPreparo: e.target.value }))} style={inputStyle} /></div>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Obs.</div><input value={novoItem.obs} onChange={e => setNovoItem(p => ({ ...p, obs: e.target.value }))} style={inputStyle} /></div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={adicionarItem} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{saving ? "Salvando..." : "✅ Adicionar"}</button>
-            <button onClick={() => setAdicionando(false)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-          </div>
-        </div>
-      )}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 2 }}>
-        {categorias.map(cat => (
-          <button key={cat} onClick={() => setFiltro(cat)} style={{ whiteSpace: "nowrap", padding: "5px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: filtro === cat ? 700 : 500, background: filtro === cat ? "#7b1a0a" : "#f0f0f0", color: filtro === cat ? "#fff" : "#555" }}>{cat === "todos" ? "📋 Todos" : cat}</button>
-        ))}
-      </div>
-      {itens.map(item => (
-        <div key={item.id} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", opacity: item.ativo ? 1 : 0.55 }}>
-          {editando?.id === item.id ? (
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#7b1a0a", marginBottom: 10 }}>✏️ Editando: {item.nome}</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <div style={{ flex: 2 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Nome</div><input value={editando.nome} onChange={e => setEditando(p => ({ ...p, nome: e.target.value }))} style={inputStyle} /></div>
-                <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Categoria</div><input value={editando.categoria} onChange={e => setEditando(p => ({ ...p, categoria: e.target.value }))} style={inputStyle} /></div>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Preço (R$)</div><input type="number" step="0.50" value={editando.preco} onChange={e => setEditando(p => ({ ...p, preco: parseFloat(e.target.value) }))} style={inputStyle} /></div>
-                <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>⏱️ Preparo (min)</div><input type="number" value={editando.tempoPreparo} onChange={e => setEditando(p => ({ ...p, tempoPreparo: parseInt(e.target.value) }))} style={inputStyle} /></div>
-                <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Obs.</div><input value={editando.obs || ""} onChange={e => setEditando(p => ({ ...p, obs: e.target.value }))} style={inputStyle} /></div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => salvarEdicao(editando)} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{saving ? "Salvando..." : "💾 Salvar"}</button>
-                <button onClick={() => setEditando(null)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, color: "#1a1a1a" }}>{item.nome}</span>
-                  {!item.ativo && <span style={{ background: "#fee2e2", color: "#ef4444", borderRadius: 10, padding: "1px 8px", fontSize: 11, fontWeight: 700 }}>Em falta</span>}
-                </div>
-                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{item.categoria}{item.obs && " · " + item.obs}{" · ⏱️ " + item.tempoPreparo + "min"}</div>
-              </div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a", flexShrink: 0 }}>R$ {item.preco.toFixed(2)}</div>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => toggleAtivo(item)} style={{ background: item.ativo ? "#d1fae5" : "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{item.ativo ? "✅" : "❌"}</button>
-                <button onClick={() => setEditando({ ...item })} style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
-                <button onClick={() => deletarItem(item.id)} style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>🗑️</button>
-              </div>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
+  const limpo = texto.replace(/<PEDIDO_FINALIZADO>[\s\S]*?<\/PEDIDO_FINALIZADO>/g, "").trim();
+  const jid = tel.includes("@") ? tel : `${tel}@s.whatsapp.net`;
+  await sock.sendMessage(jid, { text: limpo });
 }
 
-// ── COMPONENTE TROCA DE PIN ───────────────────────────────────
-function PinManager() {
-  const [pins, setPins] = useState(() => {
-    try { const s = localStorage.getItem("imperio_pins"); return s ? JSON.parse(s) : { dono: "9999", garcom: "1234", caixa: "5678" }; } catch { return { dono: "9999", garcom: "1234", caixa: "5678" }; }
+async function enviarMsgStatus(pedido, status) {
+  if (!CONFIG.mensagensAutomaticas.ativo) return;
+  const tpl = CONFIG.mensagensAutomaticas[status];
+  if (!tpl || !pedido.telefone) return;
+  await enviarMsg(pedido.telefone, formatMsg(tpl, pedido));
+}
+
+function agendarAvaliacao(pedido) {
+  if (!CONFIG.avaliacao.ativo) return;
+  const timer = setTimeout(async () => {
+    const msg = CONFIG.avaliacao.mensagem.replace(/{cliente}/g, pedido.cliente);
+    await enviarMsg(pedido.telefone, msg);
+    aguardandoAvaliacao.set(pedido.telefone, pedido.id);
+  }, CONFIG.avaliacao.delayMinutos * 60 * 1000);
+  timersAvaliacao.set(pedido.id, timer);
+}
+
+async function checarFidelidade(pedido) {
+  if (!CONFIG.fidelidade.ativo) return;
+  const f = getFidelidade(pedido.telefone);
+  f.pedidosEntregues += 1;
+  const meta = CONFIG.fidelidade.pedidosParaGanhar;
+  if (f.pedidosEntregues % meta === 0) {
+    f.brindesGanhos += 1;
+    const msg = CONFIG.fidelidade.mensagemGanhou
+      .replace(/{cliente}/g, pedido.cliente)
+      .replace(/{total}/g, f.pedidosEntregues)
+      .replace(/{brinde}/g, CONFIG.fidelidade.brinde);
+    await enviarMsg(pedido.telefone, msg);
+  }
+}
+
+// ── BAILEYS — CONECTAR WHATSAPP ───────────────────────────────
+async function conectarWhatsApp() {
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  const { version } = await fetchLatestBaileysVersion();
+
+  sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false,
+    logger: pino({ level: "silent" }),
+    browser: ["Imperio Espetos", "Chrome", "1.0.0"],
   });
-  const [editando, setEditando] = useState(null); // "dono" | "garcom" | "caixa"
-  const [novo, setNovo] = useState("");
-  const [confirma, setConfirma] = useState("");
-  const [msg, setMsg] = useState(null);
 
-  const perfis = [
-    { key: "dono",   icon: "👑", label: "Dono",   desc: "Acesso completo ao painel" },
-    { key: "garcom", icon: "🧑‍🍳", label: "Garçom", desc: "Acesso ao salão — lança pedidos" },
-    { key: "caixa",  icon: "💁‍♀️", label: "Caixa",  desc: "Acesso ao salão — fecha contas" },
-  ];
+  sock.ev.on("creds.update", saveCreds);
 
-  function salvar() {
-    if (novo.length !== 4 || !/^\d{4}$/.test(novo)) { setMsg({ tipo: "erro", texto: "PIN deve ter 4 números." }); return; }
-    if (novo !== confirma) { setMsg({ tipo: "erro", texto: "PINs não conferem." }); return; }
-    const novosPins = { ...pins, [editando]: novo };
-    setPins(novosPins);
-    try { localStorage.setItem("imperio_pins", JSON.stringify(novosPins)); } catch {}
-    setEditando(null); setNovo(""); setConfirma("");
-    setMsg({ tipo: "ok", texto: `PIN do ${perfis.find(p=>p.key===editando)?.label} alterado! ✅` });
-    setTimeout(() => setMsg(null), 3000);
-  }
+  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.log("📱 QR Code gerado — acesse /qrcode para escanear");
+      qrCodeBase64 = await qrcode.toDataURL(qr);
+      whatsappStatus = "qr";
+    }
 
-  const inp = { width: "100%", padding: "10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 22, color: "#333", outline: "none", boxSizing: "border-box", letterSpacing: 10, textAlign: "center" };
+    if (connection === "close") {
+      const shouldReconnect = (lastDisconnect?.error instanceof Boom)
+        ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
+        : true;
+      console.log("🔌 Conexão fechada. Reconectando:", shouldReconnect);
+      whatsappStatus = "disconnected";
+      qrCodeBase64 = null;
+      if (shouldReconnect) setTimeout(conectarWhatsApp, 5000);
+    }
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {perfis.map(p => (
-        <div key={p.key} style={{ border: "1.5px solid " + (editando === p.key ? "#7b1a0a" : "#f0f0f0"), borderRadius: 12, padding: "12px 14px", background: editando === p.key ? "#fef0ed" : "#fafafa" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{p.icon} {p.label}</div>
-              <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{p.desc}</div>
-            </div>
-            <button onClick={() => { setEditando(editando === p.key ? null : p.key); setNovo(""); setConfirma(""); setMsg(null); }}
-              style={{ background: editando === p.key ? "#fee2e2" : "#f0f0f0", color: editando === p.key ? "#ef4444" : "#555", border: "none", borderRadius: 8, padding: "6px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
-              {editando === p.key ? "Cancelar" : "✏️ Alterar"}
-            </button>
-          </div>
-          {editando === p.key && (
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Novo PIN</div>
-                  <input type="password" inputMode="numeric" maxLength={4} value={novo} onChange={e => setNovo(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inp} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Confirmar</div>
-                  <input type="password" inputMode="numeric" maxLength={4} value={confirma} onChange={e => setConfirma(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inp} />
-                </div>
-              </div>
-              <button onClick={salvar} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                💾 Salvar PIN do {p.label}
-              </button>
-            </div>
-          )}
-        </div>
-      ))}
-      {msg && (
-        <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 13, fontWeight: 600 }}>
-          {msg.texto}
-        </div>
-      )}
-    </div>
-  );
-}
+    if (connection === "open") {
+      console.log("✅ WhatsApp conectado!");
+      whatsappStatus = "connected";
+      qrCodeBase64 = null;
+    }
+  });
 
-// ── GERENCIAR GARÇONS ─────────────────────────────────────────
-function GarcomManager({ garcons, onReload }) {
-  const [novoForm, setNovoForm] = useState(false);
-  const [novo, setNovo] = useState({ nome: "", pin: "" });
-  const [editando, setEditando] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const inp = { width: "100%", padding: "9px 11px", border: "1.5px solid #e0e0e0", borderRadius: 9, fontSize: 14, color: "#333", outline: "none", boxSizing: "border-box" };
+  // Recebe mensagens
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+    for (const msg of messages) {
+      if (msg.key.fromMe) continue;
+      const tel = msg.key.remoteJid?.replace("@s.whatsapp.net", "").replace("@g.us", "");
+      if (!tel || msg.key.remoteJid?.endsWith("@g.us")) continue;
+      const texto = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption;
+      if (!texto) continue;
 
-  function showMsg(texto, tipo = "ok") { setMsg({ texto, tipo }); setTimeout(() => setMsg(null), 3000); }
+      console.log(`📩 ${tel}: ${texto}`);
 
-  async function criarGarcom() {
-    if (!novo.nome.trim() || !novo.pin) return showMsg("Preencha nome e PIN.", "erro");
-    setSaving(true);
-    try {
-      const res = await fetch(BACKEND_URL + "/garcons", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nome: novo.nome.trim(), pin: novo.pin }),
-      });
-      const data = await res.json();
-      if (!res.ok) return showMsg(data.erro || "Erro ao criar.", "erro");
-      showMsg(`✅ ${novo.nome} cadastrado com sucesso!`);
-      setNovo({ nome: "", pin: "" });
-      setNovoForm(false);
-      onReload();
-    } catch { showMsg("Erro de conexão.", "erro"); }
-    setSaving(false);
-  }
-
-  async function salvarEdicao() {
-    setSaving(true);
-    const body = { nome: editando.nome };
-    if (editando.novoPin) body.pin = editando.novoPin;
-    try {
-      const res = await fetch(BACKEND_URL + "/garcons/" + editando._id, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) return showMsg(data.erro || "Erro ao salvar.", "erro");
-      showMsg("✅ Alterações salvas!");
-      setEditando(null);
-      onReload();
-    } catch { showMsg("Erro de conexão.", "erro"); }
-    setSaving(false);
-  }
-
-  async function toggleAtivo(g) {
-    try {
-      await fetch(BACKEND_URL + "/garcons/" + g._id, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ativo: !g.ativo }),
-      });
-      onReload();
-    } catch {}
-  }
-
-  async function deletarGarcom(g) {
-    if (!window.confirm(`Remover ${g.nome}? Esta ação não pode ser desfeita.`)) return;
-    try {
-      await fetch(BACKEND_URL + "/garcons/" + g._id, { method: "DELETE" });
-      showMsg(`${g.nome} removido.`, "ok");
-      onReload();
-    } catch { showMsg("Erro ao remover.", "erro"); }
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#92400e" }}>
-        ℹ️ Cada garçom tem um PIN único de 4 dígitos. Ao fazer login, todas as mesas abertas já saem com o nome dele.
-      </div>
-
-      {/* Métricas */}
-      <div style={{ display: "flex", gap: 8 }}>
-        <Metrica icon="🧑‍🍳" label="Garçons ativos" valor={garcons.filter(g => g.ativo).length} cor="#7b1a0a" />
-        <Metrica icon="😴" label="Inativos" valor={garcons.filter(g => !g.ativo).length} cor="#aaa" />
-      </div>
-
-      <button onClick={() => setNovoForm(true)} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-        + Cadastrar novo garçom
-      </button>
-
-      {novoForm && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: 16, border: "1.5px solid #7b1a0a", boxShadow: "0 2px 12px rgba(0,0,0,0.1)" }}>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>🧑‍🍳 Novo garçom</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <div style={{ flex: 2 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Nome *</div>
-              <input value={novo.nome} onChange={e => setNovo(p => ({ ...p, nome: e.target.value }))} placeholder="Ex: João Silva" style={inp} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>PIN (4 dígitos) *</div>
-              <input type="password" inputMode="numeric" maxLength={4} value={novo.pin} onChange={e => setNovo(p => ({ ...p, pin: e.target.value.replace(/\D/g,"").slice(0,4) }))} placeholder="••••" style={{ ...inp, letterSpacing: 6, textAlign: "center" }} />
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={criarGarcom} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-              {saving ? "Salvando..." : "✅ Cadastrar"}
-            </button>
-            <button onClick={() => { setNovoForm(false); setNovo({ nome: "", pin: "" }); }} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-          </div>
-        </div>
-      )}
-
-      {/* Lista */}
-      {garcons.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "30px 0", color: "#ccc", fontSize: 14 }}>
-          <div style={{ fontSize: 36, marginBottom: 8 }}>🧑‍🍳</div>
-          Nenhum garçom cadastrado ainda
-        </div>
-      ) : garcons.map(g => (
-        <div key={g._id} style={{ background: "#fff", borderRadius: 14, padding: 14, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", opacity: g.ativo ? 1 : 0.55 }}>
-          {editando?._id === g._id ? (
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#7b1a0a", marginBottom: 10 }}>✏️ Editando: {g.nome}</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <div style={{ flex: 2 }}>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Nome</div>
-                  <input value={editando.nome} onChange={e => setEditando(p => ({ ...p, nome: e.target.value }))} style={inp} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Novo PIN (opcional)</div>
-                  <input type="password" inputMode="numeric" maxLength={4} value={editando.novoPin || ""} onChange={e => setEditando(p => ({ ...p, novoPin: e.target.value.replace(/\D/g,"").slice(0,4) }))} placeholder="••••" style={{ ...inp, letterSpacing: 6, textAlign: "center" }} />
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={salvarEdicao} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{saving ? "Salvando..." : "💾 Salvar"}</button>
-                <button onClick={() => setEditando(null)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 42, height: 42, borderRadius: "50%", background: corAvatar(g.nome), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 16, flexShrink: 0 }}>
-                {iniciais(g.nome)}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>{g.nome}</div>
-                <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
-                  PIN: ••••  ·  <span style={{ color: g.ativo ? "#10b981" : "#ef4444", fontWeight: 600 }}>{g.ativo ? "Ativo" : "Inativo"}</span>
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => setEditando({ ...g, novoPin: "" })} style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
-                <button onClick={() => toggleAtivo(g)} title={g.ativo ? "Desativar" : "Ativar"} style={{ background: g.ativo ? "#fee2e2" : "#d1fae5", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{g.ativo ? "🔒" : "✅"}</button>
-                <button onClick={() => deletarGarcom(g)} style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>🗑️</button>
-              </div>
-            </div>
-          )}
-        </div>
-      ))}
-
-      {msg && (
-        <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 13, fontWeight: 600 }}>
-          {msg.texto}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── DROPDOWN CARDÁPIO ─────────────────────────────────────────
-function CardapioDropdown({ valor, onChange, nomeManual, onNomeManual, cardapio = [] }) {
-  const [busca, setBusca] = useState("");
-  const [aberto, setAberto] = useState(false);
-  const selecionados = Array.isArray(valor) ? valor : (valor||"").split(",").map(s=>s.trim()).filter(Boolean);
-  const itensCardapio = cardapio.filter(i=>i.ativo!==false);
-  const termoBusca = onNomeManual ? (nomeManual||"") : busca;
-  const filtrados = termoBusca.trim()
-    ? itensCardapio.filter(i=>i.nome.toLowerCase().includes(termoBusca.toLowerCase()))
-    : itensCardapio;
-
-  function toggle(nome) {
-    const nova = selecionados.includes(nome)
-      ? selecionados.filter(n=>n!==nome)
-      : [...selecionados, nome];
-    onChange(nova);
-  }
-  function remover(nome) { onChange(selecionados.filter(n=>n!==nome)); }
-
-  return (
-    <div style={{position:"relative"}}>
-      {selecionados.length>0&&(
-        <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:6}}>
-          {selecionados.map(n=>(
-            <span key={n} style={{display:"inline-flex",alignItems:"center",gap:4,background:"#7b1a0a",color:"#fff",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>
-              {n}
-              <span onClick={()=>remover(n)} style={{cursor:"pointer",fontSize:14,lineHeight:1,opacity:0.8}}>×</span>
-            </span>
-          ))}
-        </div>
-      )}
-      <div style={{position:"relative"}}>
-        <input
-          value={onNomeManual ? (nomeManual||"") : busca}
-          onChange={e=>{
-            if(onNomeManual) onNomeManual(e.target.value);
-            else setBusca(e.target.value);
-            setAberto(true);
-          }}
-          onFocus={()=>setAberto(true)}
-          placeholder={selecionados.length===0?"Buscar ou digitar nome...":"Adicionar mais itens..."}
-          style={{width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:aberto&&filtrados.length>0?"8px 8px 0 0":"8px",fontSize:13,color:"#333",outline:"none",boxSizing:"border-box"}}
-        />
-        {(onNomeManual ? nomeManual : busca)&&(
-          <span onClick={()=>{if(onNomeManual)onNomeManual("");else setBusca("");setAberto(false);}} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",color:"#aaa",fontSize:16}}>×</span>
-        )}
-      </div>
-      {aberto&&filtrados.length>0&&(
-        <div style={{position:"absolute",zIndex:99,width:"100%",maxHeight:200,overflowY:"auto",background:"#fff",border:"1.5px solid #e0e0e0",borderTop:"none",borderRadius:"0 0 8px 8px",boxShadow:"0 6px 20px rgba(0,0,0,0.12)"}}>
-          {filtrados.map(item=>{
-            const sel = selecionados.includes(item.nome);
-            return(
-              <div key={item.id} onClick={()=>{
-                toggle(item.nome);
-                if(onNomeManual) onNomeManual(item.nome);
-                else setBusca("");
-                setAberto(false);
-              }}
-                style={{padding:"9px 12px",cursor:"pointer",fontSize:13,display:"flex",justifyContent:"space-between",alignItems:"center",background:sel?"#fef0ed":"#fff",borderBottom:"1px solid #f5f5f5"}}
-                onMouseEnter={e=>e.currentTarget.style.background=sel?"#fde8e4":"#f8f7f5"}
-                onMouseLeave={e=>e.currentTarget.style.background=sel?"#fef0ed":"#fff"}>
-                <span style={{fontWeight:sel?600:400,color:sel?"#7b1a0a":"#333"}}>{item.nome}</span>
-                <span style={{fontSize:11,color:"#aaa"}}>R$ {item.preco?.toFixed(2)}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {aberto&&<div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setAberto(false)}/>}
-    </div>
-  );
-}
-
-// ── ABA ESTOQUE ───────────────────────────────────────────────
-function Estoque({ backendUrl, cardapio = [] }) {
-  const [itens, setItens] = useState([]);
-  const [movs, setMovs] = useState([]);
-  const [relConsumo, setRelConsumo] = useState([]);
-  const [subAba, setSubAba] = useState("painel");
-  const [selItem, setSelItem] = useState(null);
-  const [novoForm, setNovoForm] = useState(false);
-  const [entradaForm, setEntradaForm] = useState(null);
-  const [ajusteForm, setAjusteForm] = useState(null);
-  const [editando, setEditando] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const [novo, setNovo] = useState({ nome:"", unidade:"un", quantidade:"", minimo:"", cardapioNomes:"", consumoPorVenda:"1", tipo:"normal", capacidadeBarril:"", alertaTelefone:"" });
-  const [entradaQtd, setEntradaQtd] = useState("");
-  const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
-  const [ajusteQtd, setAjusteQtd] = useState("");
-  const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
-
-  // Dropdown cascata para vínculo com cardápio
-  function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),3500); }
-
-  async function carregar() {
-    try {
-      const r = await fetch(backendUrl+"/estoque");
-      if(r.ok) setItens(await r.json());
-    } catch {}
-  }
-
-  async function carregarConsumo() {
-    try {
-      const r = await fetch(backendUrl+"/estoque/relatorio/consumo");
-      if(r.ok) setRelConsumo(await r.json());
-    } catch {}
-  }
-
-  async function carregarMovs(id) {
-    try {
-      const r = await fetch(backendUrl+`/estoque/${id}/movimentacoes`);
-      if(r.ok) setMovs(await r.json());
-    } catch {}
-  }
-
-  useEffect(() => { carregar(); }, []);
-  useEffect(() => { if(subAba==="consumo") carregarConsumo(); }, [subAba]);
-  useEffect(() => { if(selItem) carregarMovs(selItem._id); }, [selItem]);
-
-  const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
-
-  async function criarItem() {
-    if(!novo.nome.trim()) return showMsg("Nome é obrigatório.","erro");
-    setSaving(true);
-    try {
-      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) };
-      const r = await fetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      if(!r.ok) return showMsg((await r.json()).erro||"Erro ao criar.","erro");
-      showMsg(`✅ ${novo.nome} cadastrado!`);
-      setNovo({nome:"",unidade:"un",quantidade:"",minimo:"",cardapioNomes:"",consumoPorVenda:"1",tipo:"normal",capacidadeBarril:"",alertaTelefone:""});
-      setNovoForm(false);
-      carregar();
-    } catch { showMsg("Erro de conexão.","erro"); }
-    setSaving(false);
-  }
-
-  async function salvarEdicao() {
-    setSaving(true);
-    try {
-      const body = { ...editando, cardapioNomes: typeof editando.cardapioNomes === "string" ? editando.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) : editando.cardapioNomes };
-      const r = await fetch(backendUrl+`/estoque/${editando._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      if(!r.ok) return showMsg("Erro ao salvar.","erro");
-      showMsg("✅ Alterações salvas!");
-      setEditando(null);
-      if(selItem) setSelItem(itens.find(i=>i._id===selItem._id));
-      carregar();
-    } catch { showMsg("Erro de conexão.","erro"); }
-    setSaving(false);
-  }
-
-  async function darEntrada() {
-    if(!entradaQtd||parseFloat(entradaQtd)<=0) return showMsg("Informe a quantidade.","erro");
-    setSaving(true);
-    try {
-      await fetch(backendUrl+`/estoque/${entradaForm._id}/entrada`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(entradaQtd),motivo:entradaMotivo})});
-      showMsg(`✅ +${entradaQtd} ${entradaForm.unidade} adicionados!`);
-      setEntradaForm(null); setEntradaQtd(""); carregar();
-      if(selItem?._id===entradaForm._id) carregarMovs(entradaForm._id);
-    } catch { showMsg("Erro de conexão.","erro"); }
-    setSaving(false);
-  }
-
-  async function darAjuste() {
-    if(ajusteQtd===""||isNaN(parseFloat(ajusteQtd))) return showMsg("Informe a quantidade.","erro");
-    setSaving(true);
-    try {
-      await fetch(backendUrl+`/estoque/${ajusteForm._id}/ajuste`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(ajusteQtd),motivo:ajusteMotivo})});
-      showMsg(`✅ Estoque ajustado para ${ajusteQtd} ${ajusteForm.unidade}.`);
-      setAjusteForm(null); setAjusteQtd(""); carregar();
-      if(selItem?._id===ajusteForm._id) carregarMovs(ajusteForm._id);
-    } catch { showMsg("Erro de conexão.","erro"); }
-    setSaving(false);
-  }
-
-  async function deletarItem(id) {
-    if(!window.confirm("Remover este item do estoque?")) return;
-    try { await fetch(backendUrl+`/estoque/${id}`,{method:"DELETE"}); carregar(); }
-    catch { showMsg("Erro ao remover.","erro"); }
-  }
-
-  // Cálculo do barril de chopp
-  function pctBarril(item) {
-    if(item.tipo!=="chopp"||!item.capacidadeBarril) return null;
-    return Math.min(100, Math.max(0, (item.quantidade/item.capacidadeBarril)*100));
-  }
-
-  const criticos = itens.filter(i=>i.quantidade<=i.minimo);
-
-  // ── DETALHE DO ITEM
-  if(selItem) {
-    const it = itens.find(i=>i._id===selItem._id)||selItem;
-    const pct = pctBarril(it);
-    return (
-      <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:12}}>
-        <button onClick={()=>setSelItem(null)} style={{background:"none",border:"none",color:"#7b1a0a",fontWeight:700,fontSize:14,cursor:"pointer",textAlign:"left",padding:0}}>← Voltar</button>
-
-        {editando ? (
-          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>✏️ Editando: {editando.nome}</div>
-            {[["nome","Nome"],["unidade","Unidade"],["minimo","Estoque mínimo"],["consumoPorVenda","Consumo por venda"],["alertaTelefone","Telefone alerta WhatsApp"]].map(([k,l])=>(
-              <div key={k} style={{marginBottom:8}}>
-                <div style={{fontSize:11,color:"#888",marginBottom:3}}>{l}</div>
-                <input value={editando[k]||""} onChange={e=>setEditando(p=>({...p,[k]:e.target.value}))} style={inp}/>
-              </div>
-            ))}
-            <div style={{marginBottom:8}}>
-              <div style={{fontSize:11,color:"#888",marginBottom:6}}>Itens do cardápio vinculados</div>
-              <CardapioDropdown
-                cardapio={cardapio}
-                valor={editando.cardapioNomes}
-                onChange={lista=>setEditando(p=>({...p,cardapioNomes:lista}))}
-              />
-            </div>
-            {editando.tipo==="chopp"&&<div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={editando.capacidadeBarril||""} onChange={e=>setEditando(p=>({...p,capacidadeBarril:parseFloat(e.target.value)}))} style={inp}/></div>}
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={salvarEdicao} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"💾 Salvar"}</button>
-              <button onClick={()=>setEditando(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
-            </div>
-          </div>
-        ) : (
-          <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
-              <div>
-                <div style={{fontWeight:800,fontSize:18,color:"#1a1a1a"}}>{it.nome}</div>
-                <div style={{fontSize:12,color:"#888",marginTop:2}}>{it.tipo==="chopp"?"🍺 Chopp":"📦"} · {it.unidade} · Mín: {it.minimo}</div>
-              </div>
-              <div style={{display:"flex",gap:6}}>
-                <button onClick={()=>setEditando({...it,cardapioNomes:it.cardapioNomes?.join(", ")||""})} style={{background:"#dbeafe",border:"none",borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:14}}>✏️</button>
-                <button onClick={()=>deletarItem(it._id)} style={{background:"#fee2e2",border:"none",borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:14}}>🗑️</button>
-              </div>
-            </div>
-
-            {/* Barril de chopp */}
-            {pct!==null&&(
-              <div style={{marginBottom:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:6}}>
-                  <span style={{fontWeight:600}}>🍺 Barril</span>
-                  <span style={{fontWeight:800,color:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981"}}>{it.quantidade.toFixed(1)}L / {it.capacidadeBarril}L</span>
-                </div>
-                <div style={{height:20,background:"#f0f0f0",borderRadius:10,overflow:"hidden",position:"relative"}}>
-                  <div style={{height:"100%",width:pct+"%",background:pct<20?"linear-gradient(90deg,#ef4444,#dc2626)":pct<50?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#10b981,#059669)",borderRadius:10,transition:"width 0.6s"}}/>
-                  <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:pct>30?"#fff":"#555"}}>{pct.toFixed(0)}%</div>
-                </div>
-                {pct<20&&<div style={{fontSize:11,color:"#ef4444",fontWeight:600,marginTop:4}}>⚠️ Barril quase vazio!</div>}
-              </div>
-            )}
-
-            {/* Quantidade atual */}
-            <div style={{display:"flex",gap:10,marginBottom:14}}>
-              <Metrica icon="📦" label="Em estoque" valor={it.quantidade+(it.tipo==="chopp"?" L":" "+it.unidade)} cor={it.quantidade<=it.minimo?"#ef4444":"#10b981"}/>
-              <Metrica icon="⚠️" label="Mínimo" valor={it.minimo+" "+it.unidade} cor="#f59e0b"/>
-            </div>
-
-            {it.cardapioNomes?.length>0&&(
-              <div style={{background:"#f8f7f5",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#555",marginBottom:10}}>
-                🔗 Cardápio: <strong>{it.cardapioNomes.join(", ")}</strong>
-              </div>
-            )}
-
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>{setEntradaForm(it);setEntradaQtd("");}} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>📥 Entrada</button>
-              <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(it.quantidade));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
-            </div>
-          </div>
-        )}
-
-        {/* Modais de entrada e ajuste */}
-        {entradaForm&&(
-          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📥 Entrada — {entradaForm.nome}</div>
-            <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade ({entradaForm.unidade})</div><input type="number" step="0.1" value={entradaQtd} onChange={e=>setEntradaQtd(e.target.value)} placeholder="Ex: 30" style={inp}/></div>
-            <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Motivo</div><input value={entradaMotivo} onChange={e=>setEntradaMotivo(e.target.value)} style={inp}/></div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={darEntrada} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Confirmar entrada"}</button>
-              <button onClick={()=>setEntradaForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
-            </div>
-          </div>
-        )}
-        {ajusteForm&&(
-          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #3b82f6",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>🔧 Ajuste — {ajusteForm.nome}</div>
-            <div style={{fontSize:12,color:"#888",marginBottom:10}}>Estoque atual: <strong>{ajusteForm.quantidade} {ajusteForm.unidade}</strong>. Informe a quantidade real contada no inventário.</div>
-            <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade real ({ajusteForm.unidade})</div><input type="number" step="0.1" value={ajusteQtd} onChange={e=>setAjusteQtd(e.target.value)} style={inp}/></div>
-            <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Motivo</div><input value={ajusteMotivo} onChange={e=>setAjusteMotivo(e.target.value)} style={inp}/></div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={darAjuste} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Confirmar ajuste"}</button>
-              <button onClick={()=>setAjusteForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
-            </div>
-          </div>
-        )}
-
-        {/* Histórico de movimentações */}
-        <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
-          <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:12}}>📋 Histórico de movimentações</div>
-          {movs.length===0?(
-            <div style={{textAlign:"center",padding:"20px 0",color:"#ccc",fontSize:13}}>Nenhuma movimentação ainda</div>
-          ):movs.map((m,i)=>{
-            const cor = m.tipo==="entrada"?"#10b981":m.tipo==="ajuste"?"#3b82f6":"#ef4444";
-            const icon = m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":"📤";
-            const sinal = m.tipo==="entrada"?"+":m.tipo==="ajuste"?(m.quantidade>=0?"+":""):"−";
-            return(
-              <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px dashed #f0f0f0"}}>
-                <div style={{width:32,height:32,borderRadius:"50%",background:cor+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{icon}</div>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{m.motivo||m.tipo}</div>
-                  <div style={{fontSize:11,color:"#aaa"}}>{new Date(m.horario).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>
-                </div>
-                <div style={{fontWeight:800,fontSize:14,color:cor}}>{sinal}{Math.abs(m.quantidade).toFixed(m.quantidade%1===0?0:1)} {it.unidade}</div>
-              </div>
-            );
-          })}
-        </div>
-        {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
-      </div>
-    );
-  }
-
-  // ── PAINEL PRINCIPAL
-  return (
-    <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:14}}>
-      {/* Sub-abas */}
-      <div style={{display:"flex",gap:6}}>
-        {[["painel","📦 Estoque"],["consumo","📊 Consumo"]].map(([k,l])=>(
-          <button key={k} onClick={()=>setSubAba(k)} style={{flex:1,padding:"9px 0",borderRadius:10,border:"none",background:subAba===k?"#7b1a0a":"#f0f0f0",color:subAba===k?"#fff":"#666",fontWeight:subAba===k?700:500,fontSize:13,cursor:"pointer"}}>{l}</button>
-        ))}
-      </div>
-
-      {subAba==="painel"&&<>
-        {/* Alertas críticos */}
-        {criticos.length>0&&(
-          <div style={{background:"#fee2e2",border:"1.5px solid #ef4444",borderRadius:14,padding:"12px 14px"}}>
-            <div style={{fontWeight:700,fontSize:13,color:"#991b1b",marginBottom:6}}>🚨 Estoque crítico!</div>
-            {criticos.map(i=>(
-              <div key={i._id} onClick={()=>setSelItem(i)} style={{fontSize:12,color:"#991b1b",cursor:"pointer",padding:"3px 0",display:"flex",justifyContent:"space-between"}}>
-                <span>⚠️ {i.nome}</span>
-                <span style={{fontWeight:700}}>{i.quantidade} {i.unidade} (mín: {i.minimo})</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Métricas */}
-        <div style={{display:"flex",gap:10}}>
-          <Metrica icon="📦" label="Itens cadastrados" valor={itens.length} cor="#7b1a0a"/>
-          <Metrica icon="🚨" label="Estoque crítico" valor={criticos.length} cor={criticos.length>0?"#ef4444":"#10b981"}/>
-          <Metrica icon="🍺" label="Barris de chopp" valor={itens.filter(i=>i.tipo==="chopp").length} cor="#f59e0b"/>
-        </div>
-
-        <button onClick={()=>setNovoForm(true)} style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>+ Cadastrar item no estoque</button>
-
-        {novoForm&&(
-          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📦 Novo item</div>
-            <div style={{marginBottom:8}}>
-              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Nome * <span style={{color:"#bbb"}}>(selecione do cardápio ou digite)</span></div>
-              <CardapioDropdown
-                cardapio={cardapio}
-                valor={novo.cardapioNomes}
-                onChange={lista=>{
-                  const nomeAuto = lista.length>=1 ? lista[0] : novo.nome;
-                  // Detecta chopp automaticamente pelo nome
-                  const eChopp = lista.some(n=>n.toLowerCase().includes("chopp"));
-                  setNovo(p=>({
-                    ...p,
-                    cardapioNomes: lista.join(", "),
-                    nome: nomeAuto || p.nome,
-                    tipo: eChopp ? "chopp" : "normal",
-                    unidade: eChopp ? "litros" : p.unidade,
-                    consumoPorVenda: eChopp ? "0.4" : p.consumoPorVenda,
-                  }));
-                }}
-                nomeManual={novo.nome}
-                onNomeManual={v=>{
-                  const eChopp = v.toLowerCase().includes("chopp");
-                  setNovo(p=>({
-                    ...p, nome:v,
-                    tipo: eChopp ? "chopp" : "normal",
-                    unidade: eChopp ? "litros" : (p.tipo==="chopp" ? "un" : p.unidade),
-                    consumoPorVenda: eChopp ? "0.4" : (p.tipo==="chopp" ? "1" : p.consumoPorVenda),
-                  }));
-                }}
-              />
-              {novo.tipo==="chopp"&&(
-                <div style={{marginTop:6,background:"#fef3c7",borderRadius:8,padding:"6px 10px",fontSize:11,color:"#92400e",display:"flex",alignItems:"center",gap:6}}>
-                  🍺 Modo chopp ativado — consumo por caneca (400ml = 0.4L)
-                </div>
-              )}
-            </div>
-            <div style={{display:"flex",gap:8,marginBottom:8}}>
-              {novo.tipo==="chopp" ? (<>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>Qtd. de barris</div>
-                  <input type="number" min="0" step="1" value={novo.quantidade} onChange={e=>{
-                    const barris = parseFloat(e.target.value)||0;
-                    const cap = parseFloat(novo.capacidadeBarril)||0;
-                    setNovo(p=>({...p, quantidade: cap>0 ? String(barris*cap) : e.target.value, _barris: e.target.value}));
-                  }} placeholder="Ex: 2" style={inp}/>
-                </div>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div>
-                  <select value={novo.capacidadeBarril} onChange={e=>{
-                    const cap = parseFloat(e.target.value)||0;
-                    const barris = parseFloat(novo._barris)||0;
-                    setNovo(p=>({...p, capacidadeBarril: e.target.value, quantidade: barris>0 ? String(barris*cap) : p.quantidade}));
-                  }} style={inp}>
-                    <option value="">Selecione</option>
-                    <option value="30">30 litros</option>
-                    <option value="50">50 litros</option>
-                  </select>
-                </div>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>Estoque mínimo (litros)</div>
-                  <input type="number" step="0.1" value={novo.minimo} onChange={e=>setNovo(p=>({...p,minimo:e.target.value}))} placeholder="Ex: 5" style={inp}/>
-                </div>
-              </>) : (<>
-                <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Unidade</div><input value={novo.unidade} onChange={e=>setNovo(p=>({...p,unidade:e.target.value}))} placeholder="un / litros / kg" style={inp}/></div>
-                <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Qtd. inicial</div><input type="number" step="0.1" value={novo.quantidade} onChange={e=>setNovo(p=>({...p,quantidade:e.target.value}))} placeholder="0" style={inp}/></div>
-                <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Estoque mínimo</div><input type="number" step="0.1" value={novo.minimo} onChange={e=>setNovo(p=>({...p,minimo:e.target.value}))} placeholder="0" style={inp}/></div>
-              </>)}
-            </div>
-            {novo.tipo==="chopp"&&novo.capacidadeBarril&&novo._barris&&(
-              <div style={{background:"#d1fae5",borderRadius:8,padding:"6px 10px",fontSize:12,color:"#065f46",marginBottom:8,fontWeight:600}}>
-                📊 Total em estoque: {parseFloat(novo._barris||0)*parseFloat(novo.capacidadeBarril||0)} litros
-              </div>
-            )}
-            <div style={{display:"flex",gap:8,marginBottom:8}}>
-              <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda {novo.tipo==="chopp"&&<span style={{color:"#92400e"}}>(litros por caneca)</span>}</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4":"1"} style={inp}/></div>
-              <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tel. alerta</div><input value={novo.alertaTelefone} onChange={e=>setNovo(p=>({...p,alertaTelefone:e.target.value}))} placeholder="5511..." style={inp}/></div>
-            </div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={criarItem} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Cadastrar"}</button>
-              <button onClick={()=>setNovoForm(false)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
-            </div>
-          </div>
-        )}
-
-        {/* Lista de itens */}
-        {itens.length===0?(
-          <div style={{textAlign:"center",padding:"40px 0",color:"#ccc"}}><div style={{fontSize:40,marginBottom:8}}>📦</div><div>Nenhum item cadastrado ainda</div></div>
-        ):itens.map(it=>{
-          const pct = pctBarril(it);
-          const critico = it.quantidade<=it.minimo;
-          return(
-            <div key={it._id} onClick={()=>setSelItem(it)} style={{background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)",cursor:"pointer",border:`1.5px solid ${critico?"#ef4444":"transparent"}`}}>
-              <div style={{display:"flex",alignItems:"center",gap:12}}>
-                <div style={{width:42,height:42,borderRadius:10,background:critico?"#fee2e2":it.tipo==="chopp"?"#fef3c7":"#f0f0f0",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>
-                  {it.tipo==="chopp"?"🍺":"📦"}
-                </div>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:700,fontSize:14,color:"#1a1a1a"}}>{it.nome}</div>
-                  <div style={{fontSize:11,color:"#888",marginTop:1}}>{it.cardapioNomes?.length>0?`🔗 ${it.cardapioNomes.join(", ")}`:"Sem vínculo com cardápio"}</div>
-                </div>
-                <div style={{textAlign:"right"}}>
-                  <div style={{fontWeight:800,fontSize:15,color:critico?"#ef4444":it.tipo==="chopp"?"#d97706":"#10b981"}}>{it.quantidade}{it.tipo==="chopp"?`L`:` ${it.unidade}`}</div>
-                  <div style={{fontSize:10,color:"#aaa"}}>mín: {it.minimo}</div>
-                  {critico&&<div style={{fontSize:9,fontWeight:700,color:"#ef4444"}}>⚠️ CRÍTICO</div>}
-                </div>
-              </div>
-              {pct!==null&&(
-                <div style={{marginTop:8}}>
-                  <div style={{height:6,background:"#f0f0f0",borderRadius:3}}>
-                    <div style={{height:"100%",width:pct+"%",background:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981",borderRadius:3,transition:"width 0.6s"}}/>
-                  </div>
-                  <div style={{fontSize:9,color:"#aaa",marginTop:2,textAlign:"right"}}>{pct.toFixed(0)}% do barril</div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </>}
-
-      {/* RELATÓRIO DE CONSUMO */}
-      {subAba==="consumo"&&(
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#333"}}>📊 Consumo por item</div>
-            <button onClick={carregarConsumo} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,cursor:"pointer",color:"#555"}}>↻ Atualizar</button>
-          </div>
-          {relConsumo.length===0?(
-            <div style={{textAlign:"center",padding:"40px 0",color:"#ccc"}}><div style={{fontSize:36,marginBottom:8}}>📊</div><div>Nenhum dado de consumo ainda</div></div>
-          ):(
-            <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
-              {relConsumo.map((r,i)=>(
-                <div key={r.nome} style={{marginBottom:14,paddingBottom:14,borderBottom:i<relConsumo.length-1?"1px dashed #f0f0f0":"none"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:5}}>
-                    <span style={{fontWeight:i<3?700:400}}>{["🥇","🥈","🥉"][i]||"  "} {r.nome}</span>
-                    <span style={{fontWeight:700,color:"#7b1a0a"}}>{r.total.toFixed(r.total%1===0?0:1)} un.</span>
-                  </div>
-                  <div style={{height:6,background:"#f0f0f0",borderRadius:3}}>
-                    <div style={{height:"100%",width:((r.total/relConsumo[0].total)*100)+"%",background:i===0?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#c0392b,#7b1a0a)",borderRadius:3}}/>
-                  </div>
-                  <div style={{fontSize:10,color:"#aaa",marginTop:2}}>{r.movs} movimentaç{r.movs===1?"ão":"ões"}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
-    </div>
-  );
-}
-
-// ── RESET DE DADOS ────────────────────────────────────────────
-function ResetDados({ backendUrl }) {
-  const [etapa, setEtapa] = useState(0); // 0=botão, 1=aviso, 2=confirmação
-  const [digitado, setDigitado] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [resultado, setResultado] = useState(null);
-  const SENHA = "LIMPAR TUDO";
-
-  async function confirmarReset() {
-    if (digitado !== SENHA) return;
-    setLoading(true);
-    try {
-      const r = await fetch(backendUrl + "/reset/dados-teste", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirmar: "CONFIRMAR_RESET" }),
-      });
-      const data = await r.json();
-      if (!r.ok) { setResultado({ erro: data.erro }); return; }
-      setResultado(data);
-      setEtapa(0); setDigitado("");
-    } catch { setResultado({ erro: "Erro de conexão." }); }
-    setLoading(false);
-  }
-
-  if (resultado) return (
-    <div style={{ background: resultado.erro ? "#fee2e2" : "#d1fae5", borderRadius: 14, padding: 16, border: `1.5px solid ${resultado.erro ? "#ef4444" : "#10b981"}` }}>
-      {resultado.erro
-        ? <><div style={{ fontWeight: 700, fontSize: 14, color: "#991b1b", marginBottom: 4 }}>❌ {resultado.erro}</div></>
-        : <>
-          <div style={{ fontWeight: 700, fontSize: 14, color: "#065f46", marginBottom: 8 }}>✅ Dados de teste removidos com sucesso!</div>
-          <div style={{ fontSize: 12, color: "#065f46" }}>
-            {Object.entries(resultado.apagados||{}).map(([k,v])=>(
-              <div key={k}>• {v} {k} removidos</div>
-            ))}
-          </div>
-          <div style={{ fontSize: 11, color: "#065f46", marginTop: 6, fontStyle: "italic" }}>Mantidos: {resultado.mantidos}</div>
-        </>
+      // Verifica avaliação pendente
+      if (aguardandoAvaliacao.has(tel)) {
+        const nota = parseInt(texto.trim());
+        if (nota >= 1 && nota <= 5) {
+          const pedidoId = aguardandoAvaliacao.get(tel);
+          const pedido = pedidos.find(p => p.id === pedidoId);
+          const novaAv = { pedidoId, telefone: tel, cliente: pedido?.cliente || tel, nota, horario: new Date().toISOString() };
+            avaliacoes.push(novaAv);
+            try { await AvaliacaoDB.create(novaAv); } catch {}
+          aguardandoAvaliacao.delete(tel);
+          const agradecimento = CONFIG.avaliacao.mensagemObrigado.replace(/{cliente}/g, pedido?.cliente || "");
+          await enviarMsg(tel, agradecimento);
+          continue;
+        }
+        aguardandoAvaliacao.delete(tel);
       }
-      <button onClick={()=>setResultado(null)} style={{ marginTop: 10, background: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Fechar</button>
-    </div>
-  );
 
-  return (
-    <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: "1.5px solid #fee2e2" }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: "#991b1b", marginBottom: 6 }}>🗑️ Zerar dados de teste</div>
-      <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-        Remove todos os pedidos, vendas e histórico gerados durante os testes. Mantém cardápio, configurações, garçons, cupons e estoque.
-      </div>
+      try {
+        addMsg(tel, "user", texto);
+        const resposta = await chamarClaude(getHist(tel), tel);
+        addMsg(tel, "assistant", resposta);
 
-      {etapa === 0 && (
-        <button onClick={() => setEtapa(1)} style={{ background: "#fee2e2", color: "#991b1b", border: "1.5px solid #ef4444", borderRadius: 10, padding: "9px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-          🗑️ Iniciar limpeza
-        </button>
-      )}
-
-      {etapa === 1 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e", fontWeight: 600 }}>
-            ⚠️ Esta ação não pode ser desfeita. Todos os dados de teste serão permanentemente removidos.
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setEtapa(2)} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Entendi, continuar</button>
-            <button onClick={() => setEtapa(0)} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-          </div>
-        </div>
-      )}
-
-      {etapa === 2 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ fontSize: 12, color: "#888" }}>Digite <strong style={{ color: "#ef4444" }}>{SENHA}</strong> para confirmar:</div>
-          <input value={digitado} onChange={e => setDigitado(e.target.value)} placeholder={SENHA} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${digitado === SENHA ? "#10b981" : "#e0e0e0"}`, borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={confirmarReset} disabled={digitado !== SENHA || loading} style={{ flex: 2, background: digitado === SENHA ? "#ef4444" : "#ccc", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: digitado === SENHA ? "pointer" : "not-allowed" }}>
-              {loading ? "Removendo..." : "🗑️ Confirmar limpeza"}
-            </button>
-            <button onClick={() => { setEtapa(0); setDigitado(""); }} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── ABA CONFIGURAÇÕES ─────────────────────────────────────────
-function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons }) {
-  const [cfg, setCfg] = useState(config);
-  const [subAba, setSubAba] = useState("horario");
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [testeCEP, setTesteCEP] = useState("");
-  const [resultadoCEP, setResultadoCEP] = useState(null);
-  useEffect(() => { setCfg(config); }, [config]);
-  async function salvar() { setSaving(true); await onSave(cfg); setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500); }
-  function setHorario(dia, campo, v) { setCfg(p => ({ ...p, horarioFuncionamento: { ...p.horarioFuncionamento, [dia]: { ...p.horarioFuncionamento[dia], [campo]: v } } })); }
-  function setMensagem(campo, v) { setCfg(p => ({ ...p, mensagensAutomaticas: { ...p.mensagensAutomaticas, [campo]: v } })); }
-  function setCEP(campo, v) { setCfg(p => ({ ...p, entregaCEP: { ...p.entregaCEP, [campo]: v } })); }
-  function setFidelidade(campo, v) { setCfg(p => ({ ...p, fidelidade: { ...p.fidelidade, [campo]: v } })); }
-  function setAvaliacao(campo, v) { setCfg(p => ({ ...p, avaliacao: { ...p.avaliacao, [campo]: v } })); }
-  async function testarCEP() {
-    try { const r = await fetch("https://viacep.com.br/ws/" + testeCEP.replace(/\D/g, "") + "/json/"); const d = await r.json(); setResultadoCEP({ valido: !d.erro, endereco: d.erro ? null : d.logradouro + ", " + d.bairro + " - " + d.localidade + "/" + d.uf }); } catch { setResultadoCEP({ valido: false }); }
-  }
-  const inputStyle = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
-
-  return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ background: statusLoja?.aberto ? "#d1fae5" : "#fee2e2", borderRadius: 14, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, border: "1.5px solid " + (statusLoja?.aberto ? "#10b981" : "#ef4444") }}>
-        <div style={{ fontSize: 28 }}>{statusLoja?.aberto ? "✅" : "🔴"}</div>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 15, color: statusLoja?.aberto ? "#065f46" : "#991b1b" }}>Loja {statusLoja?.aberto ? "ABERTA" : "FECHADA"} agora</div>
-          {!statusLoja?.aberto && <div style={{ fontSize: 12, color: "#b91c1c", marginTop: 2 }}>Próxima abertura: {statusLoja?.proximaAbertura || "—"}</div>}
-        </div>
-      </div>
-      <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
-          <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
-        ))}
-      </div>
-
-      {subAba === "horario" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>📅 Horário de funcionamento</div>
-          {Object.entries(cfg.horarioFuncionamento).map(([dia, h]) => (
-            <div key={dia} style={{ borderBottom: "1px solid #f5f5f5", paddingBottom: 10, marginBottom: 10 }}>
-              <Toggle value={h.aberto} onChange={v => setHorario(dia, "aberto", v)} label={DIAS_SEMANA[dia]} />
-              {h.aberto && (
-                <div style={{ display: "flex", gap: 10, marginTop: 4, paddingLeft: 4 }}>
-                  {[["abertura","Abertura"],["fechamento","Fechamento"]].map(([campo, lbl]) => (
-                    <div key={campo} style={{ flex: 1 }}>
-                      <div style={{ fontSize: 11, color: "#aaa", marginBottom: 3 }}>{lbl}</div>
-                      <input type="time" value={h[campo]} onChange={e => setHorario(dia, campo, e.target.value)} style={inputStyle} />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {subAba === "mensagens" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>💬 Mensagens automáticas</div>
-          <Toggle value={cfg.mensagensAutomaticas.ativo} onChange={v => setMensagem("ativo", v)} label="Ativar mensagens automáticas" sub="Envia WhatsApp ao mudar status" />
-          <div style={{ opacity: cfg.mensagensAutomaticas.ativo ? 1 : 0.4, pointerEvents: cfg.mensagensAutomaticas.ativo ? "auto" : "none", display: "flex", flexDirection: "column", gap: 12 }}>
-            {[["preparando","🔥 Ao preparar"],["entrega","🛵 Ao sair"],["entregue","✅ Ao entregar"],["cancelado","❌ Ao cancelar"]].map(([k, l]) => (
-              <div key={k}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{l}</div>
-                <textarea value={cfg.mensagensAutomaticas[k]} onChange={e => setMensagem(k, e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {subAba === "entrega" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>📍 Zona de entrega</div>
-          <Toggle value={cfg.entregaCEP.ativo} onChange={v => setCEP("ativo", v)} label="Validar CEP antes de aceitar" sub="O bot verifica se está dentro do raio" />
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 2 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>CEP do estabelecimento</div><input value={cfg.entregaCEP.cepBase} onChange={e => setCEP("cepBase", e.target.value.replace(/\D/g, ""))} maxLength={8} style={inputStyle} /></div>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Raio (km)</div><input type="number" value={cfg.entregaCEP.raioKm} onChange={e => setCEP("raioKm", parseInt(e.target.value))} style={inputStyle} /></div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input value={testeCEP} onChange={e => { setTesteCEP(e.target.value); setResultadoCEP(null); }} placeholder="Testar CEP..." maxLength={9} style={{ ...inputStyle, flex: 1 }} />
-            <button onClick={testarCEP} disabled={!testeCEP} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "0 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Testar</button>
-          </div>
-          {resultadoCEP && (
-            <div style={{ padding: "10px 12px", borderRadius: 10, background: resultadoCEP.valido ? "#d1fae5" : "#fee2e2", border: "1px solid " + (resultadoCEP.valido ? "#10b981" : "#ef4444") }}>
-              <div style={{ fontWeight: 700, fontSize: 13, color: resultadoCEP.valido ? "#065f46" : "#991b1b" }}>{resultadoCEP.valido ? "✅ Dentro da área" : "❌ Fora da área"}</div>
-              {resultadoCEP.endereco && <div style={{ fontSize: 12, color: "#555", marginTop: 3 }}>{resultadoCEP.endereco}</div>}
-            </div>
-          )}
-        </div>
-      )}
-
-      {subAba === "fidelidade" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🏆 Programa de fidelidade</div>
-          <Toggle value={cfg.fidelidade.ativo} onChange={v => setFidelidade("ativo", v)} label="Ativar programa de fidelidade" sub="O bot avisa o cliente quando ganhar brinde" />
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Pedidos para ganhar</div><input type="number" value={cfg.fidelidade.pedidosParaGanhar} onChange={e => setFidelidade("pedidosParaGanhar", parseInt(e.target.value))} style={inputStyle} /></div>
-            <div style={{ flex: 2 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Brinde</div><input value={cfg.fidelidade.brinde} onChange={e => setFidelidade("brinde", e.target.value)} placeholder="Ex: 1 espetinho grátis" style={inputStyle} /></div>
-          </div>
-          <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem ao ganhar</div><textarea value={cfg.fidelidade.mensagemGanhou} onChange={e => setFidelidade("mensagemGanhou", e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /><div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>Use {"{cliente}"}, {"{brinde}"}, {"{total}"} (total de pedidos)</div></div>
-        </div>
-      )}
-
-      {subAba === "avaliacao" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>⭐ Avaliação pós-entrega</div>
-          <Toggle value={cfg.avaliacao.ativo} onChange={v => setAvaliacao("ativo", v)} label="Ativar avaliação automática" sub="Envia mensagem pedindo nota após entrega" />
-          <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Enviar após (minutos)</div><input type="number" value={cfg.avaliacao.delayMinutos} onChange={e => setAvaliacao("delayMinutos", parseInt(e.target.value))} style={inputStyle} /></div>
-          <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de avaliação</div><textarea value={cfg.avaliacao.mensagem} onChange={e => setAvaliacao("mensagem", e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
-          <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de agradecimento</div><textarea value={cfg.avaliacao.mensagemObrigado} onChange={e => setAvaliacao("mensagemObrigado", e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
-        </div>
-      )}
-
-      {subAba === "garcons" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🧑‍🍳 Gerenciar Garçons</div>
-          <GarcomManager garcons={garcons} onReload={onReloadGarcons} />
-        </div>
-      )}
-
-      {subAba === "pins" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🔑 PINs de acesso</div>
-          <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e" }}>
-            ⚠️ Altere os PINs com cuidado. Informe os novos PINs aos funcionários antes de salvar.
-          </div>
-          <PinManager />
-        </div>
-      )}
-
-      {subAba === "geral" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>⚙️ Geral</div>
-          {[["nomeEstabelecimento","Nome do estabelecimento"],["nomeAgente","Nome do agente IA"]].map(([campo, lbl]) => (
-            <div key={campo}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input value={cfg[campo]} onChange={e => setCfg(p => ({ ...p, [campo]: e.target.value }))} style={inputStyle} /></div>
-          ))}
-          <div style={{ display: "flex", gap: 8 }}>
-            {[["taxaEntrega","Taxa (R$)","number",0.5],["tempoEntregaMin","Mín. (min)","number",1],["tempoEntregaMax","Máx. (min)","number",1]].map(([campo, lbl, type, step]) => (
-              <div key={campo} style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input type={type} step={step} value={cfg[campo]} onChange={e => setCfg(p => ({ ...p, [campo]: parseFloat(e.target.value) }))} style={inputStyle} /></div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* RESET DE DADOS */}
-      {subAba === "geral" && <ResetDados backendUrl={BACKEND_URL} />}
-
-      <button onClick={salvar} disabled={saving} style={{ background: saved ? "#10b981" : saving ? "#aaa" : "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 12, padding: "13px 0", fontWeight: 800, fontSize: 15, cursor: saving ? "not-allowed" : "pointer", transition: "all 0.2s" }}>
-        {saved ? "✅ Salvo!" : saving ? "Salvando..." : "💾 Salvar configurações"}
-      </button>
-    </div>
-  );
-}
-
-// ── FECHAMENTO DO DIA ─────────────────────────────────────────
-function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mesasSalao }) {
-  const [historico, setHistorico] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [confirmando, setConfirmando] = useState(false);
-  const [obs, setObs] = useState("");
-  const [msg, setMsg] = useState(null);
-  const [aberto, setAberto] = useState(null); // _id do fechamento expandido
-
-  function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),4000); }
-
-  async function carregar() {
-    try {
-      const r = await fetch(backendUrl+"/fechamento-dia");
-      if(r.ok) setHistorico(await r.json());
-    } catch {}
-  }
-
-  useEffect(()=>{ carregar(); },[]);
-
-  // Resumo do dia atual (antes de fechar)
-  const hoje = new Date(); hoje.setHours(0,0,0,0);
-  const pedidosHoje = pedidos.filter(p=>p.status==="entregue"&&new Date(p.horario)>=hoje);
-  const totalDelivery = pedidosHoje.reduce((s,p)=>s+(p.total||0),0);
-  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
-  const totalGeral = totalDelivery + totalSalaoHoje;
-  const jaFezHoje = historico.some(f=>f.dataStr===hoje.toISOString().slice(0,10));
-
-  // Por garçom do dia
-  const gMap = {};
-  historicoSalao.forEach(v=>{
-    const g = v.garcom&&v.garcom!=="—"?v.garcom:"Sem garçom";
-    if(!gMap[g]) gMap[g]={nome:g,vendas:0,total:0};
-    gMap[g].vendas+=1; gMap[g].total+=(v.total||0);
-  });
-  const porGarcom = Object.values(gMap).sort((a,b)=>b.total-a.total);
-
-  // Por forma de pagamento
-  const porPag = {pix:0,cartao:0,dinheiro:0};
-  historicoSalao.forEach(v=>{ const p=v.pagamento||"dinheiro"; porPag[p]=(porPag[p]||0)+(v.total||0); });
-
-  async function fecharDia() {
-    setLoading(true);
-    try {
-      const r = await fetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs})});
-      const data = await r.json();
-      if(!r.ok) return showMsg(data.erro||"Erro ao fechar o dia.","erro");
-      showMsg("✅ Fechamento do dia realizado com sucesso!");
-      setConfirmando(false); setObs("");
-      carregar();
-    } catch { showMsg("Erro de conexão.","erro"); }
-    setLoading(false);
-  }
-
-  function imprimirFechamento(f) {
-    const win = window.open("","_blank","width=480,height=700");
-    const dataFmt = new Date(f.data).toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric"});
-    const horaFmt = new Date(f.data).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-    win.document.write(`<!DOCTYPE html><html>
-<head><title>Fechamento ${f.dataStr}</title>
-<style>
-  body{font-family:'Courier New',monospace;padding:20px;max-width:340px;margin:0 auto}
-  h2{text-align:center;font-size:16px;margin:0 0 2px}
-  .sub{text-align:center;font-size:12px;color:#555;margin-bottom:14px}
-  hr{border:none;border-top:2px dashed #000;margin:10px 0}
-  .linha{display:flex;justify-content:space-between;font-size:13px;padding:4px 0}
-  .total{display:flex;justify-content:space-between;font-size:16px;font-weight:bold;padding:8px 0;border-top:2px solid #000;margin-top:4px}
-  .sec{font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#888;margin:10px 0 4px}
-  .rodape{text-align:center;font-size:11px;color:#999;margin-top:14px}
-  @media print{button{display:none}}
-</style></head><body>
-  <h2>👑 Império dos Espetos</h2>
-  <div class="sub">Fechamento do Dia — ${dataFmt}</div>
-  <div style="text-align:center;font-size:11px;color:#888">Emitido às ${horaFmt}</div>
-  <hr>
-  <div class="sec">Resumo geral</div>
-  <div class="linha"><span>🛵 Delivery (${f.pedidosDelivery} pedidos)</span><span>R$ ${f.totalDelivery.toFixed(2)}</span></div>
-  <div class="linha"><span>🍽️ Salão (${f.vendasSalao} vendas)</span><span>R$ ${f.totalSalao.toFixed(2)}</span></div>
-  <div class="total"><span>TOTAL DO DIA</span><span>R$ ${f.totalGeral.toFixed(2)}</span></div>
-  <hr>
-  <div class="sec">Formas de pagamento (salão)</div>
-  ${f.porPagamento?.pix>0?`<div class="linha"><span>🟢 Pix</span><span>R$ ${f.porPagamento.pix.toFixed(2)}</span></div>`:""}
-  ${f.porPagamento?.cartao>0?`<div class="linha"><span>💳 Cartão</span><span>R$ ${f.porPagamento.cartao.toFixed(2)}</span></div>`:""}
-  ${f.porPagamento?.dinheiro>0?`<div class="linha"><span>💵 Dinheiro</span><span>R$ ${f.porPagamento.dinheiro.toFixed(2)}</span></div>`:""}
-  ${f.porGarcom?.length>0?`
-  <hr>
-  <div class="sec">Por garçom</div>
-  ${f.porGarcom.map(g=>`<div class="linha"><span>🧑‍🍳 ${g.nome} (${g.vendas}x)</span><span>R$ ${g.total.toFixed(2)}</span></div>`).join("")}
-  `:""}
-  ${f.obs?`<hr><div style="font-size:12px;color:#555">📝 ${f.obs}</div>`:""}
-  <div class="rodape">— Fim do relatório —</div>
-  <br><button onclick="window.print()" style="width:100%;padding:10px;font-size:14px;cursor:pointer">🖨️ Imprimir</button>
-</body></html>`);
-    win.document.close();
-    setTimeout(()=>win.print(),400);
-  }
-
-  const inp = {width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:8,fontSize:13,color:"#333",outline:"none",boxSizing:"border-box"};
-
-  return (
-    <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:14}}>
-
-      {/* Resumo do dia atual */}
-      <div style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",borderRadius:16,padding:16,color:"#fff"}}>
-        <div style={{fontSize:11,opacity:0.8,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>
-          {new Date().toLocaleDateString("pt-BR",{weekday:"long",day:"2-digit",month:"long"})}
-        </div>
-        <div style={{fontWeight:800,fontSize:22,marginBottom:12}}>Resumo do dia</div>
-        <div style={{display:"flex",gap:10,marginBottom:12}}>
-          <div style={{flex:1,background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"10px 12px"}}>
-            <div style={{fontSize:11,opacity:0.8}}>🛵 Delivery</div>
-            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>R$ {totalDelivery.toFixed(2)}</div>
-            <div style={{fontSize:10,opacity:0.7}}>{pedidosHoje.length} pedidos</div>
-          </div>
-          <div style={{flex:1,background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"10px 12px"}}>
-            <div style={{fontSize:11,opacity:0.8}}>🍽️ Salão</div>
-            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>R$ {totalSalaoHoje.toFixed(2)}</div>
-            <div style={{fontSize:10,opacity:0.7}}>{historicoSalao.length} vendas</div>
-          </div>
-        </div>
-        <div style={{background:"rgba(255,255,255,0.2)",borderRadius:12,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span style={{fontWeight:700,fontSize:14}}>💰 Total geral</span>
-          <span style={{fontWeight:900,fontSize:20}}>R$ {totalGeral.toFixed(2)}</span>
-        </div>
-      </div>
-
-      {/* Formas de pagamento e garçons do dia */}
-      {(porGarcom.length>0||Object.values(porPag).some(v=>v>0))&&(
-        <div style={{display:"flex",gap:10}}>
-          {Object.values(porPag).some(v=>v>0)&&(
-            <div style={{flex:1,background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
-              <div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Pagamentos</div>
-              {porPag.pix>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>🟢 Pix</span><span style={{fontWeight:700}}>R$ {porPag.pix.toFixed(2)}</span></div>}
-              {porPag.cartao>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💳 Cartão</span><span style={{fontWeight:700}}>R$ {porPag.cartao.toFixed(2)}</span></div>}
-              {porPag.dinheiro>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💵 Dinheiro</span><span style={{fontWeight:700}}>R$ {porPag.dinheiro.toFixed(2)}</span></div>}
-            </div>
-          )}
-          {porGarcom.length>0&&(
-            <div style={{flex:1,background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
-              <div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Garçons</div>
-              {porGarcom.map(g=>(
-                <div key={g.nome} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}>
-                  <span>🧑‍🍳 {g.nome}</span><span style={{fontWeight:700}}>R$ {g.total.toFixed(2)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Botão fechar o dia */}
-      {jaFezHoje ? (
-        <div style={{background:"#d1fae5",border:"1.5px solid #10b981",borderRadius:14,padding:"14px 16px",textAlign:"center"}}>
-          <div style={{fontSize:22,marginBottom:4}}>✅</div>
-          <div style={{fontWeight:700,fontSize:14,color:"#065f46"}}>Fechamento do dia já realizado!</div>
-          <div style={{fontSize:12,color:"#065f46",opacity:0.8,marginTop:2}}>Consulte o histórico abaixo.</div>
-        </div>
-      ) : (
-        !confirmando ? (
-          <button onClick={()=>setConfirmando(true)} style={{background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:14,padding:"14px 0",fontWeight:800,fontSize:15,cursor:"pointer"}}>
-            🔒 Fechar o dia
-          </button>
-        ) : (
-          <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🔒 Confirmar fechamento do dia?</div>
-            <div style={{fontSize:12,color:"#888",marginBottom:12}}>Os dados do dia serão arquivados. O painel zera automaticamente amanhã.</div>
-            <div style={{marginBottom:10}}>
-              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Observação (opcional)</div>
-              <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Ex: Movimento fraco, faltou chopp..." style={inp}/>
-            </div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={fecharDia} disabled={loading} style={{flex:2,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>
-                {loading?"Fechando...":"✅ Confirmar fechamento"}
-              </button>
-              <button onClick={()=>setConfirmando(false)} style={{flex:1,background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 0",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
-            </div>
-          </div>
-        )
-      )}
-
-      {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
-
-      {/* Histórico de fechamentos */}
-      <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
-        <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:12}}>📅 Histórico de fechamentos</div>
-        {historico.length===0?(
-          <div style={{textAlign:"center",padding:"20px 0",color:"#ccc",fontSize:13}}>Nenhum fechamento registrado ainda</div>
-        ):historico.map(f=>(
-          <div key={f._id} style={{borderBottom:"1px dashed #f0f0f0",paddingBottom:10,marginBottom:10}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setAberto(aberto===f._id?null:f._id)}>
-              <div>
-                <div style={{fontWeight:700,fontSize:13}}>{new Date(f.data).toLocaleDateString("pt-BR",{weekday:"short",day:"2-digit",month:"2-digit",year:"2-digit"})}</div>
-                <div style={{fontSize:11,color:"#888"}}>{f.pedidosDelivery} delivery · {f.vendasSalao} salão</div>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:10}}>
-                <div style={{fontWeight:800,fontSize:15,color:"#7b1a0a"}}>R$ {f.totalGeral.toFixed(2)}</div>
-                <button onClick={e=>{e.stopPropagation();imprimirFechamento(f);}} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"5px 8px",cursor:"pointer",fontSize:13}}>🖨️</button>
-                <span style={{color:"#ddd",fontSize:14}}>{aberto===f._id?"▴":"▾"}</span>
-              </div>
-            </div>
-            {aberto===f._id&&(
-              <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f5f5f5"}}>
-                <div style={{display:"flex",gap:10,marginBottom:8}}>
-                  <div style={{flex:1,background:"#f8f7f5",borderRadius:8,padding:"8px 10px"}}>
-                    <div style={{fontSize:10,color:"#888"}}>🛵 Delivery</div>
-                    <div style={{fontWeight:700,fontSize:13}}>R$ {f.totalDelivery.toFixed(2)}</div>
-                  </div>
-                  <div style={{flex:1,background:"#f8f7f5",borderRadius:8,padding:"8px 10px"}}>
-                    <div style={{fontSize:10,color:"#888"}}>🍽️ Salão</div>
-                    <div style={{fontWeight:700,fontSize:13}}>R$ {f.totalSalao.toFixed(2)}</div>
-                  </div>
-                </div>
-                {f.porGarcom?.length>0&&(
-                  <div style={{marginBottom:6}}>
-                    <div style={{fontSize:10,color:"#888",marginBottom:4}}>Por garçom</div>
-                    {f.porGarcom.map(g=>(
-                      <div key={g.nome} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"2px 0"}}>
-                        <span>🧑‍🍳 {g.nome} ({g.vendas}x)</span><span style={{fontWeight:600}}>R$ {g.total.toFixed(2)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {f.obs&&<div style={{fontSize:11,color:"#888",fontStyle:"italic"}}>📝 {f.obs}</div>}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── ABA RELATÓRIOS ────────────────────────────────────────────
-function totMesaRel(m) { return totMesaCompleta(m); }
-
-function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
-  const [periodo, setPeriodo] = useState("semana");
-  const [subAba, setSubAba] = useState("geral");
-  const [vendaAberta, setVendaAberta] = useState(null);
-  const [zerarAberto, setZerarAberto] = useState(false);
-  const [relGarcons, setRelGarcons] = useState([]);
-  const [loadingGarcons, setLoadingGarcons] = useState(false);
-
-  async function carregarRelGarcons() {
-    setLoadingGarcons(true);
-    try {
-      const res = await fetch(BACKEND_URL + "/garcons/relatorio");
-      if (res.ok) setRelGarcons(await res.json());
-    } catch {}
-    setLoadingGarcons(false);
-  }
-
-  useEffect(() => {
-    if (subAba === "garcons") carregarRelGarcons();
-  }, [subAba]);
-
-  const entregues = pedidos.filter(p => p.status === "entregue");
-  const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
-  const corte = new Date(); corte.setDate(corte.getDate() - diasFiltro); corte.setHours(0, 0, 0, 0);
-  const pp = entregues.filter(p => new Date(p.horario) >= corte);
-  const totalDelivery = pp.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
-  const totalDescontos = pp.reduce((s, p) => s + (p.desconto || 0), 0);
-  const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
-
-  // Faturamento do salão — mesas abertas + já fechadas
-  const totalSalaoAberto = mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
-  const totalSalao = faturadoSalao + totalSalaoAberto;
-  const totalGeral = totalDelivery + totalSalao;
-
-  // Itens mais vendidos — delivery + salão
-  const ci = {};
-  pp.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
-  historicoSalao.forEach(v => v.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
-  const mv = Object.entries(ci).sort((a, b) => b[1] - a[1])[0];
-  const ri = Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 8);
-
-  // Ranking por dia da semana — delivery + salão
-  const ds = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
-  const porDia = ds.map((nome, idx) => {
-    const pedidosDia = entregues.filter(p => new Date(p.horario).getDay() === idx);
-    const fatDelivery = pedidosDia.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
-    const fatSalao = historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).reduce((s, v) => s + v.total, 0);
-    const fat = fatDelivery + fatSalao;
-    return { nome, fat, qtd: pedidosDia.length + historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).length };
-  });
-  const maxDia = Math.max(...porDia.map(d => d.fat), 1);
-  const melhorDia = [...porDia].sort((a,b) => b.fat - a.fat)[0];
-
-  // Barras do gráfico temporal — delivery + salão
-  let barras = [];
-  if (periodo === "hoje") {
-    for (let h = 11; h <= 23; h += 2) {
-      const vDel = pp.filter(p => { const hr = new Date(p.horario).getHours(); return hr >= h && hr < h + 2; }).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
-      const vSal = historicoSalao.filter(v => { const hr = new Date(v.fechamento).getHours(); return hr >= h && hr < h + 2; }).reduce((s, v) => s + v.total, 0);
-      barras.push({ label: h + "h", valor: vDel + vSal, destaque: new Date().getHours() >= h && new Date().getHours() < h + 2 });
-    }
-  } else if (periodo === "semana") {
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
-      const vDel = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
-      const vSal = historicoSalao.filter(v => isMesmosDias(v.fechamento, d)).reduce((s, v) => s + v.total, 0);
-      barras.push({ label: i === 0 ? "Hoje" : ds[d.getDay()], valor: vDel + vSal, destaque: i === 0 });
-    }
-  } else {
-    for (let s = 3; s >= 0; s--) {
-      const ini = new Date(); ini.setDate(ini.getDate() - s * 7 - 6); ini.setHours(0, 0, 0, 0);
-      const fim = new Date(); fim.setDate(fim.getDate() - s * 7); fim.setHours(23, 59, 59, 999);
-      const vDel = entregues.filter(p => new Date(p.horario) >= ini && new Date(p.horario) <= fim).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
-      const vSal = historicoSalao.filter(v => new Date(v.fechamento) >= ini && new Date(v.fechamento) <= fim).reduce((s, v) => s + v.total, 0);
-      barras.push({ label: s === 0 ? "Esta sem." : "Sem. -" + s, valor: vDel + vSal, destaque: s === 0 });
-    }
-  }
-  const maxB = Math.max(...barras.map(b => b.valor), 1);
-
-  return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-
-      {/* Período */}
-      <div style={{ display: "flex", gap: 8, background: "#fff", borderRadius: 12, padding: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
-        {[["hoje","Hoje"],["semana","7 dias"],["mes","30 dias"]].map(([k, l]) => (
-          <button key={k} onClick={() => setPeriodo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: periodo === k ? "#7b1a0a" : "transparent", color: periodo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
-        ))}
-      </div>
-
-      {/* Sub-abas */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["geral","📊 Geral"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
-          <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
-        ))}
-      </div>
-
-      {/* GERAL */}
-      {subAba === "geral" && <>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <Metrica icon="💰" label="Total geral" valor={"R$ " + totalGeral.toFixed(2)} cor="#7b1a0a" />
-          <Metrica icon="🛵" label="Delivery" valor={"R$ " + totalDelivery.toFixed(2)} sub={pp.length + " pedido" + (pp.length !== 1 ? "s" : "")} cor="#10b981" />
-          <Metrica icon="🍽️" label="Salão" valor={"R$ " + totalSalao.toFixed(2)} cor="#3b82f6" />
-          <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
-          {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub="via cupons" cor="#8b5cf6" />}
-        </div>
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📊 {periodo === "hoje" ? "Por hora" : periodo === "semana" ? "Por dia" : "Por semana"}</div>
-          <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 120 }}>
-            {barras.map((b, i) => <Barra key={i} label={b.label} valor={b.valor} maximo={maxB} destaque={b.destaque} />)}
-          </div>
-        </div>
-      </>}
-
-      {/* VENDAS DO SALÃO */}
-      {subAba === "vendas" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {/* Resumo */}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Metrica icon="🧾" label="Vendas hoje" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "mesas fechadas"} cor="#7b1a0a" />
-            <Metrica icon="💰" label="Total salão" valor={"R$ " + (faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaRel(m),0)).toFixed(2)} cor="#10b981" />
-            <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(historicoSalao.map(v=>v.garcom).filter(g=>g!=="—"))].length || "—"} cor="#3b82f6" />
-          </div>
-
-          {/* Botão zerar operação */}
-          <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 6 }}>🔄 Fechar turno</div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Todas as vendas já estão salvas no banco de dados. Ao fechar o turno, a tela é resetada para o próximo dia — sem perder nenhum dado.</div>
-            {!zerarAberto ? (
-              <button onClick={() => setZerarAberto(true)} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "9px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                🔄 Zerar operação
-              </button>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ background: "#fef3c7", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400e", fontWeight: 600 }}>
-                  ⚠️ Esta ação não pode ser desfeita. Tem certeza?
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => {
-                    // Zera histórico de vendas
-                    if (setHistoricoSalao) setHistoricoSalao([]);
-                    // Zera faturamento acumulado
-                    if (setFaturadoSalaoRel) setFaturadoSalaoRel(0);
-                    // Libera todas as mesas
-                    if (setMesasSalaoRel) setMesasSalaoRel(p => [...MESAS_ESPECIAIS_BASE, ...p.filter(m=>!m.tipo).map((_,i)=>initMesa(i))]);
-                    // Limpa localStorage do salão
-                    try {
-                      localStorage.removeItem("imperio_faturado_salao");
-                      localStorage.removeItem("imperio_mesas_salao");
-                      localStorage.removeItem("imperio_historico_salao");
-                      localStorage.removeItem("imperio_faturado_dia");
-                      localStorage.removeItem("imperio_mesas_dia");
-                      localStorage.removeItem("imperio_historico_dia");
-                    } catch {}
-                    setZerarAberto(false);
-                  }} style={{ flex: 1, background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>✅ Confirmar</button>
-                  <button onClick={() => setZerarAberto(false)} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
-                </div>
-              </div>
-            )}
-          </div>
-
-
-
-          {/* Lista de vendas */}
-          {historicoSalao.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 20px", color: "#ccc" }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>🧾</div>
-              <div>Nenhuma venda registrada hoje</div>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {[...historicoSalao].reverse().map(v => (
-                <div key={v.id} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: vendaAberta === v.id ? "2px solid #7b1a0a" : "2px solid transparent" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setVendaAberta(vendaAberta === v.id ? null : v.id)}>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>Mesa {v.mesa} {v.cliente !== "—" ? `— ${v.cliente}` : ""}</div>
-                      <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
-                        👤 {v.garcom} · {new Date(v.fechamento).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
-                        {v.abertura && ` · ⏱️ ${Math.round((new Date(v.fechamento)-new Date(v.abertura))/60000)}min`}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>R$ {v.total.toFixed(2)}</div>
-                      <div style={{ fontSize: 11, color: "#888" }}>{v.pagamento === "pix" ? "🟢 Pix" : v.pagamento === "cartao" ? "💳 Cartão" : "💵 Dinheiro"}</div>
-                    </div>
-                  </div>
-                  {vendaAberta === v.id && (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #f0f0f0" }}>
-                      {v.itens.map((it,i) => (
-                        <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0", color: "#555" }}>
-                          <span>{it.qty}x {it.nome}</span>
-                          <span>R$ {(it.qty*it.preco).toFixed(2)}</span>
-                        </div>
-                      ))}
-                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.grayL}`, display:"flex", gap:8 }}>
-                        <button onClick={(e)=>{
-                          e.stopPropagation();
-                          const win = window.open('','_blank','width=400,height=600');
-                          win.document.write(`<!DOCTYPE html><html><head><title>Venda Mesa ${v.mesa}</title><style>
-                            body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
-                            h2{text-align:center;font-size:16px;margin-bottom:4px}
-                            .sub{text-align:center;font-size:12px;color:#666;margin-bottom:16px}
-                            .linha{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-bottom:1px dashed #eee}
-                            .total{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:8px 0;border-top:2px solid #000;margin-top:8px}
-                            .info{font-size:12px;color:#555;margin-bottom:10px}
-                            .rodape{text-align:center;font-size:11px;color:#999;margin-top:16px}
-                            @media print{button{display:none}}
-                          </style></head><body>
-                            <h2>👑 Império dos Espetos</h2>
-                            <div class="sub">Relatório de Venda — Mesa ${v.mesa}</div>
-                            <div class="info">${v.cliente&&v.cliente!=='—'?'Cliente: '+v.cliente+'<br>':''}${v.garcom&&v.garcom!=='—'?'Garçom: '+v.garcom+'<br>':''}Fechamento: ${new Date(v.fechamento).toLocaleString('pt-BR',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</div>
-                            ${v.itens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
-                            <div class="total"><span>TOTAL</span><span>R$ ${v.total.toFixed(2)}</span></div>
-                            <div class="info" style="margin-top:10px">Pagamento: ${v.pagamento==='pix'?'Pix':v.pagamento==='cartao'?'Cartão':'Dinheiro'}</div>
-                            <div class="rodape">Obrigado! 🍢</div>
-                            <br><button onclick="window.print()">🖨️ Imprimir</button>
-                          </body></html>`);
-                          win.document.close();
-                          setTimeout(()=>win.print(),500);
-                        }} style={{ flex:1, background:T.grayLL, color:T.gray, border:`1px solid ${T.grayL}`, borderRadius:T.radiusS, padding:"8px 0", fontWeight:600, fontSize:12, cursor:"pointer" }}>
-                          🖨️ Imprimir
-                        </button>
-                        <button onClick={async (e) => {
-                          e.stopPropagation();
-                          if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
-                            // Remove do MongoDB se tiver _id
-                            if (v._id) {
-                              try { await fetch(BACKEND_URL + "/vendas-salao/" + v._id, { method: "DELETE" }); } catch {}
-                            }
-                            if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => x.id !== v.id));
-                            if (setFaturadoSalaoRel) setFaturadoSalaoRel(f => Math.max(0, f - v.total));
-                            setVendaAberta(null);
-                          }
-                        }} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", width: "100%" }}>
-                          🗑️ Excluir
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* POR DIA DA SEMANA */}
-      {subAba === "diasemana" && <>
-        <div style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", borderRadius: 14, padding: "14px 16px", color: "#fff" }}>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>Melhor dia da semana</div>
-          <div style={{ fontWeight: 800, fontSize: 20, marginTop: 4 }}>📅 {melhorDia.nome}</div>
-          <div style={{ fontSize: 13, opacity: 0.9, marginTop: 2 }}>R$ {melhorDia.fat.toFixed(2)} · {melhorDia.qtd} pedidos</div>
-        </div>
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>Faturamento por dia da semana</div>
-          {porDia.map((d, i) => (
-            <div key={i} style={{ marginBottom: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 5 }}>
-                <span style={{ fontWeight: 600, color: "#333" }}>{d.nome}</span>
-                <span style={{ color: "#888", fontSize: 12 }}>{d.qtd} pedido{d.qtd !== 1 ? "s" : ""} · <span style={{ fontWeight: 700, color: "#7b1a0a" }}>R$ {d.fat.toFixed(2)}</span></span>
-              </div>
-              <div style={{ height: 8, background: "#f0f0f0", borderRadius: 4 }}>
-                <div style={{ height: "100%", width: ((d.fat / maxDia) * 100) + "%", background: d.fat === melhorDia.fat ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 4, transition: "width 0.6s", minWidth: d.fat > 0 ? 4 : 0 }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </>}
-
-      {/* RANKING ITENS */}
-      {subAba === "ranking" && <>
-        {ri.length === 0
-          ? <div style={{ textAlign: "center", padding: "40px 0", color: "#ccc" }}>Nenhum dado no período</div>
-          : <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>🏆 Itens mais pedidos</div>
-              {ri.map(([nome, qty], i) => (
-                <div key={nome} style={{ marginBottom: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-                    <span style={{ color: "#333", fontWeight: i < 3 ? 700 : 400 }}>{["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣"][i]} {nome}</span>
-                    <span style={{ fontWeight: 700, color: "#7b1a0a" }}>{qty}x</span>
-                  </div>
-                  <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}>
-                    <div style={{ height: "100%", width: ((qty / ri[0][1]) * 100) + "%", background: i === 0 ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 3, transition: "width 0.6s" }} />
-                  </div>
-                </div>
-              ))}
-            </div>
+        const dadosPedido = extrairPedido(resposta);
+        if (dadosPedido) {
+          if (dadosPedido.cupom) {
+            const subtotal = dadosPedido.itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0);
+            const { desconto, cupom: cupomObj } = aplicarCupom(subtotal, dadosPedido.cupom);
+            dadosPedido.desconto = desconto;
+            dadosPedido.total = subtotal + CONFIG.taxaEntrega - desconto;
+            if (cupomObj) cupomObj.usoAtual += 1;
+          }
+          const tempoPreparo = calcularTempoPreparo(dadosPedido.itens);
+          const pedido = { id: String(counter++).padStart(3, "0"), ...dadosPedido, telefone: tel, tempoPreparo, status: "novo", horario: new Date().toISOString() };
+          pedidos.push(pedido);
+          try { await PedidoDB.create(pedido); } catch {}
+          console.log(`📦 Pedido #${pedido.id} — ${pedido.cliente}`);
+          await enviarMsg(tel, resposta);
+          await enviarMsg(tel, `⏱️ Tempo estimado: *${tempoPreparo} minutos*`);
+          if (CONFIG.fidelidade.ativo) {
+            const f = getFidelidade(tel);
+            const faltam = CONFIG.fidelidade.pedidosParaGanhar - (f.pedidosEntregues % CONFIG.fidelidade.pedidosParaGanhar);
+            await enviarMsg(tel, `🏆 Fidelidade: ${f.pedidosEntregues} pedido${f.pedidosEntregues !== 1 ? "s" : ""} entregue${f.pedidosEntregues !== 1 ? "s" : ""}. Faltam *${faltam}* para ganhar ${CONFIG.fidelidade.brinde}!`);
+          }
+          continue;
         }
-      </>}
-
-      {/* DESEMPENHO GARÇONS */}
-      {subAba === "garcons" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🧑‍🍳 Desempenho dos Garçons</div>
-            <button onClick={carregarRelGarcons} disabled={loadingGarcons} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#555" }}>
-              {loadingGarcons ? "⏳" : "↻ Atualizar"}
-            </button>
-          </div>
-
-          {/* Métricas gerais */}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Metrica icon="🧑‍🍳" label="Garçons ativos" valor={relGarcons.length} cor="#7b1a0a" />
-            <Metrica icon="🧾" label="Total de vendas" valor={relGarcons.reduce((s,g)=>s+g.vendas,0)} cor="#3b82f6" />
-            <Metrica icon="💰" label="Faturamento" valor={"R$ " + relGarcons.reduce((s,g)=>s+g.total,0).toFixed(2)} cor="#10b981" />
-          </div>
-
-          {relGarcons.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "#ccc" }}>
-              <div style={{ fontSize: 36, marginBottom: 8 }}>🧑‍🍳</div>
-              <div>{loadingGarcons ? "Carregando..." : "Nenhum dado encontrado. As vendas do salão precisam ter garçom identificado."}</div>
-            </div>
-          ) : (
-            <>
-              {/* Líder */}
-              {relGarcons[0] && (
-                <div style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", borderRadius: 14, padding: "16px", color: "#fff", display: "flex", alignItems: "center", gap: 14 }}>
-                  <div style={{ width: 52, height: 52, borderRadius: "50%", background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 }}>🥇</div>
-                  <div>
-                    <div style={{ fontSize: 11, opacity: 0.8, textTransform: "uppercase", letterSpacing: 1 }}>Melhor desempenho</div>
-                    <div style={{ fontWeight: 800, fontSize: 20 }}>{relGarcons[0].nome}</div>
-                    <div style={{ fontSize: 13, opacity: 0.9, marginTop: 2 }}>
-                      R$ {relGarcons[0].total.toFixed(2)} · {relGarcons[0].vendas} venda{relGarcons[0].vendas !== 1 ? "s" : ""} · ticket médio R$ {relGarcons[0].ticketMedio.toFixed(2)}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Tabela de todos */}
-              <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>📊 Ranking completo</div>
-                {relGarcons.map((g, i) => {
-                  const maxTotal = relGarcons[0]?.total || 1;
-                  const pct = (g.total / maxTotal) * 100;
-                  return (
-                    <div key={g.nome} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: i < relGarcons.length - 1 ? "1px dashed #f0f0f0" : "none" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-                        <div style={{ width: 40, height: 40, borderRadius: "50%", background: corAvatar(g.nome), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 15, flexShrink: 0 }}>
-                          {iniciais(g.nome)}
-                        </div>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <div style={{ fontWeight: 700, fontSize: 14 }}>
-                              {["🥇","🥈","🥉"][i] || `${i+1}º`} {g.nome}
-                            </div>
-                            <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {g.total.toFixed(2)}</div>
-                          </div>
-                          <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
-                            {g.vendas} venda{g.vendas !== 1 ? "s" : ""} · {g.mesas} mesa{g.mesas !== 1 ? "s" : ""} · ticket médio R$ {g.ticketMedio.toFixed(2)}
-                            {g.itemMaisVendido && g.itemMaisVendido !== "—" && ` · ❤️ ${g.itemMaisVendido}`}
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{ height: 8, background: "#f0f0f0", borderRadius: 4 }}>
-                        <div style={{ height: "100%", width: pct + "%", background: i === 0 ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 4, transition: "width 0.6s" }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-    </div>
-  );
-}
-
-// ── ABA CLIENTES ──────────────────────────────────────────────
-function Clientes({ pedidos }) {
-  const [busca, setBusca] = useState(""); const [sel, setSel] = useState(null); const [ord, setOrd] = useState("gasto");
-  const cm = {}; pedidos.forEach(p => { if (!cm[p.telefone]) cm[p.telefone] = { nome: p.cliente, telefone: p.telefone, pedidos: [] }; cm[p.telefone].pedidos.push(p); });
-  const clientes = Object.values(cm).map(c => {
-    const ent = c.pedidos.filter(p => p.status === "entregue");
-    const tg = ent.reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
-    const ci = {}; ent.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
-    const fav = Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n]) => n);
-    const ds = c.pedidos.map(p => new Date(p.horario)).sort((a, b) => a - b);
-    return { ...c, totalGasto: tg, ticketMedio: ent.length > 0 ? tg / ent.length : 0, totalPedidos: c.pedidos.length, entregues: ent.length, primeiroPedido: ds[0], ultimoPedido: ds[ds.length - 1], favoritos: fav };
-  });
-  const cf = clientes.filter(c => c.nome.toLowerCase().includes(busca.toLowerCase()) || c.telefone.includes(busca)).sort((a, b) => ord === "gasto" ? b.totalGasto - a.totalGasto : ord === "pedidos" ? b.totalPedidos - a.totalPedidos : new Date(b.ultimoPedido) - new Date(a.ultimoPedido));
-  const cd = sel ? clientes.find(c => c.telefone === sel) : null;
-  if (cd) {
-    return (
-      <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-        <button onClick={() => setSel(null)} style={{ background: "none", border: "none", color: "#7b1a0a", fontWeight: 700, fontSize: 14, cursor: "pointer", textAlign: "left", padding: 0 }}>← Voltar</button>
-        <div style={{ background: "#fff", borderRadius: 14, padding: "20px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", gap: 14, alignItems: "center" }}>
-          <div style={{ width: 56, height: 56, borderRadius: "50%", background: corAvatar(cd.nome), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 20, flexShrink: 0 }}>{iniciais(cd.nome)}</div>
-          <div><div style={{ fontWeight: 800, fontSize: 17, color: "#1a1a1a" }}>{cd.nome}</div><div style={{ fontSize: 13, color: "#888", marginTop: 2 }}>📞 {cd.telefone}</div><div style={{ fontSize: 12, color: "#aaa", marginTop: 2 }}>Cliente desde {dataFmt(cd.primeiroPedido)}</div></div>
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <Metrica icon="💰" label="Total gasto" valor={"R$ " + cd.totalGasto.toFixed(2)} cor="#10b981" />
-          <Metrica icon="📦" label="Pedidos" valor={cd.totalPedidos} sub={cd.entregues + " entregues"} cor="#3b82f6" />
-          <Metrica icon="🎯" label="Ticket médio" valor={"R$ " + cd.ticketMedio.toFixed(2)} cor="#7b1a0a" />
-        </div>
-        {cd.favoritos.length > 0 && (
-          <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 10 }}>❤️ Favoritos</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {cd.favoritos.map((f, i) => <span key={i} style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 20, padding: "4px 12px", fontSize: 12, fontWeight: 600 }}>{["🥇","🥈","🥉"][i]} {f}</span>)}
-            </div>
-          </div>
-        )}
-        <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>🧾 Histórico</div>
-          {[...cd.pedidos].sort((a, b) => new Date(b.horario) - new Date(a.horario)).map(p => (
-            <div key={p.id} style={{ borderBottom: "1px solid #f5f5f5", paddingBottom: 12, marginBottom: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-                <div><span style={{ fontWeight: 700, fontSize: 13 }}>Pedido #{p.id}</span><div style={{ fontSize: 11, color: "#aaa", marginTop: 1 }}>{dtFmt(p.horario)}</div></div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                  <Badge status={p.status} />
-                  <span style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>R$ {calcTotal(p.itens, p.desconto).toFixed(2)}</span>
-                  {p.desconto > 0 && <span style={{ fontSize: 11, color: "#8b5cf6" }}>🎟️ -{p.desconto.toFixed(2)}</span>}
-                </div>
-              </div>
-              <div style={{ background: "#fafafa", borderRadius: 8, padding: "8px 10px" }}>
-                {p.itens.map((it, idx) => <div key={idx} style={{ fontSize: 12, color: "#555", padding: "2px 0", display: "flex", justifyContent: "space-between" }}><span>{it.qty || 1}x {it.nome}</span><span style={{ color: "#999" }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span></div>)}
-              </div>
-              {p.obs && <div style={{ fontSize: 12, color: "#92400e", marginTop: 6 }}>⚠️ {p.obs}</div>}
-              {p.cupom && <div style={{ fontSize: 11, color: "#8b5cf6", marginTop: 4 }}>🎟️ Cupom: {p.cupom}</div>}
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ background: "#fff", borderRadius: 12, padding: "10px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.07)", display: "flex", alignItems: "center", gap: 8 }}>
-        <span>🔍</span><input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar por nome ou telefone..." style={{ border: "none", outline: "none", flex: 1, fontSize: 14, color: "#333", background: "transparent" }} />
-      </div>
-      <div style={{ display: "flex", gap: 7 }}>
-        {[["gasto","💰 Maior gasto"],["pedidos","📦 Mais pedidos"],["recente","🕐 Mais recente"]].map(([k, l]) => (
-          <button key={k} onClick={() => setOrd(k)} style={{ flex: 1, padding: "7px 4px", borderRadius: 20, border: "none", background: ord === k ? "#7b1a0a" : "#f0f0f0", color: ord === k ? "#fff" : "#666", fontWeight: ord === k ? 700 : 500, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>{l}</button>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 10 }}>
-        <Metrica icon="👥" label="Clientes únicos" valor={clientes.length} cor="#7b1a0a" />
-        <Metrica icon="🔁" label="Clientes fiéis" valor={clientes.filter(c => c.totalPedidos > 1).length} sub="2+ pedidos" cor="#8b5cf6" />
-      </div>
-      {cf.map(c => (
-        <div key={c.telefone} onClick={() => setSel(c.telefone)} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }} onMouseEnter={e => e.currentTarget.style.boxShadow = "0 4px 20px rgba(123,26,10,0.12)"} onMouseLeave={e => e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.07)"}>
-          <div style={{ width: 46, height: 46, borderRadius: "50%", background: corAvatar(c.nome), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{iniciais(c.nome)}</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: "#1a1a1a" }}>{c.nome}</div>
-            <div style={{ fontSize: 12, color: "#aaa", marginTop: 1 }}>📞 {c.telefone}</div>
-            {c.favoritos.length > 0 && <div style={{ fontSize: 11, color: "#888", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>❤️ {c.favoritos[0]}{c.favoritos[1] ? ", " + c.favoritos[1] : ""}</div>}
-          </div>
-          <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>R$ {c.totalGasto.toFixed(2)}</div>
-            <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{c.totalPedidos} pedido{c.totalPedidos !== 1 ? "s" : ""}</div>
-            <div style={{ fontSize: 10, color: "#bbb", marginTop: 1 }}>{tempoAtras(c.ultimoPedido)}</div>
-          </div>
-          <div style={{ color: "#ddd", fontSize: 16 }}>›</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── CARD PEDIDO ───────────────────────────────────────────────
-function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando }) {
-  const total = calcTotal(pedido.itens, pedido.desconto || 0);
-  const sc = STATUS_CONFIG[pedido.status] || STATUS_CONFIG.novo;
-  const nxt = { novo: "preparando", preparando: "entrega", entrega: "entregue" }[pedido.status];
-  const isNovo = pedido.status === "novo";
-  return (
-    <div style={{ background: T.white, borderRadius: T.radius, boxShadow: isNovo ? `0 0 0 2px ${T.amber}, ${T.shadowM}` : T.shadow, overflow: "hidden", opacity: atualizando ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${isNovo ? T.amber+"40" : T.grayL}` }}>
-      <div onClick={onToggle} style={{ padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, borderLeft: `3px solid ${sc.color}`, userSelect: "none" }}>
-        <div style={{ width: 42, height: 42, borderRadius: T.radiusS, background: sc.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0, border: `1px solid ${sc.color}20` }}>{atualizando ? "⏳" : sc.icon}</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            <span style={{ fontWeight: 700, fontSize: 14, color: T.dark, fontFamily:"'DM Sans',sans-serif" }}>#{pedido.id} — {pedido.cliente}</span>
-            <Badge status={pedido.status} />
-            {pedido.cupom && <span style={{ background: T.purpleL, color: T.purple, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 600 }}>🎟️ {pedido.cupom}</span>}
-          </div>
-          <div style={{ fontSize: 12, color: T.gray, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📍 {pedido.endereco}</div>
-        </div>
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: T.wine }}>R$ {total.toFixed(2)}</div>
-          <div style={{ fontSize: 11, color: T.gray, marginTop: 1 }}>⏱️ {pedido.tempoPreparo || "—"}min</div>
-        </div>
-        <div style={{ color: T.grayL, fontSize: 16, flexShrink: 0 }}>{expanded ? "▴" : "▾"}</div>
-      </div>
-      {expanded && (
-        <div style={{ borderTop: `1px solid ${T.grayL}`, padding: "14px 16px", background: T.grayLL }}>
-          <div style={{ background: T.white, borderRadius: T.radiusS, padding: "12px", marginBottom: 12, border: `1px solid ${T.grayL}` }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: T.gray, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Itens do pedido</div>
-            {(pedido.itens || []).map((it, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.grayL}`, fontSize: 13, color: T.dark }}>
-                <span style={{ color: T.gray }}>{it.qty || 1}× <span style={{ color: T.dark }}>{it.nome}</span></span>
-                <span style={{ fontWeight: 600, color: T.dark }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span>
-              </div>
-            ))}
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.gray }}><span>Taxa de entrega</span><span>R$ 5,00</span></div>
-            {pedido.desconto > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.purple }}><span>🎟️ Desconto ({pedido.cupom})</span><span>−R$ {pedido.desconto.toFixed(2)}</span></div>}
-            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 4, borderTop: `1px solid ${T.grayL}`, fontSize: 15, fontWeight: 700, color: T.wine }}><span>Total</span><span>R$ {total.toFixed(2)}</span></div>
-          </div>
-          {pedido.obs && <div style={{ background: T.amberL, border: `1px solid ${T.amber}40`, borderRadius: T.radiusS, padding: "8px 12px", marginBottom: 12, fontSize: 13, color: T.amber }}>⚠️ <strong>Obs:</strong> {pedido.obs}</div>}
-          <div style={{ fontSize: 12, color: T.gray, marginBottom: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <span>📞 {pedido.telefone}</span>
-            <span>🕐 {horaFmt(pedido.horario)}</span>
-            {pedido.tempoPreparo && <span>⏱️ ~{pedido.tempoPreparo}min</span>}
-          </div>
-          {pedido.status !== "entregue" && pedido.status !== "cancelado" && (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {nxt && <button onClick={() => onStatus(pedido.id, nxt)} disabled={atualizando} style={{ flex: 1, minWidth: 140, background: atualizando ? T.grayL : `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily:"'DM Sans',sans-serif" }}>{STATUS_CONFIG[nxt].icon} {STATUS_CONFIG[nxt].label}</button>}
-              <button onClick={() => onStatus(pedido.id, "cancelado")} disabled={atualizando} style={{ background: T.white, color: T.red, border: `1.5px solid ${T.red}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>❌ Cancelar</button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-// ── CARDÁPIO DO SALÃO ─────────────────────────────────────────
-const CARDAPIO_SALAO = [
-  { id:1,  cat:"Tradicionais",    nome:"Alcatra",                 preco:9.00  },
-  { id:2,  cat:"Tradicionais",    nome:"Alcatra com legumes",     preco:9.00  },
-  { id:3,  cat:"Tradicionais",    nome:"Frango",                  preco:9.00  },
-  { id:4,  cat:"Tradicionais",    nome:"Frango com legumes",      preco:9.00  },
-  { id:5,  cat:"Tradicionais",    nome:"Tulipa na mostarda",      preco:9.00  },
-  { id:6,  cat:"Tradicionais",    nome:"Linguiça",                preco:9.00  },
-  { id:7,  cat:"Tradicionais",    nome:"Coraçãozinho de frango",  preco:9.00  },
-  { id:8,  cat:"Tradicionais",    nome:"Panceta suína",           preco:9.00  },
-  { id:9,  cat:"Tradicionais",    nome:"Pão de alho",             preco:8.00  },
-  { id:10, cat:"Especiais",       nome:"Picanha meia lua",        preco:15.00 },
-  { id:11, cat:"Especiais",       nome:"Cordeiro",                preco:13.00 },
-  { id:12, cat:"Especiais",       nome:"Kafta com queijo",        preco:11.00 },
-  { id:13, cat:"Especiais",       nome:"Medalhão frango",         preco:11.00 },
-  { id:14, cat:"Especiais",       nome:"Medalhão mignon",         preco:11.00 },
-  { id:15, cat:"Especiais",       nome:"Medalhão suíno",          preco:11.00 },
-  { id:16, cat:"Especiais",       nome:"Queijo coalho",           preco:10.00 },
-  { id:17, cat:"Especiais",       nome:"Churrasco Grego",         preco:18.00 },
-  { id:18, cat:"Doces",           nome:"Romeu e Julieta",         preco:11.00 },
-  { id:19, cat:"Doces",           nome:"Morango com chocolate",   preco:10.00 },
-  { id:20, cat:"Doces",           nome:"Uva com chocolate",       preco:10.00 },
-  { id:21, cat:"Acompanhamentos", nome:"Vinagrete",               preco:2.00  },
-  { id:22, cat:"Acompanhamentos", nome:"Farofa",                  preco:1.00  },
-  { id:23, cat:"Acompanhamentos", nome:"Molho alho",              preco:2.00  },
-  { id:24, cat:"Água",            nome:"Água com gás",            preco:4.00  },
-  { id:25, cat:"Água",            nome:"Água sem gás",            preco:4.00  },
-  { id:26, cat:"Suco",            nome:"Suco 200ml",              preco:6.00  },
-  { id:27, cat:"Suco",            nome:"Suco 900ml",              preco:12.00 },
-  { id:28, cat:"Refrigerantes",   nome:"Coca-Cola 2L",            preco:14.00 },
-  { id:29, cat:"Refrigerantes",   nome:"Coca-Cola Lata",          preco:6.00  },
-  { id:30, cat:"Refrigerantes",   nome:"Guaraná Lata",            preco:6.00  },
-  { id:31, cat:"Cervejas",        nome:"Sol Long Neck",           preco:8.00  },
-  { id:32, cat:"Cervejas",        nome:"Heineken Long Neck",      preco:10.00 },
-  { id:33, cat:"Cervejas",        nome:"Brahma Lata",             preco:7.00  },
-  { id:34, cat:"Cervejas",        nome:"Chopp",                   preco:10.00 },
-  { id:35, cat:"Cervejas",        nome:"Chopp Vinho",             preco:12.00 },
-  { id:36, cat:"Energético",      nome:"Monster",                 preco:12.00 },
-];
-
-const PIN_GARCOM = "1234";
-const PIN_CAIXA  = "5678";
-
-const STATUS_MESA = {
-  livre:    { c:"#10b981", bg:"#d1fae5", e:"🍽️", l:"Livre"    },
-  ocupada:  { c:"#3b82f6", bg:"#dbeafe", e:"🍢", l:"Ocupada"  },
-  chamando: { c:"#f59e0b", bg:"#fef3c7", e:"🔔", l:"Chamando" },
-  conta:    { c:"#8b5cf6", bg:"#ede9fe", e:"💳", l:"Conta"    },
-};
-
-function totMesa(itens=[]) { return itens.reduce((s,i)=>s+(i.qty||1)*i.preco,0); }
-function totMesaCompleta(mesa) {
-  const scs = mesa.subComandas || [];
-  return scs.reduce((total, sc) =>
-    total + totMesa(sc.itens) + (sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0)
-  , 0);
-}
-function initSubComanda(id=1) { return {id, label:`Comanda ${id}`, cliente:"", itens:[], rodadas:[]}; }
-function initMesa(i) {
-  return {id:i+1, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
-          subComandas:[initSubComanda(1)]};
-}
-function initMesaEspecial(id, nome, tipo, icon) {
-  return {id, nome, tipo, icon, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
-          subComandas:[initSubComanda(1)]};
-}
-const MESAS_ESPECIAIS_BASE = [
-  initMesaEspecial(901, "Funcionários", "funcionarios", "👥"),
-  initMesaEspecial(902, "Caixa Direto", "caixa_direto", "🛒"),
-];
-function migrarMesa(m) {
-  if (m.subComandas) return m;
-  // migra formato antigo (itens/rodadas/cliente no nível da mesa)
-  return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
-}
-function fmtR(v) { return "R$ "+v.toFixed(2); }
-function tempoAberto(abertura) {
-  if(!abertura) return null;
-  const m = Math.floor((Date.now()-new Date(abertura))/60000);
-  if(m<60) return m+"min"; return Math.floor(m/60)+"h"+(m%60>0?(m%60)+"min":"");
-}
-
-// ── PIN LOGIN ─────────────────────────────────────────────────
-function PinLogin({ onLogin }) {
-  const [pin, setPin] = useState("");
-  const [erro, setErro] = useState(false);
-
-  function digitar(n) {
-    if(pin.length>=4) return;
-    const novo = pin+n;
-    setPin(novo);
-    setErro(false);
-    if(novo.length===4) {
-      setTimeout(()=>{
-        if(novo===PIN_GARCOM) onLogin("garcom");
-        else if(novo===PIN_CAIXA) onLogin("caixa");
-        else { setErro(true); setPin(""); }
-      }, 200);
-    }
-  }
-
-  return (
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 20px",minHeight:400}}>
-      <div style={{fontSize:48,marginBottom:8}}>🍽️</div>
-      <div style={{fontWeight:800,fontSize:20,color:"#1a1a1a",marginBottom:4}}>Acesso ao Salão</div>
-      <div style={{fontSize:13,color:"#888",marginBottom:24}}>Digite o PIN para continuar</div>
-      <div style={{display:"flex",gap:12,marginBottom:8}}>
-        {[0,1,2,3].map(i=>(
-          <div key={i} style={{width:16,height:16,borderRadius:"50%",background:i<pin.length?"#7b1a0a":"#e0e0e0",transition:"background 0.15s"}}/>
-        ))}
-      </div>
-      {erro && <div style={{color:"#ef4444",fontSize:12,fontWeight:600,marginBottom:8}}>❌ PIN incorreto</div>}
-      {!erro && <div style={{fontSize:12,color:"#bbb",marginBottom:16,height:20}}>{pin.length>0?"•".repeat(pin.length)+" "+"○".repeat(4-pin.length):""}</div>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,width:220,marginBottom:16}}>
-        {[1,2,3,4,5,6,7,8,9].map(n=>(
-          <button key={n} onClick={()=>digitar(String(n))} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:22,fontWeight:700,color:"#1a1a1a",cursor:"pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}}>
-            {n}
-          </button>
-        ))}
-        <div/>
-        <button onClick={()=>digitar("0")} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:22,fontWeight:700,color:"#1a1a1a",cursor:"pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}}>0</button>
-        <button onClick={()=>setPin(p=>p.slice(0,-1))} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#f8f8f8",fontSize:18,color:"#888",cursor:"pointer"}}>⌫</button>
-      </div>
-      <div style={{display:"flex",gap:10}}>
-        <div style={{background:"#f5f5f5",borderRadius:10,padding:"5px 12px",fontSize:11,color:"#888"}}>🧑‍🍳 Garçom: 1234</div>
-        <div style={{background:"#f5f5f5",borderRadius:10,padding:"5px 12px",fontSize:11,color:"#888"}}>💁‍♀️ Caixa: 5678</div>
-      </div>
-    </div>
-  );
-}
-
-// ── SALÃO INTEGRADO ───────────────────────────────────────────
-function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado }) {
-  const perfil = perfilSalao;
-  const setPerfil = setPerfilSalao;
-  const mesas = mesasSalao;
-  const setMesas = setMesasSalao;
-  const faturado = faturadoSalao;
-  const setFaturado = setFaturadoSalao;
-  const sel = selSalao;
-  const setSel = setSelSalao;
-  const telaSalao = telaSalaoGlobal;
-  const setTelaSalao = setTelaSalaoGlobal;
-  const [catFiltro, setCatFiltro] = useState("todos");
-  const [pagSalao, setPagSalao] = useState("pix");
-  const [divSalao, setDivSalao] = useState(1);
-  const [selSC, setSelSC] = useState(0); // índice da sub-comanda ativa
-  const [toastSalao, setToastSalao] = useState(null);
-
-  const cardapio = (cardapioExterno && cardapioExterno.length > 0)
-    ? cardapioExterno.filter(i=>i.ativo!==false).map(i=>({...i,cat:i.categoria||i.cat}))
-    : CARDAPIO_SALAO;
-
-  function msgSalao(txt,cor="#10b981"){setToastSalao({txt,cor});setTimeout(()=>setToastSalao(null),2500);}
-  const mesaRaw = mesas.find(m=>m.id===sel);
-  const mesa = mesaRaw ? migrarMesa(mesaRaw) : null;
-  function upd(m){setMesas(p=>p.map(x=>x.id===m.id?m:x));}
-
-  // Sub-comanda ativa (com segurança para índice fora do range)
-  const scIdx = Math.min(selSC, (mesa?.subComandas?.length||1)-1);
-  const sc = mesa?.subComandas?.[scIdx] || initSubComanda(1);
-
-  // Atualiza apenas a sub-comanda ativa
-  function updSC(novoSC) {
-    const scs = [...(mesa.subComandas||[initSubComanda(1)])];
-    scs[scIdx] = novoSC;
-    upd({...mesa, subComandas: scs});
-  }
-
-  function addItem(item){
-    const itens=[...sc.itens];
-    const ex=itens.find(i=>i.id===item.id);
-    if(ex) ex.qty+=1; else itens.push({...item,qty:1});
-    const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
-    const novaAbertura = mesa.abertura||new Date().toISOString();
-    const novoStatus = mesa.status==="livre"?"ocupada":mesa.status;
-    updSC({...sc,itens});
-    upd({...mesa, garcom:nomeGarcom, status:novoStatus, abertura:novaAbertura,
-         subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
-  }
-  function chgQty(id,d){
-    const itens=sc.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>(i.qty||1)>0);
-    const allEmpty = mesa.subComandas.every((s,i)=>i===scIdx?itens.length===0:s.itens.length===0&&(s.rodadas||[]).length===0);
-    upd({...mesa, status:allEmpty?"livre":mesa.status,
-         subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
-  }
-
-  // Adiciona nova sub-comanda à mesa
-  function novaComanda(){
-    const novoId = Math.max(...(mesa.subComandas||[]).map(s=>s.id), 0) + 1;
-    const novas = [...(mesa.subComandas||[]), initSubComanda(novoId)];
-    upd({...mesa, subComandas:novas});
-    setSelSC(novas.length-1);
-    msgSalao(`✅ Comanda ${novoId} criada!`);
-  }
-
-  // Imprime ticket de cozinha SEM VALORES
-  function imprimirCozinha(rodada, mesaId, scLabel){
-    const agora = new Date();
-    const win = window.open('','_blank','width=360,height=520');
-    const nomeGarcom = garcomLogado?.nome || mesa.garcom || "—";
-    win.document.write(`<!DOCTYPE html><html>
-<head><title>Cozinha — Mesa ${mesaId}</title>
-<style>
-  body{font-family:'Courier New',monospace;padding:16px;max-width:290px;margin:0 auto}
-  h2{text-align:center;font-size:16px;margin:0 0 2px}
-  .sub{text-align:center;font-size:11px;color:#555;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
-  hr{border:none;border-top:2px dashed #000;margin:8px 0}
-  .info{font-size:12px;margin-bottom:8px;line-height:1.6}
-  .item{display:flex;gap:6px;font-size:15px;font-weight:700;padding:5px 0;border-bottom:1px dashed #ccc}
-  .qty{font-size:18px;font-weight:900;min-width:28px}
-  .rodape{text-align:center;font-size:11px;color:#888;margin-top:14px}
-  @media print{button{display:none}}
-</style>
-</head>
-<body>
-  <h2>👑 Império dos Espetos</h2>
-  <div class="sub">🔥 Pedido — Cozinha / Churrasqueira</div>
-  <hr>
-  <div class="info">
-    Mesa: <strong>${mesaId}</strong>${scLabel !== "Comanda 1" ? ` &nbsp;|&nbsp; ${scLabel}` : ""}<br>
-    ${sc.cliente ? `Cliente: <strong>${sc.cliente}</strong><br>` : ""}Garçom: <strong>${nomeGarcom}</strong><br>
-    Data: <strong>${agora.toLocaleDateString('pt-BR')}</strong><br>
-    Horário: <strong>${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</strong>
-  </div>
-  <hr>
-  ${rodada.itens.map(it=>`
-    <div class="item"><span class="qty">${it.qty||1}x</span><span>${it.nome}</span></div>
-  `).join('')}
-  <div class="rodape">— Fim do pedido —</div>
-  <br><button onclick="window.print()" style="width:100%;padding:10px;font-size:14px;cursor:pointer">🖨️ Imprimir</button>
-</body></html>`);
-    win.document.close();
-    setTimeout(()=>win.print(),400);
-  }
-
-  async function fecharComanda(idxSC, pagamento){
-    const scFechando = mesa.subComandas[idxSC];
-    const todosItens = [...(scFechando.rodadas||[]).flatMap(r=>r.itens), ...scFechando.itens].reduce((acc,it)=>{
-      const ex=acc.find(i=>i.id===it.id); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
-    }, []);
-    const totalSC = totMesa(scFechando.itens) + (scFechando.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0);
-    const registro = {
-      id: Date.now(),
-      mesa: mesa.id,
-      cliente: scFechando.cliente || "—",
-      garcom: garcomLogado?.nome || mesa.garcom || "—",
-      garcomId: garcomLogado?.id || null,
-      subComanda: scFechando.label,
-      itens: todosItens,
-      total: totalSC,
-      pagamento: pagamento||pagSalao,
-      abertura: scFechando.abertura||mesa.abertura,
-      fechamento: new Date().toISOString(),
-    };
-    try {
-      const res = await fetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
-      if(res.ok){const salvo=await res.json();registro._id=salvo._id;}
-    } catch(e){console.warn("Falha ao salvar venda:",e);}
-    if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
-    setFaturado(f=>f+totalSC);
-
-    // Remove a comanda fechada
-    const novasSCs = mesa.subComandas.filter((_,i)=>i!==idxSC);
-    const novoStatus = novasSCs.length===0||novasSCs.every(s=>s.itens.length===0&&(s.rodadas||[]).length===0)?"livre":"ocupada";
-    if(novasSCs.length===0) {
-      // Mesa totalmente liberada
-      upd(initMesa(mesa.id-1));
-      setSel(null); setTelaSalao("mapa");
-    } else {
-      upd({...mesa, subComandas:novasSCs, status:novoStatus, solicitadoPor:null, solicitadoEm:null});
-      setSelSC(Math.min(idxSC, novasSCs.length-1));
-      setTelaSalao("comanda");
-    }
-    msgSalao(`✅ ${scFechando.label} fechada! ${fmtR(totalSC)}`);
-    setDivSalao(1);
-  }
-
-  async function fecharMesa(){
-    // Fecha todas as comandas de uma vez
-    const todosItens = (mesa.subComandas||[]).flatMap(sc=>[...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens])
-      .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
-    const totalMesa = totMesaCompleta(mesa);
-    const registro = {
-      id: Date.now(), mesa: mesa.id,
-      cliente: (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ")||"—",
-      garcom: garcomLogado?.nome||mesa.garcom||"—", garcomId:garcomLogado?.id||null,
-      itens:todosItens, total:totalMesa, pagamento:pagSalao,
-      abertura:mesa.abertura, fechamento:new Date().toISOString(),
-    };
-    try{const res=await fetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});if(res.ok){const salvo=await res.json();registro._id=salvo._id;}}catch(e){console.warn(e);}
-    if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
-    setFaturado(f=>f+totalMesa);
-    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
-    upd(initMesa(mesa.id-1));
-    setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
-  }
-
-  const totalAcumulado = totMesaCompleta(mesa||{subComandas:[]});
-  const totalSCAtual = sc ? totMesa(sc.itens)+(sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0) : 0;
-
-  const fat = faturado + mesas.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
-  const ocup = mesas.filter(m=>m.status!=="livre").length;
-  const alertas = mesas.filter(m=>m.status==="chamando"||m.status==="conta");
-  const cats = ["todos",...new Set(cardapio.map(i=>i.cat||i.categoria))];
-  const catIcons = {"todos":"📋","Tradicionais":"🍢","Especiais":"⭐","Doces":"🍫","Acompanhamentos":"🥗","Água":"💧","Suco":"🥤","Refrigerantes":"🥫","Cervejas":"🍺","Energético":"⚡"};
-
-  const H2 = {background:"linear-gradient(135deg,#6b1c0e,#8b2510)",color:"#fff",padding:"12px 16px"};
-  const BK2 = {background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 10px",fontWeight:700,fontSize:13,cursor:"pointer"};
-  const BP2 = (bg,flex=false)=>({background:bg,color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:800,fontSize:14,cursor:"pointer",...(flex?{flex:1}:{width:"100%"})});
-  const card2 = {background:"#fff",borderRadius:14,padding:"14px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:10};
-
-  if(!perfil) return <PinLogin onLogin={setPerfil} />;
-
-  // TELA ADICIONAR
-  if(telaSalao==="adicionar") return (
-    <div style={{background:T.cream,minHeight:"100%"}}>
-      {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
-      <div style={H2}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15,flex:1}}>{mesa.nome || `Mesa ${mesa.id}`} — {sc.label}</div>
-          <div style={{fontWeight:800,color:"#f0c040"}}>{fmtR(totMesa(sc.itens))}</div>
-        </div>
-      </div>
-      <div style={{display:"flex",gap:5,flexWrap:"wrap",padding:"10px 14px",background:"#fff",borderBottom:"1px solid #eee"}}>
-        {cats.map(c=>(
-          <button key={c} onClick={()=>setCatFiltro(c)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 8px",borderRadius:10,border:`2px solid ${catFiltro===c?"#7b1a0a":"transparent"}`,background:catFiltro===c?"#fef0ed":"#f8f8f8",cursor:"pointer",minWidth:48}}>
-            <span style={{fontSize:16}}>{catIcons[c]||"🍽️"}</span>
-            <span style={{fontSize:9,fontWeight:catFiltro===c?700:500,color:catFiltro===c?"#7b1a0a":"#666"}}>{c==="todos"?"Todos":c.length>7?c.slice(0,6)+".":c}</span>
-          </button>
-        ))}
-      </div>
-      <div style={{padding:"10px 14px 80px",display:"flex",flexDirection:"column",gap:8}}>
-        {cardapio.filter(i=>(catFiltro==="todos"||(i.cat||i.categoria)===catFiltro)).map(item=>{
-          const na=sc.itens.find(i=>i.id===item.id);
-          return(
-            <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":"transparent"}`}}>
-              <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{item.nome}</div><div style={{fontSize:12,color:"#888"}}>{fmtR(item.preco)}</div></div>
-              {na?(
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <button onClick={()=>chgQty(item.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:18,cursor:"pointer"}}>−</button>
-                  <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{na.qty||1}</span>
-                  <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
-                </div>
-              ):(
-                <button onClick={()=>addItem(item)} style={{background:"#7b1a0a",color:"#fff",border:"none",borderRadius:10,padding:"7px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Add</button>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      {sc.itens.length>0&&(
-        <div style={{position:"sticky",bottom:0,padding:"10px 14px",background:"#fff",borderTop:"1px solid #f0f0f0"}}>
-          <button onClick={()=>setTelaSalao("comanda")} style={BP2("linear-gradient(135deg,#7b1a0a,#c0392b)")}>✅ Ver comanda — {fmtR(totMesa(sc.itens))}</button>
-        </div>
-      )}
-    </div>
-  );
-
-  // TELA FECHAR
-  if(telaSalao==="fechar") {
-    const fecharUma = mesa.subComandas.length > 1; // se há múltiplas, fecha só a ativa
-    const totalFechar = fecharUma ? totalSCAtual : totalAcumulado;
-    const todosItensFechar = fecharUma
-      ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
-      : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
-    return (
-    <div style={{background:T.cream,minHeight:"100%"}}>
-      <div style={H2}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15}}>{mesa.nome || `Mesa ${mesa.id}`}{fecharUma?` — ${sc.label}`:""} — Fechar</div>
-        </div>
-      </div>
-      <div style={{padding:"14px",display:"flex",flexDirection:"column",gap:10}}>
-        {/* Se há múltiplas comandas, mostra opção de fechar todas */}
-        {mesa.subComandas.length>1&&(
-          <div style={{background:"#ede9fe",borderRadius:12,padding:"10px 14px",fontSize:12,color:"#7c3aed",fontWeight:600,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span>📋 Fechando: {fecharUma?sc.label:"Todas as comandas"}</span>
-            <button onClick={fecharMesa} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>Fechar mesa inteira</button>
-          </div>
-        )}
-        <div style={card2}>
-          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🧾 Resumo</div>
-          {todosItensFechar.map((it,i)=>(
-            <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px dashed #f0f0f0",fontSize:13}}>
-              <span>{it.qty}x {it.nome}</span><span style={{fontWeight:600}}>{fmtR(it.qty*it.preco)}</span>
-            </div>
-          ))}
-          <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,fontSize:16,fontWeight:800,color:"#7b1a0a"}}>
-            <span>Total</span><span>{fmtR(totalFechar)}</span>
-          </div>
-        </div>
-        <div style={card2}>
-          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:12,textTransform:"uppercase"}}>👥 Dividir</div>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:20}}>
-            <button onClick={()=>setDivSalao(Math.max(1,divSalao-1))} style={{width:40,height:40,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:22,cursor:"pointer"}}>−</button>
-            <div style={{textAlign:"center"}}><div style={{fontWeight:800,fontSize:28}}>{divSalao}</div><div style={{fontSize:12,color:"#888"}}>pessoa{divSalao>1?"s":""}</div></div>
-            <button onClick={()=>setDivSalao(divSalao+1)} style={{width:40,height:40,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:22,cursor:"pointer"}}>+</button>
-          </div>
-          {divSalao>1&&<div style={{marginTop:10,background:"#fef3c7",borderRadius:10,padding:10,textAlign:"center"}}>
-            <div style={{fontSize:12,color:"#92400e"}}>Cada pessoa paga</div>
-            <div style={{fontWeight:800,fontSize:22,color:"#7b1a0a"}}>{fmtR(totalFechar/divSalao)}</div>
-          </div>}
-        </div>
-        <div style={card2}>
-          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>💳 Pagamento</div>
-          <div style={{display:"flex",gap:8}}>
-            {[["pix","🟢 Pix"],["cartao","💳 Cartão"],["dinheiro","💵 Dinheiro"]].map(([k,l])=>(
-              <button key={k} onClick={()=>setPagSalao(k)} style={{flex:1,padding:"10px 4px",borderRadius:12,border:`2px solid ${pagSalao===k?"#7b1a0a":"#e0e0e0"}`,background:pagSalao===k?"#fef0ed":"#fff",fontWeight:pagSalao===k?700:500,fontSize:12,cursor:"pointer",color:pagSalao===k?"#7b1a0a":"#555"}}>{l}</button>
-            ))}
-          </div>
-        </div>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>{
-            const nomeGarcom = garcomLogado?.nome||mesa.garcom||"—";
-            const nomeCliente = fecharUma?sc.cliente:"";
-            const abertura = fecharUma?(sc.abertura||mesa.abertura):mesa.abertura;
-            const win = window.open('','_blank','width=400,height=600');
-            win.document.write(`<!DOCTYPE html><html><head><title>Comanda Mesa ${mesa.id}</title><style>
-              body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
-              h2{text-align:center;font-size:16px;margin-bottom:4px}
-              .sub{text-align:center;font-size:12px;color:#666;margin-bottom:16px}
-              .linha{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-bottom:1px dashed #eee}
-              .total{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:8px 0;border-top:2px solid #000;margin-top:8px}
-              .info{font-size:12px;color:#555;margin-bottom:12px}
-              .rodape{text-align:center;font-size:11px;color:#999;margin-top:16px}
-              @media print{button{display:none}}
-            </style></head><body>
-              <h2>👑 Império dos Espetos</h2>
-              <div class="sub">Comanda — Mesa ${mesa.id}${fecharUma?` | ${sc.label}`:""}</div>
-              <div class="info">${nomeCliente&&nomeCliente!=="—"?'Cliente: '+nomeCliente+'<br>':''}${nomeGarcom&&nomeGarcom!=="—"?'Garçom: '+nomeGarcom+'<br>':''}Abertura: ${abertura?new Date(abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
-              ${todosItensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
-              <div class="total"><span>TOTAL</span><span>R$ ${totalFechar.toFixed(2)}</span></div>
-              <div class="info" style="margin-top:12px">Pagamento: ${pagSalao==='pix'?'Pix':pagSalao==='cartao'?'Cartão':'Dinheiro'}</div>
-              <div class="rodape">Obrigado pela visita! 🍢</div>
-              <br><button onclick="window.print()">🖨️ Imprimir</button>
-            </body></html>`);
-            win.document.close();
-            setTimeout(()=>win.print(),500);
-          }} style={{background:T.grayLL,color:T.gray,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"12px 0",fontWeight:600,fontSize:14,cursor:"pointer",flex:1}}>🖨️ Imprimir</button>
-          <button onClick={()=>fecharUma?fecharComanda(scIdx,pagSalao):fecharMesa()} style={{...BP2("linear-gradient(135deg,#065f46,#10b981)"),flex:2}}>✅ Confirmar — {fmtR(totalFechar)}</button>
-        </div>
-      </div>
-    </div>
-    );
-  }
-
-  // TELA COMANDA
-  if(telaSalao==="comanda"&&mesa) {
-    return (
-      <div style={{background:T.cream,minHeight:"100%"}}>
-        {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
-        <div style={H2}>
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-            <button style={BK2} onClick={()=>{setSel(null);setTelaSalao("mapa");}}>← Salão</button>
-            <div style={{fontWeight:800,fontSize:18,flex:1}}>{mesa.nome || `Mesa ${mesa.id}`}</div>
-            <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.7}}>Total mesa</div><div style={{fontWeight:800,fontSize:18,color:"#f0c040"}}>{fmtR(totalAcumulado)}</div></div>
-          </div>
-
-          {/* Tabs de sub-comandas */}
-          <div style={{display:"flex",gap:5,flexWrap:"nowrap",overflowX:"auto",marginBottom:8,paddingBottom:2}}>
-            {(mesa.subComandas||[]).map((s,i)=>(
-              <div key={s.id} style={{flexShrink:0,display:"flex",alignItems:"center",gap:0}}>
-                <button onClick={()=>setSelSC(i)} style={{
-                  padding:"5px 10px", borderRadius:mesa.subComandas.length>1?"20px 0 0 20px":"20px",
-                  border:"none", cursor:"pointer", fontSize:12, fontWeight:i===scIdx?700:500,
-                  background:i===scIdx?"rgba(255,255,255,0.95)":"rgba(255,255,255,0.2)",
-                  color:i===scIdx?"#7b1a0a":"rgba(255,255,255,0.85)",
-                }}>
-                  {s.label}
-                  {(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))>0 &&
-                    <span style={{marginLeft:4,fontSize:10,opacity:0.8}}>
-                      {fmtR(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))}
-                    </span>
-                  }
-                </button>
-                {/* Botão remover comanda — só aparece quando há mais de 1 */}
-                {mesa.subComandas.length>1&&(perfil==="garcom"||isDono)&&(
-                  <button onClick={()=>{
-                    const temItens = s.itens.length>0||(s.rodadas||[]).length>0;
-                    if(temItens && !window.confirm(`Remover ${s.label}? Os itens serão perdidos.`)) return;
-                    const novas = mesa.subComandas.filter((_,idx)=>idx!==i);
-                    upd({...mesa, subComandas:novas});
-                    setSelSC(Math.min(i, novas.length-1));
-                    msgSalao(`${s.label} removida.`,"#f59e0b");
-                  }} style={{
-                    padding:"5px 7px", borderRadius:"0 20px 20px 0",
-                    border:"none", cursor:"pointer", fontSize:11,
-                    background:i===scIdx?"rgba(255,255,255,0.75)":"rgba(255,255,255,0.15)",
-                    color:i===scIdx?"#ef4444":"rgba(255,255,255,0.6)",
-                    borderLeft:`1px solid ${i===scIdx?"rgba(239,68,68,0.3)":"rgba(255,255,255,0.1)"}`,
-                  }}>✕</button>
-                )}
-              </div>
-            ))}
-            {(perfil==="garcom"||isDono)&&(
-              <button onClick={novaComanda} style={{flexShrink:0,padding:"5px 10px",borderRadius:20,border:"1px dashed rgba(255,255,255,0.5)",background:"transparent",color:"rgba(255,255,255,0.7)",fontSize:12,cursor:"pointer"}}>
-                + Comanda
-              </button>
-            )}
-          </div>
-
-          {/* Dados da sub-comanda ativa */}
-          <div style={{display:"flex",flexDirection:"column",gap:5}}>
-            <input value={sc.cliente||""} onChange={e=>{const scs=mesa.subComandas.map((s,i)=>i===scIdx?{...s,cliente:e.target.value}:s);upd({...mesa,subComandas:scs});}} placeholder={`🧑 Cliente — ${sc.label}...`} style={{background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
-            <div style={{display:"flex",gap:8}}>
-              {garcomLogado ? (
-                <div style={{flex:1,background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,display:"flex",alignItems:"center",gap:6}}>
-                  🧑‍🍳 <strong>{garcomLogado.nome}</strong>
-                </div>
-              ) : (
-                <input value={mesa.garcom||""} onChange={e=>upd({...mesa,garcom:e.target.value})} placeholder="👤 Garçom..." style={{flex:1,background:"rgba(255,255,255,0.95)",border:"1px solid rgba(255,255,255,0.5)",color:"#1C1917",borderRadius:8,padding:"6px 10px",fontSize:13,outline:"none"}}/>
-              )}
-              <button onClick={()=>upd({...mesa,status:mesa.status==="chamando"?"ocupada":"chamando"})} style={{background:mesa.status==="chamando"?"#f59e0b":"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontWeight:700,fontSize:12}}>
-                🔔 {mesa.status==="chamando"?"Cancelar":"Chamar"}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div style={{padding:"12px 14px"}}>
-          {sc.itens.length===0&&(sc.rodadas||[]).length===0?(
-            <div style={{textAlign:"center",padding:"30px 0",color:"#ccc"}}><div style={{fontSize:36}}>🍢</div><div style={{marginTop:6,fontSize:14}}>{sc.label} vazia</div></div>
-          ):(
-            <div style={card2}>
-              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>{sc.label} — Itens</div>
-              {sc.itens.map((it,i)=>(
-                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
-                  <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{it.nome}</div><div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div></div>
-                  <div style={{display:"flex",alignItems:"center",gap:5}}>
-                    <button onClick={()=>chgQty(it.id,-1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:15,cursor:"pointer"}}>−</button>
-                    <span style={{fontWeight:800,minWidth:18,textAlign:"center"}}>{it.qty||1}</span>
-                    <button onClick={()=>chgQty(it.id,1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:15,cursor:"pointer"}}>+</button>
-                  </div>
-                  <div style={{fontWeight:800,fontSize:13,color:"#7b1a0a",minWidth:50,textAlign:"right"}}>{fmtR((it.qty||1)*it.preco)}</div>
-                </div>
-              ))}
-              {(sc.rodadas||[]).length>0&&<div style={{fontSize:11,color:"#aaa",marginTop:6}}>+ {fmtR((sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0))} em {(sc.rodadas||[]).length} rodada{(sc.rodadas||[]).length>1?"s":""} anteriores</div>}
-              <div style={{display:"flex",justifyContent:"space-between",paddingTop:8,fontSize:15,fontWeight:800,color:"#7b1a0a"}}><span>Total {sc.label}</span><span>{fmtR(totalSCAtual)}</span></div>
-            </div>
-          )}
-          {(sc.rodadas||[]).length>0&&(
-            <div style={card2}>
-              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Enviados à cozinha</div>
-              {(sc.rodadas||[]).map((r,ri)=>(
-                <div key={ri} style={{marginBottom:6,paddingBottom:6,borderBottom:"1px dashed #f0f0f0"}}>
-                  <div style={{fontSize:11,color:"#aaa",marginBottom:3}}>Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</div>
-                  {r.itens.map((it,ii)=><div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#555"}}><span>{it.qty||1}x {it.nome}</span></div>)}
-                </div>
-              ))}
-            </div>
-          )}
-          <div style={{...card2}}>
-            <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observações da mesa..." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
-          </div>
-        </div>
-
-        <div style={{padding:"0 14px 16px",display:"flex",flexDirection:"column",gap:8}}>
-          <div style={{display:"flex",gap:8}}>
-            {(perfil==="garcom"||isDono)&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
-            {(perfil==="garcom"||isDono)&&sc.itens.length>0&&(
-              <button onClick={()=>{
-                const rodada={hora:new Date().toISOString(),itens:[...sc.itens]};
-                const novasRodadas=[...(sc.rodadas||[]),rodada];
-                upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens:[],rodadas:novasRodadas}:s)});
-                imprimirCozinha(rodada, mesa.id, sc.label);
-                msgSalao(`🔥 ${sc.label} enviada à cozinha!`);
-              }} style={{...BP2("linear-gradient(135deg,#1d4ed8,#2563eb)",true)}}>🔥 Cozinha</button>
-            )}
-          </div>
-          {/* Botão enviar TODAS as comandas de uma vez — só aparece com 2+ comandas com itens pendentes */}
-          {(perfil==="garcom"||isDono)&&mesa.subComandas.length>1&&mesa.subComandas.filter(s=>s.itens.length>0).length>1&&(
-            <button onClick={()=>{
-              let novasSCs = [...mesa.subComandas];
-              mesa.subComandas.forEach((s,i)=>{
-                if(s.itens.length===0) return;
-                const rodada={hora:new Date().toISOString(),itens:[...s.itens]};
-                novasSCs[i]={...novasSCs[i],itens:[],rodadas:[...(novasSCs[i].rodadas||[]),rodada]};
-                imprimirCozinha(rodada, mesa.id, s.label);
-              });
-              upd({...mesa, subComandas:novasSCs});
-              msgSalao(`🔥 Todas as comandas enviadas à cozinha!`);
-            }} style={{...BP2("linear-gradient(135deg,#0e4fa8,#1d4ed8)"),display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
-              🔥 Enviar todas à cozinha
-            </button>
-          )}
-          {(perfil==="caixa"||isDono)?(
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {/* Botão imprimir comanda para conferência */}
-              {totalAcumulado>0&&(
-                <button onClick={()=>{
-                  const nomeGarcom = garcomLogado?.nome||mesa.garcom||"—";
-                  const todosItens = (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens])
-                    .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
-                  const win = window.open('','_blank','width=400,height=650');
-                  const agora = new Date();
-                  win.document.write(`<!DOCTYPE html><html>
-<head><title>Comanda Mesa ${mesa.id}</title>
-<style>
-  body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
-  h2{text-align:center;font-size:16px;margin:0 0 2px}
-  .sub{text-align:center;font-size:12px;color:#666;margin-bottom:14px}
-  hr{border:none;border-top:2px dashed #000;margin:8px 0}
-  .info{font-size:12px;color:#555;margin-bottom:10px;line-height:1.7}
-  .linha{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px dashed #eee}
-  .total{display:flex;justify-content:space-between;font-size:16px;font-weight:bold;padding:10px 0;border-top:2px solid #000;margin-top:6px}
-  .rodape{text-align:center;font-size:11px;color:#999;margin-top:14px}
-  @media print{button{display:none}}
-</style>
-</head>
-<body>
-  <h2>👑 Império dos Espetos</h2>
-  <div class="sub">Comanda — Mesa ${mesa.id}</div>
-  <hr>
-  <div class="info">
-    ${(mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).length>0?`Cliente: <strong>${(mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ")}</strong><br>`:""}
-    ${nomeGarcom&&nomeGarcom!=="—"?`Garçom: <strong>${nomeGarcom}</strong><br>`:""}
-    Data: <strong>${agora.toLocaleDateString('pt-BR')}</strong> &nbsp; ${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
-  </div>
-  <hr>
-  ${todosItens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
-  <div class="total"><span>TOTAL</span><span>R$ ${totalAcumulado.toFixed(2)}</span></div>
-  <div class="rodape">Obrigado pela visita! 🍢</div>
-</body></html>`);
-                  win.document.close();
-                  setTimeout(()=>win.print(),400);
-                }} style={{background:T.grayLL,color:T.dark,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"11px 0",fontWeight:600,fontSize:14,cursor:"pointer",width:"100%"}}>
-                  🖨️ Imprimir comanda
-                </button>
-              )}
-              <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
-                {mesa.status==="conta"?"💳 Receber pagamento":mesa.subComandas.length>1?`✅ Fechar ${sc.label}`:  "✅ Fechar comanda"}{totalSCAtual>0?` — ${fmtR(totalSCAtual)}`:""}
-              </button>
-              {mesa.status==="conta"&&mesa.solicitadoPor&&(
-                <div style={{background:"#ede9fe",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#7c3aed",fontWeight:600,textAlign:"center"}}>
-                  📨 Solicitado por {mesa.solicitadoPor} às {new Date(mesa.solicitadoEm).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
-                </div>
-              )}
-            </div>
-          ):(
-            totalAcumulado>0&&(
-              <button onClick={()=>{upd({...mesa,status:"conta",solicitadoPor:mesa.garcom||garcomLogado?.nome||"Garçom",solicitadoEm:new Date().toISOString()});msgSalao("📨 Fechamento solicitado ao caixa!","#8b5cf6");}} style={BP2(mesa.status==="conta"?"#8b5cf6":"linear-gradient(135deg,#7c3aed,#6d28d9)")}>
-                {mesa.status==="conta"?"✅ Fechamento já solicitado":"📨 Solicitar fechamento ao caixa"}
-              </button>
-            )
-          )}
-          <button onClick={()=>{setSel(null);setTelaSalao("mapa");}} style={{background:"none",border:"none",color:"#aaa",fontSize:13,cursor:"pointer",padding:"6px 0"}}>← Voltar ao Salão</button>
-        </div>
-      </div>
-    );
-  }
-
-  // MAPA DE MESAS
-  return (
-    <div style={{background:T.cream,minHeight:"100%"}}>
-      {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
-      <div style={{background:`linear-gradient(135deg,${T.wineD},${T.wine})`,color:"#fff",padding:"12px 16px"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-          <div>
-            <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{isDono?"👑 Dono":perfil==="caixa"?"💁‍♀️ Caixa":garcomLogado?`🧑‍🍳 ${garcomLogado.nome}`:"🧑‍🍳 Garçom"}</div>
-            <div style={{fontWeight:800,fontSize:18}}>🍽️ Mapa do Salão</div>
-          </div>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,opacity:0.7}}>Faturamento</div>
-            <div style={{fontWeight:800,fontSize:18,color:T.amber}}>{fmtR(fat)}</div>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          <div style={{background:"rgba(255,255,255,0.15)",borderRadius:10,padding:"5px 12px"}}>
-            <div style={{fontWeight:800,fontSize:14}}>{ocup}/{mesas.length}</div>
-            <div style={{fontSize:10,opacity:0.8}}>ocupadas</div>
-          </div>
-          {alertas.length>0&&<div style={{background:"rgba(139,92,246,0.4)",borderRadius:10,padding:"5px 12px",border:"1px solid #8b5cf6"}}>
-            <div style={{fontWeight:800,fontSize:14}}>⚠️ {alertas.length}</div>
-            <div style={{fontSize:10,opacity:0.8}}>atenção</div>
-          </div>}
-          <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
-            {isDono&&<>
-              <button onClick={()=>{const comuns=mesas.filter(m=>!m.tipo);const n=comuns.length+1;setMesas(p=>[...p,initMesa(n-1)]);msgSalao("✅ Mesa "+n+" adicionada!");}} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
-              <button onClick={()=>{const comuns=mesas.filter(m=>!m.tipo);const u=comuns[comuns.length-1];if(!u||u.status!=="livre"){msgSalao("❌ Só é possível remover mesa livre!","#ef4444");return;}setMesas(p=>p.filter(m=>m.id!==u.id));msgSalao("Mesa "+u.id+" removida.","#f59e0b");}} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>− Mesa</button>
-            </>}
-            {!isDono&&<button onClick={()=>{if(onSairApp)onSairApp();else setPerfil(null);}} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 10px",fontSize:12,cursor:"pointer",fontWeight:600}}>🔒 Sair</button>}
-          </div>
-        </div>
-      </div>
-      {alertas.length>0&&(
-        <div style={{background:T.purpleL,borderBottom:`2px solid ${T.purple}`,padding:"8px 14px"}}>
-          {alertas.map(m=>(
-            <div key={m.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:"#5b21b6",marginBottom:2}}>
-              <span>{m.status==="conta"?"💳":"🔔"} Mesa {m.id} — {m.status==="conta"?"fechamento solicitado":"chamando"}{m.solicitadoPor?` por ${m.solicitadoPor}`:""}</span>
-              <span>{fmtR(totMesaCompleta(m))}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* MESAS ESPECIAIS — compactas, em linha */}
-      {(()=>{
-        const CORES_ESPECIAL = {
-          funcionarios: {bg:"rgba(237,233,254,0.9)",border:"#7c3aed",text:"#5b21b6"},
-          caixa_direto: {bg:"rgba(254,243,199,0.9)",border:"#d97706",text:"#92400e"},
-        };
-        const especiais = mesas.filter(m=>m.tipo);
-        if(!especiais.length) return null;
-        return (
-          <div style={{display:"flex",gap:8,padding:"8px 14px 0"}}>
-            {especiais.map(m=>{
-              const cor = CORES_ESPECIAL[m.tipo]||{bg:"rgba(240,240,240,0.9)",border:"#aaa",text:"#555"};
-              const totM = totMesaCompleta(m);
-              const s = STATUS_MESA[m.status];
-              const ativo = m.status!=="livre";
-              return(
-                <button key={m.id} onClick={()=>{setSel(m.id);setSelSC(0);setTelaSalao("comanda");}} style={{
-                  flex:1, display:"flex", alignItems:"center", gap:8,
-                  padding:"8px 12px", borderRadius:12, cursor:"pointer",
-                  border:`1.5px solid ${ativo?s.c:cor.border}`,
-                  background:ativo?s.bg:cor.bg,
-                  boxShadow:ativo?`0 0 0 2px ${s.c}30`:"none",
-                  position:"relative"
-                }}>
-                  {(m.status==="chamando"||m.status==="conta")&&<div style={{position:"absolute",top:-5,right:-5,width:14,height:14,background:s.c,borderRadius:"50%",fontSize:8,color:"#fff",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>!</div>}
-                  <span style={{fontSize:16}}>{m.icon}</span>
-                  <div style={{textAlign:"left",flex:1,minWidth:0}}>
-                    <div style={{fontWeight:700,fontSize:12,color:ativo?s.c:cor.text,whiteSpace:"nowrap"}}>{m.nome}</div>
-                    <div style={{fontSize:10,color:ativo?s.c:cor.text,opacity:0.75}}>
-                      {ativo?`${fmtR(totM)}${m.abertura?" · ⏱️"+tempoAberto(m.abertura):""}` : "Livre"}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        );
-      })()}
-
-      {/* MESAS COMUNS */}
-      <div style={{padding:"10px 14px 0"}}>
-        <div style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.5)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Mesas</div>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,padding:"0 14px 14px"}}>
-        {mesas.filter(m=>!m.tipo).map(m=>{
-          const s=STATUS_MESA[m.status];
-          const totM=totMesaCompleta(m);
-          const nomeCliente = (m.subComandas||[]).map(sc=>sc.cliente).filter(Boolean).join(", ");
-          return(
-            <div key={m.id} onClick={()=>{setSel(m.id);setTelaSalao("comanda");}} style={{background:"#fff",borderRadius:14,padding:"10px 8px",textAlign:"center",cursor:"pointer",border:`2px solid ${m.status==="livre"?"#e8e8e8":s.c}`,boxShadow:m.status==="chamando"||m.status==="conta"?`0 0 0 2px ${s.c}`:"0 2px 8px rgba(0,0,0,0.07)",position:"relative"}}>
-              {(m.status==="chamando"||m.status==="conta")&&<div style={{position:"absolute",top:-6,right:-6,width:16,height:16,background:s.c,borderRadius:"50%",fontSize:8,color:"#fff",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>!</div>}
-              <div style={{fontSize:20}}>{s.e}</div>
-              <div style={{fontWeight:800,fontSize:16,color:"#1a1a1a"}}>{m.id}</div>
-              <div style={{fontSize:8,background:s.bg,color:s.c,borderRadius:10,padding:"1px 5px",marginTop:3,fontWeight:700,display:"inline-block"}}>{s.l}</div>
-              {m.status!=="livre"&&<div style={{fontSize:11,fontWeight:800,color:"#7b1a0a",marginTop:3}}>{fmtR(totM)}</div>}
-              {m.status!=="livre"&&(m.subComandas||[]).length>1&&<div style={{fontSize:9,color:"#8b5cf6",fontWeight:700,marginTop:1}}>{(m.subComandas||[]).length} comandas</div>}
-              {m.abertura&&<div style={{fontSize:9,color:((Date.now()-new Date(m.abertura))/60000)>90?"#ef4444":"#aaa",marginTop:1}}>⏱️{tempoAberto(m.abertura)}</div>}
-              {nomeCliente&&<div style={{fontSize:9,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nomeCliente}</div>}
-            </div>
-          );
-        })}
-      </div>
-      <div style={{display:"flex",gap:10,flexWrap:"wrap",padding:"0 14px 14px"}}>
-        {Object.entries(STATUS_MESA).map(([k,v])=>(
-          <div key={k} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#666"}}>
-            <div style={{width:10,height:10,borderRadius:"50%",background:v.c}}/>{v.l}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── ABA WHATSAPP ──────────────────────────────────────────────
-function WhatsAppConexao({ conexao, backendUrl }) {
-  const [qrCode, setQrCode] = useState(null);
-  const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [desconectando, setDesconectando] = useState(false);
-
-  async function carregarStatus() {
-    try {
-      const r = await fetch(backendUrl + "/health");
-      const d = await r.json();
-      setStatus(d);
-    } catch {}
-  }
-
-  async function carregarQR() {
-    setLoading(true);
-    try {
-      const r = await fetch(backendUrl + "/qrcode");
-      const html = await r.text();
-      // Extrai o src da imagem do QR
-      const match = html.match(/src="(data:image\/png;base64,[^"]+)"/);
-      if (match) setQrCode(match[1]);
-      else setQrCode("conectado");
-    } catch { setQrCode(null); }
-    setLoading(false);
-  }
-
-  async function desconectar() {
-    setDesconectando(true);
-    try {
-      await fetch(backendUrl + "/whatsapp/logout", { method: "POST" });
-      setQrCode(null);
-      setStatus(null);
-      setTimeout(carregarStatus, 3000);
-    } catch {}
-    setDesconectando(false);
-  }
-
-  useState(() => { carregarStatus(); }, []);
-
-  const conectado = conexao === "online" || status?.whatsapp === "connected";
-
-  return (
-    <div style={{ padding: "20px", maxWidth: 500, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
-
-      {/* Status card */}
-      <div style={{ background: T.white, borderRadius: T.radius, padding: "20px", boxShadow: T.shadow, border: `1px solid ${T.grayL}` }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: T.gray, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 16 }}>Status da Conexão</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ width: 52, height: 52, borderRadius: T.radius, background: conectado ? T.greenL : T.wineL, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, border: `1px solid ${conectado ? T.green+"30" : T.wine+"30"}` }}>
-            {conectado ? "✅" : "📵"}
-          </div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 16, color: T.dark }}>
-              {conectado ? "WhatsApp Conectado" : "WhatsApp Desconectado"}
-            </div>
-            <div style={{ fontSize: 13, color: T.gray, marginTop: 3 }}>
-              {conectado ? "Bot respondendo normalmente" : "Escaneie o QR Code para conectar"}
-            </div>
-          </div>
-        </div>
-        {status && (
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.grayL}`, display: "flex", gap: 16, fontSize: 12, color: T.gray }}>
-            <span>📦 {status.pedidos || 0} pedidos</span>
-            <span>🗄️ Base de Dados: {status.mongodb || "—"}</span>
-            <span>⏱️ {status.uptime || "—"}</span>
-          </div>
-        )}
-      </div>
-
-      {/* QR Code card */}
-      {!conectado && (
-        <div style={{ background: T.white, borderRadius: T.radius, padding: "20px", boxShadow: T.shadow, border: `1px solid ${T.grayL}`, textAlign: "center" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: T.gray, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 16 }}>Conectar WhatsApp</div>
-          {qrCode && qrCode !== "conectado" ? (
-            <>
-              <img src={qrCode} alt="QR Code WhatsApp" style={{ width: 220, height: 220, borderRadius: T.radiusS, border: `1px solid ${T.grayL}` }} />
-              <div style={{ fontSize: 12, color: T.gray, marginTop: 12 }}>
-                Abra o WhatsApp → <strong>Aparelhos conectados</strong> → <strong>Conectar aparelho</strong>
-              </div>
-              <div style={{ fontSize: 11, color: T.amber, marginTop: 6, fontWeight: 600 }}>⏱️ QR Code expira em ~60 segundos</div>
-              <button onClick={carregarQR} style={{ marginTop: 12, background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, borderRadius: T.radiusS, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
-                🔄 Gerar novo QR Code
-              </button>
-            </>
-          ) : (
-            <button onClick={carregarQR} disabled={loading} style={{ background: `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radius, padding: "14px 28px", fontWeight: 700, fontSize: 15, cursor: "pointer", opacity: loading ? 0.7 : 1 }}>
-              {loading ? "⏳ Carregando..." : "📱 Mostrar QR Code"}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Desconectar */}
-      {conectado && (
-        <div style={{ background: T.white, borderRadius: T.radius, padding: "16px 20px", boxShadow: T.shadow, border: `1px solid ${T.grayL}` }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: T.gray, marginBottom: 8 }}>Trocar número</div>
-          <div style={{ fontSize: 12, color: T.gray, marginBottom: 12 }}>Desconecte para escanear com outro número do WhatsApp.</div>
-          <button onClick={desconectar} disabled={desconectando} style={{ background: T.wineL, color: T.wine, border: `1px solid ${T.wine}30`, borderRadius: T.radiusS, padding: "9px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
-            {desconectando ? "⏳ Desconectando..." : "🔌 Desconectar WhatsApp"}
-          </button>
-        </div>
-      )}
-
-      <button onClick={carregarStatus} style={{ background: "none", border: "none", color: T.gray, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>↻ Atualizar status</button>
-    </div>
-  );
-}
-
-// ── PAINEL PRINCIPAL ──────────────────────────────────────────
-export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSalao, onSair, garcomLogado }) {
-  const [pedidos, setPedidos] = useState(MOCK_PEDIDOS);
-  const [cardapio, setCardapio] = useState(MOCK_CARDAPIO);
-  const [cupons, setCupons] = useState(MOCK_CUPONS);
-  const [avaliacoes, setAvaliacoes] = useState(MOCK_AVALIACOES);
-  const [garcons, setGarcons] = useState([]);
-  const [aba, setAba] = useState(abrirSalao ? "salao" : "pedidos");
-  const [maisAberto, setMaisAberto] = useState(false);
-  const [expanded, setExpanded] = useState(null);
-  const [filtro, setFiltro] = useState("todos");
-  const [atualizando, setAtualizando] = useState({});
-  const [conexao, setConexao] = useState("offline");
-  const [ultimaAtt, setUltimaAtt] = useState(null);
-  const [config, setConfig] = useState(DEFAULT_CONFIG);
-  const [statusLoja, setStatusLoja] = useState({ aberto: true, proximaAbertura: "—" });
-  const [, setTick] = useState(0);
-  const [perfilSalao, setPerfilSalao] = useState(abrirSalao || null); // persiste entre trocas de aba
-  const [mesasSalao, setMesasSalao] = useState(() => {
-    try {
-      const lastDay = localStorage.getItem("imperio_mesas_dia");
-      const hoje = new Date().toDateString();
-      const regulares = Array.from({length:16},(_,i)=>initMesa(i));
-      if (lastDay !== hoje) {
-        localStorage.setItem("imperio_mesas_dia", hoje);
-        return [...MESAS_ESPECIAIS_BASE, ...regulares];
+        await enviarMsg(tel, resposta);
+      } catch (err) {
+        console.error("Erro ao processar mensagem:", err.message);
       }
-      const saved = localStorage.getItem("imperio_mesas_salao");
-      if (!saved) return [...MESAS_ESPECIAIS_BASE, ...regulares];
-      const parsed = JSON.parse(saved).map(migrarMesa);
-      // Garante que as mesas especiais sempre existem
-      const temFunc = parsed.some(m=>m.tipo==="funcionarios");
-      const temCaixa = parsed.some(m=>m.tipo==="caixa_direto");
-      const especiais = [
-        temFunc ? parsed.find(m=>m.tipo==="funcionarios") : MESAS_ESPECIAIS_BASE[0],
-        temCaixa ? parsed.find(m=>m.tipo==="caixa_direto") : MESAS_ESPECIAIS_BASE[1],
-      ];
-      const comuns = parsed.filter(m=>!m.tipo);
-      return [...especiais, ...comuns];
-    } catch { return [...MESAS_ESPECIAIS_BASE, ...Array.from({length:16},(_,i)=>initMesa(i))]; }
+    }
   });
-  const [historicoSalao, setHistoricoSalao] = useState(() => {
-    try {
-      const lastDay = localStorage.getItem("imperio_historico_dia");
-      const hoje = new Date().toDateString();
-      if (lastDay !== hoje) return [];
-      const saved = localStorage.getItem("imperio_historico_salao");
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
-
-  const [faturadoSalao, setFaturadoSalao] = useState(() => {
-    try {
-      const lastDay = localStorage.getItem("imperio_faturado_dia");
-      const hoje = new Date().toDateString();
-      if (lastDay !== hoje) {
-        localStorage.setItem("imperio_faturado_dia", hoje);
-        localStorage.setItem("imperio_faturado_salao", "0");
-        return 0;
-      }
-      return parseFloat(localStorage.getItem("imperio_faturado_salao") || "0");
-    } catch { return 0; }
-  }); // persiste entre recargas, zera automaticamente a cada novo dia
-  const [selSalao, setSelSalao] = useState(null); // mesa selecionada — persiste
-  const [telaSalao, setTelaSalaoGlobal] = useState("mapa"); // tela atual — persiste
-  const ant = useRef(new Set());
-  const actx = useRef(null);
-
-  const tocarSom = useCallback(() => {
-    try {
-      if (!actx.current) actx.current = new (window.AudioContext || window.webkitAudioContext)();
-      const ctx = actx.current; const osc = ctx.createOscillator(); const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.setValueAtTime(880, ctx.currentTime); osc.frequency.setValueAtTime(660, ctx.currentTime + 0.1);
-      gain.gain.setValueAtTime(0.3, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.4);
-    } catch (e) {}
-  }, []);
-
-  const fetchAll = useCallback(async () => {
-    try {
-      const [rp, rc, rcu, ra, rcfg, rs, rg] = await Promise.all([
-        fetch(BACKEND_URL + "/pedidos"),
-        fetch(BACKEND_URL + "/cardapio"),
-        fetch(BACKEND_URL + "/cupons"),
-        fetch(BACKEND_URL + "/avaliacoes"),
-        fetch(BACKEND_URL + "/config"),
-        fetch(BACKEND_URL + "/config/status-loja"),
-        fetch(BACKEND_URL + "/garcons"),
-      ]);
-      if (rp.ok) { const data = await rp.json(); const ids = new Set(data.map(p => p.id)); const novos = [...ids].filter(id => !ant.current.has(id)); if (novos.length > 0 && ant.current.size > 0) { setExpanded(novos[0]); tocarSom(); } ant.current = ids; setPedidos(data); }
-      if (rc.ok) setCardapio(await rc.json());
-      if (rcu.ok) setCupons(await rcu.json());
-      if (ra.ok) setAvaliacoes(await ra.json());
-      if (rcfg.ok) setConfig(await rcfg.json());
-      if (rs.ok) setStatusLoja(await rs.json());
-      if (rg.ok) setGarcons(await rg.json());
-      setConexao("online"); setUltimaAtt(new Date());
-    } catch { setConexao("offline"); }
-  }, [tocarSom]);
-
-  useEffect(() => { fetchAll(); const t = setInterval(fetchAll, POLLING_INTERVAL); return () => clearInterval(t); }, [fetchAll]);
-  useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 30000); return () => clearInterval(t); }, []);
-
-  // Persiste dados do salão no localStorage
-  useEffect(() => { try { localStorage.setItem("imperio_faturado_salao", String(faturadoSalao)); } catch {} }, [faturadoSalao]);
-  useEffect(() => { try { localStorage.setItem("imperio_historico_salao", JSON.stringify(historicoSalao)); localStorage.setItem("imperio_historico_dia", new Date().toDateString()); } catch {} }, [historicoSalao]);
-  useEffect(() => { try { localStorage.setItem("imperio_mesas_salao", JSON.stringify(mesasSalao)); } catch {} }, [mesasSalao]);
-
-  const updateStatus = async (id, novoStatus) => {
-    setAtualizando(prev => ({ ...prev, [id]: true }));
-    try {
-      const r = await fetch(BACKEND_URL + "/pedidos/" + id + "/status", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: novoStatus }) });
-      if (!r.ok) throw new Error();
-      const at = await r.json();
-      setPedidos(prev => prev.map(p => p.id === id ? { ...p, status: at.status } : p));
-    } catch { setPedidos(prev => prev.map(p => p.id === id ? { ...p, status: novoStatus } : p)); }
-    finally { setAtualizando(prev => ({ ...prev, [id]: false })); }
-  };
-
-  const saveConfig = async (novoCfg) => {
-    try { await fetch(BACKEND_URL + "/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(novoCfg) }); setConfig(novoCfg); const rs = await fetch(BACKEND_URL + "/config/status-loja"); if (rs.ok) setStatusLoja(await rs.json()); } catch { setConfig(novoCfg); }
-  };
-
-  const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidos.filter(p => p.status === s).length; return a; }, {});
-  const totalDeliveryHoje = pedidos.filter(p => p.status === "entregue" && isMesmosDias(p.horario, new Date())).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
-  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
-  const totalHoje = totalDeliveryHoje + totalSalaoHoje;
-  const novos = counts["novo"] || 0;
-  const pf = (filtro === "todos" ? pedidos : pedidos.filter(p => p.status === filtro)).sort((a, b) => new Date(b.horario) - new Date(a.horario));
-  const mediaAv = avaliacoes.length > 0 ? (avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length).toFixed(1) : null;
-  const cc = { conectando: { cor: "#f59e0b", txt: "conectando..." }, online: { cor: "#10b981", txt: "atualizado às " + (ultimaAtt ? horaFmt(ultimaAtt) : "") }, offline: { cor: "#f59e0b", txt: "modo demonstração" } }[conexao];
-
-  const abas = [
-    ["pedidos",    "📋", "Pedidos"],
-    ["salao",      "🍽️", "Salão"],
-    ["relatorios", "📊", "Rel."],
-    ["fechamento", "🔒", "Fechamento"],
-    ["estoque",    "📦", "Estoque"],
-    ["clientes",   "👥", "Clientes"],
-    ["cardapio",   "🍢", "Cardápio"],
-    ["cupons",     "🎟️", "Cupons"],
-    ["fidelidade", "🏆", "Fidelid."],
-    ["avaliacoes", "⭐", "Aval."],
-    ["whatsapp",   "📱", "WhatsApp"],
-    ["config",     "⚙️", "Config"],
-  ];
-
-  const mesasPendentes = mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length;
-
-  return (
-    <div style={{ fontFamily: "'DM Sans','Segoe UI',sans-serif", minHeight: "100vh", background: T.cream, display: "flex", flexDirection: "column" }}>
-
-      {/* HEADER DESKTOP — oculta para garçom/caixa */}
-      {!abrirSalao && <div className="header-desktop" style={{ background: T.white, borderBottom: `1px solid ${T.grayL}`, color: T.dark, padding: "0 28px", position: "sticky", top: 0, zIndex: 20, boxShadow: T.shadow, height: 64 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 1400, margin: "0 auto", width: "100%" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-            <div>
-              <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: 1, textTransform: "uppercase" }}>Painel do Dono</div>
-              <div style={{ fontWeight: 800, fontSize: 20 }}>👑 Império dos Espetos</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {Object.entries(STATUS_CONFIG).map(([k, c]) => (
-                <div key={k} style={{ background: "rgba(255,255,255,0.15)", borderRadius: 10, padding: "5px 12px", border: k === "novo" && counts[k] > 0 ? "1.5px solid #f59e0b" : "1.5px solid rgba(255,255,255,0.1)", cursor: "pointer" }} onClick={() => { setAba("pedidos"); setFiltro(k); }}>
-                  <div style={{ fontSize: 16, fontWeight: 800, lineHeight: 1, textAlign: "center" }}>{counts[k] || 0}</div>
-                  <div style={{ fontSize: 10, opacity: 0.8, marginTop: 1 }}>{c.icon} {c.label}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 11, opacity: 0.7 }}>Faturamento hoje</div>
-              <div style={{ fontWeight: 800, fontSize: 22, color: "#f0c040" }}>R$ {totalHoje.toFixed(2)}</div>
-              <div style={{ fontSize: 10, opacity: 0.6, marginTop: 2 }}>🛵 R$ {totalDeliveryHoje.toFixed(2)} · 🍽️ R$ {totalSalaoHoje.toFixed(2)}</div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, fontSize: 11, opacity: 0.9 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: cc.cor, display: "inline-block" }} />
-                {cc.txt}
-                <button onClick={fetchAll} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 14, padding: 0 }}>↻</button>
-              {onSair && <button onClick={onSair} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontSize: 13, padding: 0, marginLeft: 4 }}>🔒</button>}
-              </div>
-              <span style={{ background: statusLoja.aberto ? "rgba(74,222,128,0.25)" : "rgba(239,68,68,0.25)", color: statusLoja.aberto ? "#4ade80" : "#fca5a5", borderRadius: 20, padding: "2px 10px", fontWeight: 700, fontSize: 11 }}>
-                {statusLoja.aberto ? "🟢 ABERTO" : "🔴 FECHADO"}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>}
-
-      {/* HEADER MOBILE — compacto, oculta para garçom/caixa */}
-      {!abrirSalao && <div className="header-mobile" style={{ background: T.white, borderBottom: `1px solid ${T.grayL}`, padding: "10px 16px", position: "sticky", top: 0, zIndex: 20, boxShadow: T.shadow, display: "none" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 30, height: 30, borderRadius: 8, background: `linear-gradient(135deg,${T.wineD},${T.wine})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>👑</div>
-            <div>
-              <div style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700, fontSize: 14, color: T.dark }}>Império dos Espetos</div>
-              <div style={{ fontSize: 10, color: T.gray, marginTop: 1 }}>
-                <span style={{ width: 5, height: 5, borderRadius: "50%", background: cc.cor, display: "inline-block", marginRight: 3 }} />
-                {statusLoja.aberto ? "Aberto" : "Fechado"}
-              </div>
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 9, color: T.gray, textTransform: "uppercase", letterSpacing: 1 }}>Hoje</div>
-              <div style={{ fontWeight: 700, fontSize: 17, color: T.wine }}>R$ {totalHoje.toFixed(2)}</div>
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button onClick={fetchAll} style={{ background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, cursor: "pointer", fontSize: 13, padding: "5px 8px", borderRadius: 8 }}>↻</button>
-              {onSair && <button onClick={onSair} style={{ background: T.wineL, border: `1px solid ${T.wine}30`, color: T.wine, cursor: "pointer", fontSize: 13, padding: "5px 8px", borderRadius: 8, fontWeight: 600 }}>🔒</button>}
-            </div>
-          </div>
-        </div>
-      </div>}
-
-      {/* BODY — sidebar + content */}
-      <div style={{ display: "flex", flex: 1, maxWidth: 1400, margin: "0 auto", width: "100%" }}>
-
-        {/* SIDEBAR DESKTOP — oculta para garçom/caixa */}
-        {!abrirSalao && <div className="sidebar-desktop" style={{ width: 180, background: "#fff", borderRight: "1px solid #e8e8e8", display: "flex", flexDirection: "column", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto", flexShrink: 0 }}>
-          <div style={{ padding: "12px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
-            {abas.map(([k, icon, label]) => (
-              <button key={k} onClick={() => setAba(k)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer", background: aba === k ? "#fef0ed" : "transparent", color: aba === k ? "#7b1a0a" : "#666", fontWeight: aba === k ? 700 : 500, fontSize: 13, transition: "all 0.15s", textAlign: "left", position: "relative" }}>
-                <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
-                <span>{label}</span>
-                {k === "pedidos" && novos > 0 && <span style={{ position: "absolute", right: 10, background: "#f59e0b", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{novos}</span>}
-                {k === "salao" && mesasPendentes > 0 && <span style={{ position: "absolute", right: 10, background: "#8b5cf6", color: "#fff", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{mesasPendentes}</span>}
-                {aba === k && <div style={{ position: "absolute", left: 0, top: "20%", bottom: "20%", width: 3, background: "#7b1a0a", borderRadius: "0 3px 3px 0" }} />}
-              </button>
-            ))}
-          </div>
-          <div style={{ marginTop: "auto", padding: "12px 14px", borderTop: "1px solid #f0f0f0", fontSize: 11, color: "#bbb" }}>
-            {mediaAv && <div style={{ marginBottom: 4 }}>⭐ {mediaAv}</div>}
-            <div style={{ marginBottom: 8 }}>v5.0 — Baileys</div>
-            {onSair && (
-              <button onClick={onSair} style={{ width: "100%", background: "#fee2e2", color: "#ef4444", border: "1px solid #fca5a5", borderRadius: 8, padding: "7px 0", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
-                🔒 Sair
-              </button>
-            )}
-          </div>
-        </div>}
-
-        {/* CONTEÚDO PRINCIPAL */}
-        <div className="main-content" style={{ flex: 1, minWidth: 0, overflow: "auto", background: T.cream }}>
-
-          {/* Alerta novos pedidos */}
-          {novos > 0 && aba === "pedidos" && (
-            <div style={{ background: T.amberL, borderBottom: `2px solid ${T.amber}`, padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: T.amber, fontWeight: 600, borderRadius: 0 }}>
-              🔔 <strong>{novos} novo{novos > 1 ? "s" : ""} pedido{novos > 1 ? "s" : ""}</strong> aguardando!
-            </div>
-          )}
-
-          {/* Filtros de status */}
-          {aba === "pedidos" && (
-            <div style={{ background: T.white, padding: "12px 16px", display: "flex", gap: 6, flexWrap: "wrap", borderBottom: `1px solid ${T.grayL}` }}>
-              {[["todos","📋 Todos"], ...Object.entries(STATUS_CONFIG).map(([k, v]) => [k, v.icon + " " + v.label])].map(([k, l]) => (
-                <button key={k} onClick={() => setFiltro(k)} style={{ whiteSpace: "nowrap", padding: "6px 14px", borderRadius: 20, border: `1px solid ${filtro===k ? T.wine : T.grayL}`, cursor: "pointer", fontSize: 13, fontWeight: filtro === k ? 600 : 400, background: filtro === k ? T.wine : T.white, color: filtro === k ? T.white : T.gray, transition: "all 0.15s", fontFamily: "'DM Sans',sans-serif" }}>
-                  {l}{k !== "todos" && counts[k] > 0 && <span style={{ marginLeft: 5, background: filtro===k ? "rgba(255,255,255,0.25)" : T.wineL, color: filtro===k ? T.white : T.wine, borderRadius: 10, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{counts[k]}</span>}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Conteúdo das abas */}
-          {aba === "pedidos" && (
-            <div style={{ padding: "20px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 14 }}>
-              {pf.length === 0
-                ? <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "80px 20px", color: T.gray, fontSize: 16 }}><div style={{ fontSize: 50, marginBottom: 12, opacity: 0.3 }}>🍢</div>Nenhum pedido encontrado.</div>
-                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} atualizando={!!atualizando[p.id]} />)
-              }
-            </div>
-          )}
-
-          {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
-          {aba === "fechamento"  && <FechamentoDia backendUrl={BACKEND_URL} pedidos={pedidos} historicoSalao={historicoSalao} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} />}
-          {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} cardapio={cardapio} />}
-          {aba === "clientes"    && <Clientes pedidos={pedidos} />}
-          {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
-          {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
-          {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
-          {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} />}
-          {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
-          {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
-        </div>
-      </div>
-
-      {/* BARRA INFERIOR MOBILE — oculta para garçom/caixa */}
-      {!abrirSalao && <div className="mobile-nav" style={{ display: "none" }}>
-
-        {/* Drawer "Mais" — abre por cima da barra */}
-        {maisAberto && (
-          <>
-            <div onClick={()=>setMaisAberto(false)} style={{ position:"fixed", inset:0, zIndex:48, background:"rgba(0,0,0,0.3)" }}/>
-            <div style={{ position:"fixed", bottom:56, left:0, right:0, zIndex:49, background:T.white, borderRadius:"20px 20px 0 0", boxShadow:"0 -4px 24px rgba(0,0,0,0.15)", padding:"8px 8px 4px" }}>
-              <div style={{ width:36, height:4, background:T.grayL, borderRadius:2, margin:"0 auto 12px" }}/>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:4, padding:"0 4px 8px" }}>
-                {[
-                  ["fechamento", "🔒", "Fechamento"],
-                  ["clientes",   "👥", "Clientes"],
-                  ["cardapio",   "🍢", "Cardápio"],
-                  ["cupons",     "🎟️", "Cupons"],
-                  ["fidelidade", "🏆", "Fidelid."],
-                  ["avaliacoes", "⭐", "Aval."],
-                  ["whatsapp",   "📱", "WhatsApp"],
-                  ["config",     "⚙️", "Config"],
-                ].map(([k, icon, label]) => (
-                  <button key={k} onClick={()=>{ setAba(k); setMaisAberto(false); }} style={{
-                    padding:"10px 4px 8px", border:"none", cursor:"pointer",
-                    borderRadius:12, display:"flex", flexDirection:"column", alignItems:"center", gap:4,
-                    background: aba===k ? T.wineL : T.grayLL,
-                    color: aba===k ? T.wine : T.gray,
-                  }}>
-                    <span style={{ fontSize:22 }}>{icon}</span>
-                    <span style={{ fontSize:10, fontWeight: aba===k ? 700 : 400 }}>{label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Barra fixa com 5 abas principais + Mais */}
-        <div style={{ position:"fixed", bottom:0, left:0, right:0, background:T.white, borderTop:`1px solid ${T.grayL}`, display:"flex", zIndex:50, boxShadow:"0 -4px 20px rgba(28,25,23,0.08)", paddingBottom:"env(safe-area-inset-bottom)" }}>
-          {[
-            ["pedidos",    "📋", "Pedidos"],
-            ["salao",      "🍽️", "Salão"],
-            ["relatorios", "📊", "Rel."],
-          ].map(([k, icon, label]) => (
-            <button key={k} onClick={() => { setAba(k); setMaisAberto(false); }} style={{ flex:1, padding:"8px 2px 10px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, color: aba===k ? T.wine : T.gray, position:"relative", transition:"color 0.15s" }}>
-              <span style={{ fontSize: aba===k ? 21 : 19 }}>{icon}</span>
-              <span style={{ fontSize:9, fontWeight: aba===k ? 700 : 400, whiteSpace:"nowrap" }}>{label}</span>
-              {aba===k && <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:2, background:T.wine, borderRadius:"0 0 4px 4px" }}/>}
-              {k==="pedidos" && novos>0 && <span style={{ position:"absolute", top:5, right:"18%", background:T.amber, color:T.white, borderRadius:10, padding:"0 4px", fontSize:9, fontWeight:800, minWidth:14, textAlign:"center" }}>{novos}</span>}
-              {k==="salao" && mesasPendentes>0 && <span style={{ position:"absolute", top:5, right:"18%", background:T.purple, color:T.white, borderRadius:10, padding:"0 4px", fontSize:9, fontWeight:800, minWidth:14, textAlign:"center" }}>{mesasPendentes}</span>}
-            </button>
-          ))}
-
-          {/* Aba Estoque como 4ª fixa */}
-          <button onClick={()=>{ setAba("estoque"); setMaisAberto(false); }} style={{ flex:1, padding:"8px 2px 10px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, color: aba==="estoque" ? T.wine : T.gray, position:"relative" }}>
-            <span style={{ fontSize: aba==="estoque" ? 21 : 19 }}>📦</span>
-            <span style={{ fontSize:9, fontWeight: aba==="estoque" ? 700 : 400 }}>Estoque</span>
-            {aba==="estoque" && <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:2, background:T.wine, borderRadius:"0 0 4px 4px" }}/>}
-          </button>
-
-          {/* Botão Mais */}
-          <button onClick={()=>setMaisAberto(p=>!p)} style={{ flex:1, padding:"8px 2px 10px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, color: maisAberto ? T.wine : T.gray, position:"relative" }}>
-            <span style={{ fontSize:19 }}>⋯</span>
-            <span style={{ fontSize:9, fontWeight: maisAberto ? 700 : 400 }}>Mais</span>
-            {/* Badge se aba atual está no menu "mais" */}
-            {["clientes","cardapio","cupons","fidelidade","avaliacoes","whatsapp","config"].includes(aba) && (
-              <div style={{ position:"absolute", top:0, left:"20%", right:"20%", height:2, background:T.wine, borderRadius:"0 0 4px 4px" }}/>
-            )}
-          </button>
-        </div>
-      </div>}
-
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
-        @media (max-width: 768px) {
-          .header-desktop { display: none !important; }
-          .header-mobile { display: block !important; }
-          .sidebar-desktop { display: none !important; }
-          .mobile-nav { display: block !important; }
-          .main-content { padding-bottom: 68px !important; }
-        }
-        @media (min-width: 769px) {
-          .header-mobile { display: none !important; }
-          .mobile-nav { display: none !important; }
-        }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
-        ::-webkit-scrollbar { width: 5px; height: 5px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(139,38,53,0.15); border-radius: 10px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(139,38,53,0.3); }
-        button { transition: all 0.15s ease; }
-        * { box-sizing: border-box; }
-      `}</style>
-    </div>
-  );
 }
+
+// ── PÁGINA DO QR CODE ─────────────────────────────────────────
+app.get("/qrcode", (req, res) => {
+  if (whatsappStatus === "connected") {
+    return res.send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#f5f5f5">
+      <h1 style="color:#075e54">✅ WhatsApp Conectado!</h1>
+      <p>O bot está funcionando e pronto para receber pedidos.</p>
+      <p style="color:#888">Número conectado com sucesso.</p>
+    </body></html>`);
+  }
+  if (whatsappStatus === "qr" && qrCodeBase64) {
+    return res.send(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="30"></head>
+      <body style="font-family:sans-serif;text-align:center;padding:30px;background:#f5f5f5">
+      <h1 style="color:#075e54">👑 Império dos Espetos</h1>
+      <h2>Escaneie o QR Code com o WhatsApp</h2>
+      <p style="color:#555">Abra o WhatsApp → <b>Configurações</b> → <b>Aparelhos conectados</b> → <b>Conectar aparelho</b></p>
+      <img src="${qrCodeBase64}" style="width:300px;height:300px;border:4px solid #075e54;border-radius:12px;margin:20px auto;display:block"/>
+      <p style="color:#888;font-size:13px">Esta página atualiza automaticamente a cada 30 segundos</p>
+      <p style="color:#888;font-size:12px">Status: <b>${whatsappStatus}</b></p>
+    </body></html>`);
+  }
+  return res.send(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="5"></head>
+    <body style="font-family:sans-serif;text-align:center;padding:50px;background:#f5f5f5">
+    <h1 style="color:#075e54">👑 Império dos Espetos</h1>
+    <h2>⏳ Aguardando QR Code...</h2>
+    <p>O servidor está iniciando. Esta página atualiza automaticamente.</p>
+    <p style="color:#888;font-size:12px">Status: <b>${whatsappStatus}</b></p>
+  </body></html>`);
+});
+
+// ── PEDIDOS API ───────────────────────────────────────────────
+app.get("/pedidos", async (req, res) => { try { const lista = await PedidoDB.find().sort({ horario: -1 }).lean(); res.json(lista); } catch { res.json(pedidos); } });
+
+app.patch("/pedidos/:id/status", async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  if (!["novo","preparando","entrega","entregue","cancelado"].includes(status)) return res.status(400).json({ erro: "Status inválido" });
+  let pedido = pedidos.find(p => p.id === id);
+  try {
+    const atualizado = await PedidoDB.findOneAndUpdate({ id }, { status }, { new: true }).lean();
+    if (atualizado) pedido = atualizado;
+  } catch {}
+  if (!pedido) return res.status(404).json({ erro: "Pedido não encontrado" });
+  pedido.status = status;
+  await enviarMsgStatus(pedido, status);
+  if (status === "entregue") { await checarFidelidade(pedido); agendarAvaliacao(pedido); }
+  if (status === "cancelado" && timersAvaliacao.has(id)) { clearTimeout(timersAvaliacao.get(id)); timersAvaliacao.delete(id); }
+  res.json(pedido);
+});
+
+// ── WHATSAPP STATUS API ───────────────────────────────────────
+app.get("/whatsapp/status", (req, res) => res.json({ status: whatsappStatus }));
+
+app.post("/whatsapp/logout", async (req, res) => {
+  try {
+    if (sock) await sock.logout();
+    if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true });
+    whatsappStatus = "disconnected";
+    qrCodeBase64 = null;
+    setTimeout(conectarWhatsApp, 2000);
+    res.json({ ok: true, message: "Desconectado. Novo QR Code será gerado." });
+  } catch (err) {
+    res.status(500).json({ erro: err.message });
+  }
+});
+
+// ── CUPONS API ────────────────────────────────────────────────
+app.get("/cupons", async (req, res) => { try { const lista = await CupomDB.find().lean(); res.json(lista); } catch { res.json(cupons); } });
+app.post("/cupons", async (req, res) => {
+  const { codigo, tipo, valor, usoMax, validade, descricao } = req.body;
+  if (!codigo || !tipo || valor === undefined) return res.status(400).json({ erro: "codigo, tipo e valor obrigatórios" });
+  const novo = { codigo: codigo.toUpperCase(), tipo, valor: parseFloat(valor), ativo: true, usoMax: usoMax || null, usoAtual: 0, validade: validade || null, descricao: descricao || "" };
+  try {
+    const existe = await CupomDB.findOne({ codigo: novo.codigo });
+    if (existe) return res.status(400).json({ erro: "Código já existe" });
+    const criado = await CupomDB.create(novo);
+    cupons.push(novo);
+    res.status(201).json(criado);
+  } catch { cupons.push(novo); res.status(201).json(novo); }
+});
+app.patch("/cupons/:codigo/ativo", async (req, res) => {
+  const codigo = req.params.codigo.toUpperCase();
+  try { await CupomDB.updateOne({ codigo }, { ativo: req.body.ativo }); } catch {}
+  const cupom = cupons.find(c => c.codigo === codigo);
+  if (cupom) cupom.ativo = req.body.ativo;
+  res.json(cupom || { codigo, ativo: req.body.ativo });
+});
+app.delete("/cupons/:codigo", async (req, res) => {
+  const codigo = req.params.codigo.toUpperCase();
+  try { await CupomDB.deleteOne({ codigo }); } catch {}
+  const idx = cupons.findIndex(c => c.codigo === codigo);
+  const removido = idx !== -1 ? cupons.splice(idx, 1)[0] : { codigo };
+  res.json({ ok: true, removido });
+});
+app.post("/cupons/validar", (req, res) => {
+  const resultado = aplicarCupom(req.body.subtotal || 0, req.body.codigo);
+  res.json(resultado);
+});
+
+// ── AVALIAÇÕES API ────────────────────────────────────────────
+app.get("/avaliacoes", async (req, res) => { try { const lista = await AvaliacaoDB.find().sort({ horario: -1 }).lean(); res.json(lista); } catch { res.json(avaliacoes); } });
+app.get("/avaliacoes/resumo", async (req, res) => {
+  try {
+    const lista = await AvaliacaoDB.find().lean();
+    if (!lista.length) return res.json({ media: 0, total: 0, distribuicao: {} });
+    const media = lista.reduce((s, a) => s + a.nota, 0) / lista.length;
+    const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    lista.forEach(a => dist[a.nota]++);
+    res.json({ media: parseFloat(media.toFixed(1)), total: lista.length, distribuicao: dist });
+  } catch {
+    if (!avaliacoes.length) return res.json({ media: 0, total: 0, distribuicao: {} });
+    const media = avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length;
+    res.json({ media: parseFloat(media.toFixed(1)), total: avaliacoes.length, distribuicao: {} });
+  }
+});
+
+// ── FIDELIDADE API ────────────────────────────────────────────
+app.get("/fidelidade", async (req, res) => {
+  try {
+    const lista = await FidelidadeDB.find().lean();
+    const result = await Promise.all(lista.map(async f => {
+      const pedido = await PedidoDB.findOne({ telefone: f.telefone }).sort({ horario: -1 }).lean();
+      return { ...f, cliente: pedido?.cliente || f.telefone };
+    }));
+    res.json(result);
+  } catch {
+    const lista = [...fidelidadeClientes.entries()].map(([tel, f]) => ({ telefone: tel, ...f }));
+    res.json(lista);
+  }
+});
+
+// ── CARDÁPIO API ──────────────────────────────────────────────
+app.get("/cardapio", (req, res) => res.json(CARDAPIO));
+app.post("/cardapio", async (req, res) => {
+  const { categoria, nome, preco, tempoPreparo, obs } = req.body;
+  if (!categoria || !nome || !preco) return res.status(400).json({ erro: "categoria, nome e preco obrigatórios" });
+  const item = { id: nextItemId++, categoria, nome, preco: parseFloat(preco), tempoPreparo: parseInt(tempoPreparo) || 10, ativo: true, obs: obs || null };
+  try { await CardapioDB.create(item); } catch {}
+  CARDAPIO.push(item);
+  res.status(201).json(item);
+});
+app.put("/cardapio/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  const idx = CARDAPIO.findIndex(i => i.id === id);
+  if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
+  CARDAPIO[idx] = { ...CARDAPIO[idx], ...req.body, id };
+  try { await CardapioDB.updateOne({ id }, { $set: req.body }); } catch {}
+  res.json(CARDAPIO[idx]);
+});
+app.patch("/cardapio/:id/ativo", async (req, res) => {
+  const id = parseInt(req.params.id);
+  const item = CARDAPIO.find(i => i.id === id);
+  if (!item) return res.status(404).json({ erro: "Item não encontrado" });
+  item.ativo = req.body.ativo;
+  try { await CardapioDB.updateOne({ id }, { ativo: req.body.ativo }); } catch {}
+  res.json(item);
+});
+app.delete("/cardapio/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  const idx = CARDAPIO.findIndex(i => i.id === id);
+  if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
+  const [removido] = CARDAPIO.splice(idx, 1);
+  try { await CardapioDB.deleteOne({ id }); } catch {}
+  res.json({ ok: true, removido });
+});
+
+// ── CONFIG API ────────────────────────────────────────────────
+app.get("/config", (req, res) => res.json(CONFIG));
+async function salvarConfig() { try { await ConfigDB.updateOne({ chave: "config" }, { valor: CONFIG }, { upsert: true }); } catch {} }
+app.put("/config", async (req, res) => { CONFIG = { ...CONFIG, ...req.body }; await salvarConfig(); res.json(CONFIG); });
+app.put("/config/horario", async (req, res) => { CONFIG.horarioFuncionamento = { ...CONFIG.horarioFuncionamento, ...req.body }; await salvarConfig(); res.json(CONFIG.horarioFuncionamento); });
+app.put("/config/mensagens", async (req, res) => { CONFIG.mensagensAutomaticas = { ...CONFIG.mensagensAutomaticas, ...req.body }; await salvarConfig(); res.json(CONFIG.mensagensAutomaticas); });
+app.put("/config/fidelidade", async (req, res) => { CONFIG.fidelidade = { ...CONFIG.fidelidade, ...req.body }; await salvarConfig(); res.json(CONFIG.fidelidade); });
+app.put("/config/avaliacao", async (req, res) => { CONFIG.avaliacao = { ...CONFIG.avaliacao, ...req.body }; await salvarConfig(); res.json(CONFIG.avaliacao); });
+app.get("/config/status-loja", (req, res) => res.json({ aberto: estaAberto(), proximaAbertura: proximaAbertura() }));
+
+// ── VENDAS SALÃO API ─────────────────────────────────────────
+app.get("/vendas-salao", async (req, res) => {
+  try {
+    const hoje = new Date(); hoje.setHours(0,0,0,0);
+    const lista = await VendaSalaoDB.find({ fechamento: { $gte: hoje } }).sort({ fechamento: -1 }).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+app.post("/vendas-salao", async (req, res) => {
+  try {
+    const venda = await VendaSalaoDB.create(req.body);
+    // Baixa automática no estoque
+    await baixarEstoqueVenda(req.body.itens, String(venda._id));
+    res.status(201).json(venda);
+  }
+  catch (e) { res.status(500).json({ erro: e.message }); }
+});
+app.delete("/vendas-salao/:id", async (req, res) => {
+  try { await VendaSalaoDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ erro: e.message }); }
+});
+app.get("/vendas-salao/historico", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = {};
+    if (de) filtro.fechamento = { $gte: new Date(de) };
+    if (ate) filtro.fechamento = { ...filtro.fechamento, $lte: new Date(ate) };
+    const lista = await VendaSalaoDB.find(filtro).sort({ fechamento: -1 }).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+
+// ── ESTOQUE — BAIXA AUTOMÁTICA ────────────────────────────────
+async function baixarEstoqueVenda(itens, vendaId) {
+  if (!itens?.length) return;
+  try {
+    const estoques = await EstoqueDB.find({ ativo: true }).lean();
+    for (const item of itens) {
+      const qty = item.qty || 1;
+      // Encontra estoque vinculado a este item do cardápio
+      const est = estoques.find(e =>
+        e.cardapioNomes.some(n => n.toLowerCase() === item.nome?.toLowerCase())
+      );
+      if (!est) continue;
+      const desconto = qty * (est.consumoPorVenda || 1);
+      const novaQtd = Math.max(0, est.quantidade - desconto);
+      await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: novaQtd });
+      await MovEstoqueDB.create({
+        estoqueId: est._id, estoqueNome: est.nome,
+        tipo: "saida", quantidade: desconto,
+        motivo: "venda", vendaId,
+      });
+      // Alerta de estoque mínimo
+      if (novaQtd <= est.minimo && !est.alertaEnviado) {
+        await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: true });
+        const unid = est.tipo === "chopp" ? "litros" : est.unidade;
+        const msg = `⚠️ *Estoque Baixo — Império dos Espetos*\n\n` +
+          `📦 *${est.nome}*\n` +
+          `Quantidade atual: *${novaQtd.toFixed(est.tipo === "chopp" ? 1 : 0)} ${unid}*\n` +
+          `Estoque mínimo: *${est.minimo} ${unid}*\n\n` +
+          `Por favor, verifique o estoque! 🚨`;
+        if (est.alertaTelefone) await enviarMsg(est.alertaTelefone, msg);
+      }
+      // Reseta flag de alerta quando estoque é reposto acima do mínimo
+      if (novaQtd > est.minimo && est.alertaEnviado) {
+        await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: false });
+      }
+    }
+  } catch (e) { console.error("Erro na baixa de estoque:", e.message); }
+}
+
+// ── ESTOQUE API ───────────────────────────────────────────────
+app.get("/estoque", async (req, res) => {
+  try {
+    const lista = await EstoqueDB.find({ ativo: true }).sort({ nome: 1 }).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+
+app.post("/estoque", async (req, res) => {
+  const { nome, unidade, quantidade, minimo, cardapioNomes, consumoPorVenda, tipo, capacidadeBarril, alertaTelefone } = req.body;
+  if (!nome) return res.status(400).json({ erro: "nome é obrigatório" });
+  try {
+    const item = await EstoqueDB.create({
+      nome, unidade: unidade || "un",
+      quantidade: parseFloat(quantidade) || 0,
+      minimo: parseFloat(minimo) || 0,
+      cardapioNomes: cardapioNomes || [],
+      consumoPorVenda: parseFloat(consumoPorVenda) || 1,
+      tipo: tipo || "normal",
+      capacidadeBarril: parseFloat(capacidadeBarril) || 0,
+      alertaTelefone: alertaTelefone || "",
+      ativo: true,
+    });
+    res.status(201).json(item);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.put("/estoque/:id", async (req, res) => {
+  try {
+    const item = await EstoqueDB.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean();
+    if (!item) return res.status(404).json({ erro: "Item não encontrado" });
+    res.json(item);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.delete("/estoque/:id", async (req, res) => {
+  try {
+    await EstoqueDB.findByIdAndUpdate(req.params.id, { ativo: false });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Entrada de mercadoria
+app.post("/estoque/:id/entrada", async (req, res) => {
+  const { quantidade, motivo } = req.body;
+  if (!quantidade || quantidade <= 0) return res.status(400).json({ erro: "quantidade inválida" });
+  try {
+    const est = await EstoqueDB.findById(req.params.id);
+    if (!est) return res.status(404).json({ erro: "Item não encontrado" });
+    const novaQtd = est.quantidade + parseFloat(quantidade);
+    await EstoqueDB.findByIdAndUpdate(est._id, {
+      quantidade: novaQtd,
+      alertaEnviado: novaQtd > est.minimo ? false : est.alertaEnviado,
+    });
+    await MovEstoqueDB.create({
+      estoqueId: est._id, estoqueNome: est.nome,
+      tipo: "entrada", quantidade: parseFloat(quantidade),
+      motivo: motivo || "entrada mercadoria",
+    });
+    res.json({ quantidade: novaQtd });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Ajuste manual (inventário)
+app.post("/estoque/:id/ajuste", async (req, res) => {
+  const { quantidade, motivo } = req.body;
+  if (quantidade === undefined) return res.status(400).json({ erro: "quantidade obrigatória" });
+  try {
+    const est = await EstoqueDB.findById(req.params.id);
+    if (!est) return res.status(404).json({ erro: "Item não encontrado" });
+    const diff = parseFloat(quantidade) - est.quantidade;
+    await EstoqueDB.findByIdAndUpdate(est._id, {
+      quantidade: parseFloat(quantidade),
+      alertaEnviado: parseFloat(quantidade) > est.minimo ? false : est.alertaEnviado,
+    });
+    await MovEstoqueDB.create({
+      estoqueId: est._id, estoqueNome: est.nome,
+      tipo: "ajuste", quantidade: diff,
+      motivo: motivo || "ajuste manual",
+    });
+    res.json({ quantidade: parseFloat(quantidade) });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Movimentações / histórico
+app.get("/estoque/:id/movimentacoes", async (req, res) => {
+  try {
+    const lista = await MovEstoqueDB.find({ estoqueId: req.params.id })
+      .sort({ horario: -1 }).limit(100).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+
+// Relatório geral de consumo
+app.get("/estoque/relatorio/consumo", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = { tipo: "saida" };
+    if (de || ate) {
+      filtro.horario = {};
+      if (de) filtro.horario.$gte = new Date(de);
+      if (ate) filtro.horario.$lte = new Date(ate);
+    }
+    const movs = await MovEstoqueDB.find(filtro).sort({ horario: -1 }).lean();
+    // Agrupa por item
+    const porItem = {};
+    movs.forEach(m => {
+      if (!porItem[m.estoqueNome]) porItem[m.estoqueNome] = { nome: m.estoqueNome, total: 0, movs: 0 };
+      porItem[m.estoqueNome].total += Math.abs(m.quantidade);
+      porItem[m.estoqueNome].movs += 1;
+    });
+    res.json(Object.values(porItem).sort((a, b) => b.total - a.total));
+  } catch { res.json([]); }
+});
+
+// ── GARÇONS API ───────────────────────────────────────────────
+app.get("/garcons", async (req, res) => {
+  try {
+    const lista = await GarcomDB.find().lean();
+    res.json(lista.map(g => ({ ...g, pin: undefined }))); // nunca expõe o PIN
+  } catch { res.json([]); }
+});
+
+app.post("/garcons", async (req, res) => {
+  const { nome, pin } = req.body;
+  if (!nome || !pin) return res.status(400).json({ erro: "nome e pin são obrigatórios" });
+  if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter exatamente 4 dígitos" });
+  try {
+    const existe = await GarcomDB.findOne({ pin });
+    if (existe) return res.status(400).json({ erro: "Esse PIN já está em uso por outro garçom" });
+    const garcom = await GarcomDB.create({ nome: nome.trim(), pin, ativo: true });
+    const obj = garcom.toObject(); delete obj.pin;
+    res.status(201).json(obj);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.put("/garcons/:id", async (req, res) => {
+  const { nome, pin, ativo } = req.body;
+  const update = {};
+  if (nome) update.nome = nome.trim();
+  if (ativo !== undefined) update.ativo = ativo;
+  if (pin) {
+    if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN inválido" });
+    const existe = await GarcomDB.findOne({ pin, _id: { $ne: req.params.id } });
+    if (existe) return res.status(400).json({ erro: "PIN já em uso" });
+    update.pin = pin;
+  }
+  try {
+    const g = await GarcomDB.findByIdAndUpdate(req.params.id, update, { new: true }).lean();
+    if (!g) return res.status(404).json({ erro: "Garçom não encontrado" });
+    const obj = { ...g }; delete obj.pin;
+    res.json(obj);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.delete("/garcons/:id", async (req, res) => {
+  try { await GarcomDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Verifica PIN do garçom no login (não expõe lista de PINs)
+app.post("/garcons/verificar-pin", async (req, res) => {
+  const { pin } = req.body;
+  if (!pin) return res.status(400).json({ erro: "pin obrigatório" });
+  try {
+    const g = await GarcomDB.findOne({ pin, ativo: true }).lean();
+    if (!g) return res.status(404).json({ erro: "PIN não encontrado ou garçom inativo" });
+    res.json({ nome: g.nome, id: g._id });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Relatório de desempenho por garçom
+app.get("/garcons/relatorio", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = {};
+    if (de) filtro.fechamento = { $gte: new Date(de) };
+    if (ate) filtro.fechamento = { ...(filtro.fechamento || {}), $lte: new Date(ate) };
+
+    const vendas = await VendaSalaoDB.find(filtro).lean();
+    const porGarcom = {};
+
+    vendas.forEach(v => {
+      const nome = v.garcom && v.garcom !== "—" ? v.garcom : null;
+      if (!nome) return;
+      if (!porGarcom[nome]) porGarcom[nome] = { nome, vendas: 0, total: 0, mesas: new Set(), itens: {} };
+      porGarcom[nome].vendas += 1;
+      porGarcom[nome].total += v.total || 0;
+      porGarcom[nome].mesas.add(v.mesa);
+      (v.itens || []).forEach(it => {
+        porGarcom[nome].itens[it.nome] = (porGarcom[nome].itens[it.nome] || 0) + (it.qty || 1);
+      });
+    });
+
+    const resultado = Object.values(porGarcom).map(g => ({
+      nome: g.nome,
+      vendas: g.vendas,
+      total: parseFloat(g.total.toFixed(2)),
+      mesas: g.mesas.size,
+      ticketMedio: g.vendas > 0 ? parseFloat((g.total / g.vendas).toFixed(2)) : 0,
+      itemMaisVendido: Object.entries(g.itens).sort((a,b)=>b[1]-a[1])[0]?.[0] || "—",
+    })).sort((a,b) => b.total - a.total);
+
+    res.json(resultado);
+  } catch (e) { res.json([]); }
+});
+
+// ── FECHAMENTO DO DIA API ─────────────────────────────────────
+app.post("/fechamento-dia", async (req, res) => {
+  try {
+    const { obs, criadoPor } = req.body;
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    const amanha = new Date(hoje); amanha.setDate(amanha.getDate() + 1);
+    const dataStr = hoje.toISOString().slice(0, 10);
+
+    // Verifica se já foi feito fechamento hoje
+    const jaFez = await FechamentoDB.findOne({ dataStr });
+    if (jaFez) return res.status(400).json({ erro: "Fechamento do dia já realizado hoje.", fechamento: jaFez });
+
+    // Pedidos delivery entregues hoje
+    const pedidosHoje = await PedidoDB.find({ status: "entregue", horario: { $gte: hoje, $lt: amanha } }).lean();
+    const totalDelivery = pedidosHoje.reduce((s, p) => s + (p.total || 0), 0);
+
+    // Vendas salão hoje
+    const vendasHoje = await VendaSalaoDB.find({ fechamento: { $gte: hoje, $lt: amanha } }).lean();
+    const totalSalao = vendasHoje.reduce((s, v) => s + (v.total || 0), 0);
+
+    // Por forma de pagamento
+    const porPagamento = { pix: 0, cartao: 0, dinheiro: 0 };
+    vendasHoje.forEach(v => {
+      const pag = v.pagamento || "dinheiro";
+      porPagamento[pag] = (porPagamento[pag] || 0) + (v.total || 0);
+    });
+
+    // Por garçom
+    const gMap = {};
+    vendasHoje.forEach(v => {
+      const g = v.garcom && v.garcom !== "—" ? v.garcom : "Sem garçom";
+      if (!gMap[g]) gMap[g] = { nome: g, vendas: 0, total: 0 };
+      gMap[g].vendas += 1;
+      gMap[g].total += v.total || 0;
+    });
+    const porGarcom = Object.values(gMap).sort((a, b) => b.total - a.total);
+
+    const fechamento = await FechamentoDB.create({
+      data: new Date(), dataStr,
+      totalDelivery: parseFloat(totalDelivery.toFixed(2)),
+      totalSalao: parseFloat(totalSalao.toFixed(2)),
+      totalGeral: parseFloat((totalDelivery + totalSalao).toFixed(2)),
+      pedidosDelivery: pedidosHoje.length,
+      vendasSalao: vendasHoje.length,
+      porPagamento: {
+        pix: parseFloat(porPagamento.pix.toFixed(2)),
+        cartao: parseFloat(porPagamento.cartao.toFixed(2)),
+        dinheiro: parseFloat(porPagamento.dinheiro.toFixed(2)),
+      },
+      porGarcom,
+      obs: obs || "",
+      criadoPor: criadoPor || "admin",
+    });
+
+    res.status(201).json(fechamento);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+app.get("/fechamento-dia", async (req, res) => {
+  try {
+    const lista = await FechamentoDB.find().sort({ data: -1 }).limit(90).lean();
+    res.json(lista);
+  } catch { res.json([]); }
+});
+
+app.get("/fechamento-dia/:dataStr", async (req, res) => {
+  try {
+    const f = await FechamentoDB.findOne({ dataStr: req.params.dataStr }).lean();
+    if (!f) return res.status(404).json({ erro: "Fechamento não encontrado" });
+    res.json(f);
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── RESET (apagar dados de teste) ────────────────────────────
+app.post("/reset/dados-teste", async (req, res) => {
+  const { confirmar } = req.body;
+  if (confirmar !== "CONFIRMAR_RESET") return res.status(400).json({ erro: "Confirmação incorreta" });
+  try {
+    const [pedidos, vendas, avaliacoes, fidelidade, fechamentos, movEstoque] = await Promise.all([
+      PedidoDB.deleteMany({}),
+      VendaSalaoDB.deleteMany({}),
+      AvaliacaoDB.deleteMany({}),
+      FidelidadeDB.deleteMany({}),
+      FechamentoDB.deleteMany({}),
+      MovEstoqueDB.deleteMany({}),
+    ]);
+    // Zera quantidades do estoque mas mantém o cadastro
+    await EstoqueDB.updateMany({}, { quantidade: 0, alertaEnviado: false });
+    res.json({
+      ok: true,
+      apagados: {
+        pedidos: pedidos.deletedCount,
+        vendasSalao: vendas.deletedCount,
+        avaliacoes: avaliacoes.deletedCount,
+        fidelidade: fidelidade.deletedCount,
+        fechamentos: fechamentos.deletedCount,
+        movimentacoesEstoque: movEstoque.deletedCount,
+      },
+      mantidos: "cardápio, configurações, garçons, cupons e cadastro do estoque",
+    });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── HEALTH ────────────────────────────────────────────────────
+app.get("/health", (req, res) => res.json({
+  status: "ok", versao: "5.1",
+  whatsapp: whatsappStatus,
+  mongodb: mongoose.connection.readyState === 1 ? "conectado" : "memória",
+  aberto: estaAberto(),
+  pedidos: pedidos.length,
+  avaliacoes: avaliacoes.length,
+  cupons: cupons.filter(c => c.ativo).length,
+  uptime: Math.floor(process.uptime()) + "s",
+}));
+
+// ── START ─────────────────────────────────────────────────────
+app.listen(ENV.PORT, async () => {
+  console.log(`
+  ╔══════════════════════════════════════════════════╗
+  ║   👑 Império dos Espetos — Backend v5            ║
+  ║   Porta: ${ENV.PORT}  — WhatsApp via Baileys          ║
+  ║                                                  ║
+  ║   GET /qrcode    → escanear QR Code              ║
+  ║   GET /health    → status geral                  ║
+  ╚══════════════════════════════════════════════════╝
+  `);
+  await conectarMongo();
+  await conectarWhatsApp();
+});
