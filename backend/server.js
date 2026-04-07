@@ -944,6 +944,81 @@ app.get("/estoque/:id/movimentacoes", async (req, res) => {
   } catch { res.json([]); }
 });
 
+// ── LUCRO API ─────────────────────────────────────────────────
+// Calcula lucro cruzando vendas com custo cadastrado no estoque
+app.get("/relatorio/lucro", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = {};
+    if (de) filtro.fechamento = { $gte: new Date(de) };
+    if (ate) filtro.fechamento = { ...(filtro.fechamento||{}), $lte: new Date(ate) };
+
+    const [vendas, estoques] = await Promise.all([
+      VendaSalaoDB.find(filtro).lean(),
+      EstoqueDB.find({ ativo: true }).lean(),
+    ]);
+
+    // Mapeia nome do item → custo por unidade vendida
+    const custoMap = {};
+    estoques.forEach(e => {
+      (e.cardapioNomes||[]).forEach(nome => {
+        custoMap[nome.toLowerCase()] = {
+          custo: (e.custoPorUnidade||0) * (e.consumoPorVenda||1),
+          estoqueNome: e.nome,
+        };
+      });
+    });
+
+    let faturamento = 0, custoTotal = 0, semCusto = [];
+    const porDia = {}; // "YYYY-MM-DD" → { faturamento, custo, lucro }
+    const porItem = {}; // nome → { qty, faturamento, custo, lucro }
+
+    vendas.forEach(v => {
+      const dia = new Date(v.fechamento).toISOString().slice(0,10);
+      if (!porDia[dia]) porDia[dia] = { faturamento:0, custo:0, lucro:0 };
+
+      (v.itens||[]).forEach(it => {
+        const qty = it.qty || 1;
+        const receita = it.preco * qty;
+        const custoInfo = custoMap[it.nome?.toLowerCase()];
+        const custo = custoInfo ? custoInfo.custo * qty : 0;
+        const lucro = receita - custo;
+
+        faturamento += receita;
+        custoTotal += custo;
+        porDia[dia].faturamento += receita;
+        porDia[dia].custo += custo;
+        porDia[dia].lucro += lucro;
+
+        if (!custoInfo && !semCusto.includes(it.nome)) semCusto.push(it.nome);
+
+        if (!porItem[it.nome]) porItem[it.nome] = { nome:it.nome, qty:0, faturamento:0, custo:0, lucro:0, temCusto:!!custoInfo };
+        porItem[it.nome].qty += qty;
+        porItem[it.nome].faturamento += receita;
+        porItem[it.nome].custo += custo;
+        porItem[it.nome].lucro += lucro;
+      });
+    });
+
+    const lucroTotal = faturamento - custoTotal;
+    const margem = faturamento > 0 ? (lucroTotal / faturamento) * 100 : 0;
+
+    res.json({
+      faturamento: parseFloat(faturamento.toFixed(2)),
+      custoTotal:  parseFloat(custoTotal.toFixed(2)),
+      lucroTotal:  parseFloat(lucroTotal.toFixed(2)),
+      margem:      parseFloat(margem.toFixed(1)),
+      porDia: Object.entries(porDia)
+        .map(([dia, d]) => ({ dia, ...d, lucro: parseFloat(d.lucro.toFixed(2)), faturamento: parseFloat(d.faturamento.toFixed(2)), custo: parseFloat(d.custo.toFixed(2)) }))
+        .sort((a,b) => a.dia.localeCompare(b.dia)),
+      porItem: Object.values(porItem)
+        .map(i => ({ ...i, faturamento:parseFloat(i.faturamento.toFixed(2)), custo:parseFloat(i.custo.toFixed(2)), lucro:parseFloat(i.lucro.toFixed(2)) }))
+        .sort((a,b) => b.lucro - a.lucro),
+      semCusto,
+    });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
 // ── GARÇONS API ───────────────────────────────────────────────
 app.get("/garcons", async (req, res) => {
   try {
