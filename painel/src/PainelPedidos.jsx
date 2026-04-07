@@ -2046,6 +2046,8 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
   const [zerarAberto, setZerarAberto] = useState(false);
   const [relGarcons, setRelGarcons] = useState([]);
   const [loadingGarcons, setLoadingGarcons] = useState(false);
+  const [relLucro, setRelLucro] = useState(null);
+  const [loadingLucro, setLoadingLucro] = useState(false);
 
   async function carregarRelGarcons() {
     setLoadingGarcons(true);
@@ -2056,9 +2058,22 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
     setLoadingGarcons(false);
   }
 
+  async function carregarLucro() {
+    setLoadingLucro(true);
+    try {
+      const hoje = new Date();
+      const dias = { hoje: 0, semana: 6, mes: 29 }[periodo];
+      const de = new Date(hoje); de.setDate(de.getDate() - dias); de.setHours(0,0,0,0);
+      const res = await fetch(`${BACKEND_URL}/relatorio/lucro?de=${de.toISOString()}&ate=${hoje.toISOString()}`);
+      if (res.ok) setRelLucro(await res.json());
+    } catch {}
+    setLoadingLucro(false);
+  }
+
   useEffect(() => {
     if (subAba === "garcons") carregarRelGarcons();
-  }, [subAba]);
+    if (subAba === "lucro") carregarLucro();
+  }, [subAba, periodo]);
 
   const entregues = pedidos.filter(p => p.status === "entregue");
   const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
@@ -2130,7 +2145,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["geral","📊 Geral"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["geral","📊 Geral"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
@@ -2404,11 +2419,98 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
         </div>
       )}
 
+      {subAba === "lucro" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>💰 Análise de Lucro</div>
+            <button onClick={carregarLucro} disabled={loadingLucro} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#555" }}>
+              {loadingLucro ? "⏳" : "↻ Atualizar"}
+            </button>
+          </div>
+
+          {!relLucro || loadingLucro ? (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "#ccc" }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>💰</div>
+              <div>{loadingLucro ? "Calculando..." : "Clique em Atualizar para carregar."}</div>
+            </div>
+          ) : (
+            <>
+              {/* Cards principais */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <Metrica icon="💰" label="Faturamento" valor={"R$ " + relLucro.faturamento.toFixed(2)} cor="#3b82f6" />
+                <Metrica icon="📦" label="Custo total" valor={"R$ " + relLucro.custoTotal.toFixed(2)} cor="#f59e0b" />
+                <Metrica icon="✅" label="Lucro líquido" valor={"R$ " + relLucro.lucroTotal.toFixed(2)} cor={relLucro.lucroTotal >= 0 ? "#10b981" : "#ef4444"} />
+                <Metrica icon="📊" label="Margem" valor={relLucro.margem.toFixed(1) + "%"} cor={relLucro.margem >= 40 ? "#10b981" : relLucro.margem >= 20 ? "#f59e0b" : "#ef4444"} />
+              </div>
+
+              {/* Aviso de itens sem custo cadastrado */}
+              {relLucro.semCusto?.length > 0 && (
+                <div style={{ background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 12, padding: "10px 14px" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e", marginBottom: 4 }}>⚠️ Itens sem custo cadastrado (não incluídos no cálculo)</div>
+                  <div style={{ fontSize: 11, color: "#92400e" }}>{relLucro.semCusto.join(", ")}</div>
+                  <div style={{ fontSize: 10, color: "#b45309", marginTop: 4 }}>Cadastre o custo desses itens no Estoque para um cálculo mais preciso.</div>
+                </div>
+              )}
+
+              {/* Lucro por dia */}
+              {relLucro.porDia?.length > 0 && (
+                <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📅 Lucro por dia</div>
+                  {[...relLucro.porDia].reverse().map((d, i) => {
+                    const margem = d.faturamento > 0 ? (d.lucro / d.faturamento) * 100 : 0;
+                    const corLucro = d.lucro >= 0 ? "#10b981" : "#ef4444";
+                    const dataFmt = new Date(d.dia+"T12:00:00").toLocaleDateString("pt-BR", { weekday:"short", day:"2-digit", month:"2-digit" });
+                    return (
+                      <div key={d.dia} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px dashed #f0f0f0" }}>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>{dataFmt}</div>
+                          <div style={{ fontSize: 11, color: "#888" }}>Fat: R$ {d.faturamento.toFixed(2)} · Custo: R$ {d.custo.toFixed(2)}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontWeight: 800, fontSize: 14, color: corLucro }}>R$ {d.lucro.toFixed(2)}</div>
+                          <div style={{ fontSize: 10, color: "#888" }}>{margem.toFixed(1)}% margem</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Ranking de lucro por item */}
+              {relLucro.porItem?.length > 0 && (
+                <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>🏆 Lucro por item</div>
+                  {relLucro.porItem.slice(0,10).map((it, i) => {
+                    const margem = it.faturamento > 0 ? (it.lucro / it.faturamento) * 100 : 0;
+                    const maxLucro = relLucro.porItem[0]?.lucro || 1;
+                    return (
+                      <div key={it.nome} style={{ marginBottom: 12 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                          <span style={{ fontWeight: i < 3 ? 700 : 400, color: "#333" }}>
+                            {["🥇","🥈","🥉"][i] || `${i+1}.`} {it.nome}
+                            {!it.temCusto && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: 4 }}>⚠️ sem custo</span>}
+                          </span>
+                          <div style={{ textAlign: "right" }}>
+                            <span style={{ fontWeight: 700, color: it.lucro >= 0 ? "#10b981" : "#ef4444" }}>R$ {it.lucro.toFixed(2)}</span>
+                            <span style={{ fontSize: 10, color: "#aaa", marginLeft: 6 }}>{it.qty}x · {margem.toFixed(0)}%</span>
+                          </div>
+                        </div>
+                        <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}>
+                          <div style={{ height: "100%", width: Math.max(0, (it.lucro / maxLucro) * 100) + "%", background: i === 0 ? "linear-gradient(90deg,#10b981,#059669)" : "linear-gradient(90deg,#3b82f6,#1d4ed8)", borderRadius: 3 }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
     </div>
   );
 }
-
-// ── ABA CLIENTES ──────────────────────────────────────────────
 function Clientes({ pedidos }) {
   const [busca, setBusca] = useState(""); const [sel, setSel] = useState(null); const [ord, setOrd] = useState("gasto");
   const cm = {}; pedidos.forEach(p => { if (!cm[p.telefone]) cm[p.telefone] = { nome: p.cliente, telefone: p.telefone, pedidos: [] }; cm[p.telefone].pedidos.push(p); });
