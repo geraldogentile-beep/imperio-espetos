@@ -810,29 +810,30 @@ function GarcomManager({ garcons, onReload }) {
 }
 
 // ── FORMADOR DE PREÇO ─────────────────────────────────────────
-function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange }) {
-  const c = parseFloat(custo) || 0;
-  const m = parseFloat(margem) || 0;
-  const pv = parseFloat(precoVenda) || 0;
+function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, cardapioNomes = [], cardapio = [], backendUrl = "" }) {
+  const [modoPreco, setModoPreco] = useState("sugerido"); // "sugerido" | "manual"
+  const [precoManual, setPrecoManual] = useState("");
+  const [aplicando, setAplicando] = useState(false);
+  const [aplicadoMsg, setAplicadoMsg] = useState(null);
+
+  const c   = parseFloat(custo) || 0;
+  const m   = parseFloat(margem) || 0;
+  const pv  = parseFloat(precoVenda) || 0;
   const cpv = parseFloat(consumoPorVenda) || 1;
 
-  // Custo por venda = custo unitário × consumo por venda
-  const custoVenda = c * cpv;
-  // Preço sugerido baseado na margem desejada
+  const custoVenda    = c * cpv;
   const precoSugerido = custoVenda > 0 && m > 0 ? custoVenda / (1 - m / 100) : 0;
-  // Margem real com o preço atual do cardápio
-  const margemReal = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / pv) * 100 : null;
-  // Lucro por venda
+  const precoFinal    = modoPreco === "manual" ? (parseFloat(precoManual) || 0) : precoSugerido;
+  const margemReal    = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / pv) * 100 : null;
+  const margemFinal   = precoFinal > 0 && custoVenda > 0 ? ((precoFinal - custoVenda) / precoFinal) * 100 : null;
   const lucroPorVenda = pv > 0 ? pv - custoVenda : 0;
 
-  // Semáforo
   let status = null;
   if (margemReal !== null && m > 0) {
-    if (margemReal >= m)        status = "ok";
-    else if (margemReal >= m * 0.8) status = "atencao";
-    else                        status = "alerta";
+    if (margemReal >= m)             status = "ok";
+    else if (margemReal >= m * 0.8)  status = "atencao";
+    else                             status = "alerta";
   }
-
   const corStatus = { ok:"#10b981", atencao:"#f59e0b", alerta:"#ef4444" };
   const bgStatus  = { ok:"#d1fae5", atencao:"#fef3c7", alerta:"#fee2e2" };
   const txtStatus = { ok:"#065f46", atencao:"#92400e", alerta:"#991b1b" };
@@ -843,29 +844,54 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange })
     alerta:  `Margem real ${margemReal?.toFixed(1)}% — abaixo da meta de ${m}%!`,
   };
 
+  // Aplica preço ao cardápio via API
+  async function aplicarAoCardapio() {
+    if (!precoFinal || precoFinal <= 0) return;
+    const nomes = Array.isArray(cardapioNomes)
+      ? cardapioNomes
+      : (cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);
+    if (!nomes.length || !backendUrl) return;
+    setAplicando(true);
+    try {
+      let sucessos = 0;
+      for (const nome of nomes) {
+        const item = cardapio.find(i=>i.nome===nome);
+        if (!item) continue;
+        const r = await fetch(`${backendUrl}/cardapio/${item.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...item, preco: parseFloat(precoFinal.toFixed(2)) }),
+        });
+        if (r.ok) { sucessos++; onChange("precoVendaAtual", String(precoFinal.toFixed(2))); }
+      }
+      setAplicadoMsg(sucessos > 0
+        ? { tipo:"ok", txt:`✅ Preço R$ ${precoFinal.toFixed(2)} aplicado ao cardápio!` }
+        : { tipo:"erro", txt:"❌ Nenhum item do cardápio atualizado." }
+      );
+    } catch { setAplicadoMsg({ tipo:"erro", txt:"❌ Erro ao atualizar cardápio." }); }
+    setTimeout(()=>setAplicadoMsg(null), 4000);
+    setAplicando(false);
+  }
+
   const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
 
   return (
     <div style={{background:"#f8f7f5",borderRadius:12,padding:14,display:"flex",flexDirection:"column",gap:10}}>
-      <div style={{fontSize:12,fontWeight:700,color:"#555",display:"flex",alignItems:"center",gap:6}}>
-        💰 Formador de Preço
-      </div>
+      <div style={{fontSize:12,fontWeight:700,color:"#555"}}>💰 Formador de Preço</div>
 
+      {/* Entradas */}
       <div style={{display:"flex",gap:8}}>
         <div style={{flex:1}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo de compra ({`R$/un`})</div>
-          <input type="number" step="0.01" value={custo} onChange={e=>onChange("custoPorUnidade", e.target.value)}
-            placeholder="Ex: 3.50" style={inp}/>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo de compra (R$/un)</div>
+          <input type="number" step="0.01" value={custo} onChange={e=>onChange("custoPorUnidade", e.target.value)} placeholder="Ex: 3.50" style={inp}/>
         </div>
         <div style={{flex:1}}>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem desejada (%)</div>
-          <input type="number" step="1" min="0" max="100" value={margem} onChange={e=>onChange("margemDesejada", e.target.value)}
-            placeholder="Ex: 60" style={inp}/>
+          <input type="number" step="1" min="0" max="100" value={margem} onChange={e=>onChange("margemDesejada", e.target.value)} placeholder="Ex: 60" style={inp}/>
         </div>
         <div style={{flex:1}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço de venda (R$)</div>
-          <input type="number" step="0.50" value={precoVenda} onChange={e=>onChange("precoVendaAtual", e.target.value)}
-            placeholder="Do cardápio" style={{...inp, background: pv>0?"#fff":"#f0f0f0"}}/>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual (R$)</div>
+          <input type="number" step="0.50" value={precoVenda} onChange={e=>onChange("precoVendaAtual", e.target.value)} placeholder="Do cardápio" style={{...inp,background:pv>0?"#fff":"#f0f0f0"}}/>
         </div>
       </div>
 
@@ -895,14 +921,59 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange })
       {status && (
         <div style={{background:bgStatus[status],border:`1.5px solid ${corStatus[status]}`,borderRadius:8,padding:"8px 12px",display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:16}}>{icnStatus[status]}</span>
-          <div>
+          <div style={{flex:1}}>
             <div style={{fontWeight:700,fontSize:12,color:txtStatus[status]}}>{msgStatus[status]}</div>
             {status==="alerta"&&precoSugerido>0&&(
               <div style={{fontSize:11,color:txtStatus[status],marginTop:2}}>
-                Ajuste o preço para pelo menos <strong>R$ {precoSugerido.toFixed(2)}</strong> para atingir a meta.
+                Preço mínimo para atingir a meta: <strong>R$ {precoSugerido.toFixed(2)}</strong>
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Aplicar ao cardápio */}
+      {c > 0 && backendUrl && (
+        <div style={{background:"#fff",borderRadius:10,padding:12,border:"1.5px solid #e0e0e0"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#333",marginBottom:10}}>📤 Aplicar preço ao cardápio</div>
+
+          {/* Modo de preço */}
+          <div style={{display:"flex",gap:6,marginBottom:10}}>
+            <button onClick={()=>setModoPreco("sugerido")} style={{flex:1,padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:modoPreco==="sugerido"?700:500,background:modoPreco==="sugerido"?"#7b1a0a":"#f0f0f0",color:modoPreco==="sugerido"?"#fff":"#666"}}>
+              🧮 Usar sugerido {precoSugerido>0?`(R$ ${precoSugerido.toFixed(2)})`:""}
+            </button>
+            <button onClick={()=>setModoPreco("manual")} style={{flex:1,padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:modoPreco==="manual"?700:500,background:modoPreco==="manual"?"#7b1a0a":"#f0f0f0",color:modoPreco==="manual"?"#fff":"#666"}}>
+              ✏️ Digitar manualmente
+            </button>
+          </div>
+
+          {/* Campo manual */}
+          {modoPreco==="manual"&&(
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço a aplicar (R$)</div>
+              <input type="number" step="0.50" value={precoManual} onChange={e=>setPrecoManual(e.target.value)} placeholder="Ex: 10.00" style={inp}/>
+              {margemFinal!==null&&precoManual&&(
+                <div style={{fontSize:11,color:margemFinal>=m?"#10b981":margemFinal>=m*0.8?"#f59e0b":"#ef4444",marginTop:4,fontWeight:600}}>
+                  → Margem resultante: {margemFinal.toFixed(1)}% {margemFinal>=m?"✅":"⚠️"}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Botão aplicar */}
+          <button
+            onClick={aplicarAoCardapio}
+            disabled={aplicando||precoFinal<=0}
+            style={{width:"100%",background:precoFinal>0?"linear-gradient(135deg,#7b1a0a,#c0392b)":"#ccc",color:"#fff",border:"none",borderRadius:9,padding:"10px 0",fontWeight:700,fontSize:13,cursor:precoFinal>0?"pointer":"not-allowed"}}
+          >
+            {aplicando?"⏳ Atualizando...":`📤 Aplicar R$ ${precoFinal>0?precoFinal.toFixed(2):"—"} ao cardápio`}
+          </button>
+
+          {aplicadoMsg&&(
+            <div style={{marginTop:8,padding:"8px 10px",borderRadius:8,background:aplicadoMsg.tipo==="ok"?"#d1fae5":"#fee2e2",color:aplicadoMsg.tipo==="ok"?"#065f46":"#991b1b",fontSize:12,fontWeight:600}}>
+              {aplicadoMsg.txt}
+            </div>
+          )}
         </div>
       )}
 
@@ -1131,6 +1202,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
               margem={editando.margemDesejada||""}
               precoVenda={editando.precoVendaAtual||""}
               consumoPorVenda={editando.consumoPorVenda||1}
+              cardapioNomes={editando.cardapioNomes||[]}
+              cardapio={cardapio}
+              backendUrl={backendUrl}
               onChange={(campo,val)=>setEditando(p=>({...p,[campo]:val}))}
             />
             <div style={{display:"flex",gap:8}}>
@@ -1178,14 +1252,20 @@ function Estoque({ backendUrl, cardapio = [] }) {
               </div>
             )}
 
-            {/* Formador de preço — somente visualização no detalhe */}
+            {/* Formador de preço */}
             {(it.custoPorUnidade>0||it.margemDesejada>0)&&(
               <FormadorPreco
                 custo={it.custoPorUnidade||0}
                 margem={it.margemDesejada||0}
                 precoVenda={it.precoVendaAtual||0}
                 consumoPorVenda={it.consumoPorVenda||1}
-                onChange={()=>{}}
+                cardapioNomes={it.cardapioNomes||[]}
+                cardapio={cardapio}
+                backendUrl={backendUrl}
+                onChange={async (campo,val)=>{
+                  await fetch(backendUrl+`/estoque/${it._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({[campo]:parseFloat(val)||0})});
+                  carregar();
+                }}
               />
             )}
 
@@ -1365,6 +1445,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
               margem={novo.margemDesejada}
               precoVenda={novo.precoVendaAtual}
               consumoPorVenda={novo.consumoPorVenda}
+              cardapioNomes={novo.cardapioNomes}
+              cardapio={cardapio}
+              backendUrl={backendUrl}
               onChange={(campo, val)=>setNovo(p=>({...p,[campo]:val}))}
             />
             <div style={{display:"flex",gap:8}}>
