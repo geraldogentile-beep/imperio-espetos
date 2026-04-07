@@ -903,6 +903,27 @@ app.get("/estoque/:id/movimentacoes", async (req, res) => {
   } catch { res.json([]); }
 });
 
+app.delete("/estoque/movimentacoes/:movId", async (req, res) => {
+  try {
+    const mov = await MovEstoqueDB.findById(req.params.movId).lean();
+    if (!mov) return res.status(404).json({ erro: "Movimentação não encontrada" });
+    // Estorna a quantidade no estoque
+    // entrada → subtrai; saida → soma; ajuste → inverte
+    const estorno = mov.tipo === "entrada" ? -mov.quantidade
+                  : mov.tipo === "saida"   ?  Math.abs(mov.quantidade)
+                  : -mov.quantidade; // ajuste: inverte o diff
+    const est = await EstoqueDB.findById(mov.estoqueId);
+    if (est) {
+      await EstoqueDB.findByIdAndUpdate(est._id, {
+        quantidade: Math.max(0, est.quantidade + estorno),
+        alertaEnviado: false,
+      });
+    }
+    await MovEstoqueDB.findByIdAndDelete(req.params.movId);
+    res.json({ ok: true, estorno });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
 // Relatório geral de consumo
 app.get("/estoque/relatorio/consumo", async (req, res) => {
   try {
