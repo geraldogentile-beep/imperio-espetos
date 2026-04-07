@@ -816,14 +816,24 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const [aplicando, setAplicando] = useState(false);
   const [aplicadoMsg, setAplicadoMsg] = useState(null);
 
-  const c   = parseFloat(custo) || 0;
+  // Converte string digitada (aceita vírgula como decimal) para número
+  function parseMoeda(str) {
+    return parseFloat(String(str||0).replace(/\./g,"").replace(",",".")) || 0;
+  }
+  // Handler para campos de moeda — permite dígitos, vírgula e ponto
+  function handleMoeda(campo, val) {
+    const limpo = val.replace(/[^\d,\.]/g,"");
+    onChange(campo, limpo);
+  }
+
+  const c   = parseMoeda(custo);
   const m   = parseFloat(margem) || 0;
-  const pv  = parseFloat(precoVenda) || 0;
+  const pv  = parseMoeda(precoVenda);
   const cpv = parseFloat(consumoPorVenda) || 1;
 
   const custoVenda    = c * cpv;
   const precoSugerido = custoVenda > 0 && m > 0 ? custoVenda / (1 - m / 100) : 0;
-  const precoFinal    = modoPreco === "manual" ? (parseFloat(precoManual) || 0) : precoSugerido;
+  const precoFinal    = modoPreco === "manual" ? parseMoeda(precoManual) : precoSugerido;
   const margemReal    = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / pv) * 100 : null;
   const margemFinal   = precoFinal > 0 && custoVenda > 0 ? ((precoFinal - custoVenda) / precoFinal) * 100 : null;
   const lucroPorVenda = pv > 0 ? pv - custoVenda : 0;
@@ -873,7 +883,26 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
     setAplicando(false);
   }
 
-  const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
+  const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:"0 8px 8px 0", fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
+  const prefixo = (label) => (
+    <div style={{display:"flex", border:"1.5px solid #e0e0e0", borderRadius:8, overflow:"hidden", background:"#fff"}}>
+      <div style={{padding:"8px 8px", background:"#f0f0f0", fontSize:12, fontWeight:600, color:"#888", whiteSpace:"nowrap", display:"flex", alignItems:"center", borderRight:"1px solid #e0e0e0"}}>{label}</div>
+    </div>
+  );
+  function CampoMoeda({ label, prefixLabel, value, onChange: onCh, placeholder, readOnly }) {
+    return (
+      <div style={{display:"flex", border:"1.5px solid #e0e0e0", borderRadius:8, overflow:"hidden", background:readOnly?"#f8f7f5":"#fff"}}>
+        <div style={{padding:"8px 8px", background:"#f0f0f0", fontSize:12, fontWeight:700, color:"#555", display:"flex", alignItems:"center", borderRight:"1px solid #e0e0e0", whiteSpace:"nowrap"}}>{prefixLabel}</div>
+        <input
+          type="text" inputMode="decimal"
+          value={value} onChange={e=>onCh(e.target.value)}
+          placeholder={placeholder||"0,00"}
+          readOnly={readOnly}
+          style={{flex:1, padding:"8px 10px", border:"none", fontSize:13, color:"#333", outline:"none", background:"transparent", width:"100%"}}
+        />
+      </div>
+    );
+  }
 
   return (
     <div style={{background:"#f8f7f5",borderRadius:12,padding:14,display:"flex",flexDirection:"column",gap:10}}>
@@ -882,16 +911,19 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
       {/* Entradas */}
       <div style={{display:"flex",gap:8}}>
         <div style={{flex:1}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo de compra (R$/un)</div>
-          <input type="number" step="0.01" value={custo} onChange={e=>onChange("custoPorUnidade", e.target.value)} placeholder="Ex: 3.50" style={inp}/>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo de compra</div>
+          <CampoMoeda prefixLabel="R$" value={custo} onCh={v=>handleMoeda("custoPorUnidade",v)} placeholder="Ex: 3,50"/>
         </div>
         <div style={{flex:1}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem desejada (%)</div>
-          <input type="number" step="1" min="0" max="100" value={margem} onChange={e=>onChange("margemDesejada", e.target.value)} placeholder="Ex: 60" style={inp}/>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem desejada</div>
+          <div style={{display:"flex",border:"1.5px solid #e0e0e0",borderRadius:8,overflow:"hidden",background:"#fff"}}>
+            <input type="text" inputMode="numeric" value={margem} onChange={e=>onChange("margemDesejada",e.target.value.replace(/\D/g,""))} placeholder="60" style={{flex:1,padding:"8px 10px",border:"none",fontSize:13,color:"#333",outline:"none"}}/>
+            <div style={{padding:"8px 8px",background:"#f0f0f0",fontSize:12,fontWeight:700,color:"#555",display:"flex",alignItems:"center",borderLeft:"1px solid #e0e0e0"}}>%</div>
+          </div>
         </div>
         <div style={{flex:1}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual (R$)</div>
-          <input type="number" step="0.50" value={precoVenda} onChange={e=>onChange("precoVendaAtual", e.target.value)} placeholder="Do cardápio" style={{...inp,background:pv>0?"#fff":"#f0f0f0"}}/>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual</div>
+          <CampoMoeda prefixLabel="R$" value={precoVenda} onCh={v=>handleMoeda("precoVendaAtual",v)} placeholder="Do cardápio"/>
         </div>
       </div>
 
@@ -950,8 +982,11 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
           {/* Campo manual */}
           {modoPreco==="manual"&&(
             <div style={{marginBottom:10}}>
-              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço a aplicar (R$)</div>
-              <input type="number" step="0.50" value={precoManual} onChange={e=>setPrecoManual(e.target.value)} placeholder="Ex: 10.00" style={inp}/>
+              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço a aplicar</div>
+              <div style={{display:"flex",border:"1.5px solid #e0e0e0",borderRadius:8,overflow:"hidden",background:"#fff"}}>
+                <div style={{padding:"8px 8px",background:"#f0f0f0",fontSize:12,fontWeight:700,color:"#555",display:"flex",alignItems:"center",borderRight:"1px solid #e0e0e0"}}>R$</div>
+                <input type="text" inputMode="decimal" value={precoManual} onChange={e=>setPrecoManual(e.target.value.replace(/[^\d,\.]/g,""))} placeholder="Ex: 10,00" style={{flex:1,padding:"8px 10px",border:"none",fontSize:13,color:"#333",outline:"none"}}/>
+              </div>
               {margemFinal!==null&&precoManual&&(
                 <div style={{fontSize:11,color:margemFinal>=m?"#10b981":margemFinal>=m*0.8?"#f59e0b":"#ef4444",marginTop:4,fontWeight:600}}>
                   → Margem resultante: {margemFinal.toFixed(1)}% {margemFinal>=m?"✅":"⚠️"}
