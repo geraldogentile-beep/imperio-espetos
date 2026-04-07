@@ -837,6 +837,47 @@ app.post("/estoque", async (req, res) => {
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
+// Excluir movimentação (deve vir ANTES das rotas com :id para não conflitar)
+app.delete("/estoque/movimentacoes/:movId", async (req, res) => {
+  try {
+    const mov = await MovEstoqueDB.findById(req.params.movId).lean();
+    if (!mov) return res.status(404).json({ erro: "Movimentação não encontrada" });
+    const estorno = mov.tipo === "entrada" ? -mov.quantidade
+                  : mov.tipo === "saida"   ?  Math.abs(mov.quantidade)
+                  : -mov.quantidade;
+    const est = await EstoqueDB.findById(mov.estoqueId);
+    if (est) {
+      await EstoqueDB.findByIdAndUpdate(est._id, {
+        quantidade: Math.max(0, est.quantidade + estorno),
+        alertaEnviado: false,
+      });
+    }
+    await MovEstoqueDB.findByIdAndDelete(req.params.movId);
+    res.json({ ok: true, estorno });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// Relatório geral de consumo (deve vir ANTES de :id para não conflitar)
+app.get("/estoque/relatorio/consumo", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const filtro = { tipo: "saida" };
+    if (de || ate) {
+      filtro.horario = {};
+      if (de) filtro.horario.$gte = new Date(de);
+      if (ate) filtro.horario.$lte = new Date(ate);
+    }
+    const movs = await MovEstoqueDB.find(filtro).sort({ horario: -1 }).lean();
+    const porItem = {};
+    movs.forEach(m => {
+      if (!porItem[m.estoqueNome]) porItem[m.estoqueNome] = { nome: m.estoqueNome, total: 0, movs: 0 };
+      porItem[m.estoqueNome].total += Math.abs(m.quantidade);
+      porItem[m.estoqueNome].movs += 1;
+    });
+    res.json(Object.values(porItem).sort((a, b) => b.total - a.total));
+  } catch { res.json([]); }
+});
+
 app.put("/estoque/:id", async (req, res) => {
   try {
     const item = await EstoqueDB.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean();
@@ -900,49 +941,6 @@ app.get("/estoque/:id/movimentacoes", async (req, res) => {
     const lista = await MovEstoqueDB.find({ estoqueId: req.params.id })
       .sort({ horario: -1 }).limit(100).lean();
     res.json(lista);
-  } catch { res.json([]); }
-});
-
-app.delete("/estoque/movimentacoes/:movId", async (req, res) => {
-  try {
-    const mov = await MovEstoqueDB.findById(req.params.movId).lean();
-    if (!mov) return res.status(404).json({ erro: "Movimentação não encontrada" });
-    // Estorna a quantidade no estoque
-    // entrada → subtrai; saida → soma; ajuste → inverte
-    const estorno = mov.tipo === "entrada" ? -mov.quantidade
-                  : mov.tipo === "saida"   ?  Math.abs(mov.quantidade)
-                  : -mov.quantidade; // ajuste: inverte o diff
-    const est = await EstoqueDB.findById(mov.estoqueId);
-    if (est) {
-      await EstoqueDB.findByIdAndUpdate(est._id, {
-        quantidade: Math.max(0, est.quantidade + estorno),
-        alertaEnviado: false,
-      });
-    }
-    await MovEstoqueDB.findByIdAndDelete(req.params.movId);
-    res.json({ ok: true, estorno });
-  } catch (e) { res.status(500).json({ erro: e.message }); }
-});
-
-// Relatório geral de consumo
-app.get("/estoque/relatorio/consumo", async (req, res) => {
-  try {
-    const { de, ate } = req.query;
-    const filtro = { tipo: "saida" };
-    if (de || ate) {
-      filtro.horario = {};
-      if (de) filtro.horario.$gte = new Date(de);
-      if (ate) filtro.horario.$lte = new Date(ate);
-    }
-    const movs = await MovEstoqueDB.find(filtro).sort({ horario: -1 }).lean();
-    // Agrupa por item
-    const porItem = {};
-    movs.forEach(m => {
-      if (!porItem[m.estoqueNome]) porItem[m.estoqueNome] = { nome: m.estoqueNome, total: 0, movs: 0 };
-      porItem[m.estoqueNome].total += Math.abs(m.quantidade);
-      porItem[m.estoqueNome].movs += 1;
-    });
-    res.json(Object.values(porItem).sort((a, b) => b.total - a.total));
   } catch { res.json([]); }
 });
 
