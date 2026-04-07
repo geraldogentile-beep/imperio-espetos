@@ -816,14 +816,20 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const [aplicando, setAplicando] = useState(false);
   const [aplicadoMsg, setAplicadoMsg] = useState(null);
 
-  // Converte string digitada (aceita vírgula como decimal) para número
+  // Converte string digitada (aceita vírgula e R$) para número
   function parseMoeda(str) {
-    return parseFloat(String(str||0).replace(/\./g,"").replace(",",".")) || 0;
+    return parseFloat(String(str||0).replace(/R\$\s?/g,"").replace(/\./g,"").replace(",",".")) || 0;
   }
-  // Handler para campos de moeda — permite dígitos, vírgula e ponto
+  // Handler para campos de moeda
   function handleMoeda(campo, val) {
-    const limpo = val.replace(/[^\d,\.]/g,"");
+    const limpo = val.replace(/R\$\s?/g,"").replace(/[^\d,\.]/g,"");
     onChange(campo, limpo);
+  }
+  // Formata número para exibição com R$ e vírgula
+  function formatarMoeda(val) {
+    const n = parseMoeda(val);
+    if (!n) return "";
+    return "R$ " + n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
   const c   = parseMoeda(custo);
@@ -889,25 +895,31 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
     <div style={{background:"#f8f7f5",borderRadius:12,padding:14,display:"flex",flexDirection:"column",gap:10}}>
       <div style={{fontSize:12,fontWeight:700,color:"#555"}}>💰 Formador de Preço</div>
 
-      {/* Entradas — empilhadas para caber bem no mobile */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+      {/* Entradas */}
+      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 2fr",gap:8}}>
         <div>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo de compra (R$/un)</div>
-          <input type="text" inputMode="decimal" value={custo}
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo (R$/un)</div>
+          <input type="text" inputMode="decimal"
+            value={custo}
             onChange={e=>handleMoeda("custoPorUnidade",e.target.value)}
-            placeholder="Ex: 3,50" style={inpBase}/>
+            onFocus={e=>{ const v=parseMoeda(custo); if(v) onChange("custoPorUnidade", String(v).replace(".",",")); }}
+            onBlur={e=>{ const v=parseMoeda(custo); if(v) onChange("custoPorUnidade", formatarMoeda(custo)); }}
+            placeholder="Ex: R$ 3,50" style={inpBase}/>
         </div>
         <div>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem desejada (%)</div>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem (%)</div>
           <input type="text" inputMode="numeric" value={margem}
             onChange={e=>onChange("margemDesejada",e.target.value.replace(/[^\d]/g,""))}
-            placeholder="Ex: 60" style={inpBase}/>
+            placeholder="60" style={inpBase}/>
         </div>
-        <div style={{gridColumn:"1/-1"}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual no cardápio (R$)</div>
-          <input type="text" inputMode="decimal" value={precoVenda}
+        <div>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual (R$)</div>
+          <input type="text" inputMode="decimal"
+            value={precoVenda}
             onChange={e=>handleMoeda("precoVendaAtual",e.target.value)}
-            placeholder="Preenchido automaticamente ao selecionar do cardápio" style={inpBase}/>
+            onFocus={e=>{ const v=parseMoeda(precoVenda); if(v) onChange("precoVendaAtual", String(v).replace(".",",")); }}
+            onBlur={e=>{ const v=parseMoeda(precoVenda); if(v) onChange("precoVendaAtual", formatarMoeda(precoVenda)); }}
+            placeholder="Do cardápio" style={inpBase}/>
         </div>
       </div>
 
