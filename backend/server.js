@@ -100,18 +100,22 @@ const FechamentoDiaSchema = new mongoose.Schema({
 
 // ── ESTOQUE ────────────────────────────────────────────────────
 const EstoqueSchema = new mongoose.Schema({
-  nome:          { type: String, required: true },       // "Chopp", "Coca-Cola Lata"
-  unidade:       { type: String, default: "un" },        // "un", "litros", "kg"
-  quantidade:    { type: Number, default: 0 },           // quantidade atual
-  minimo:        { type: Number, default: 0 },           // alerta de estoque mínimo
-  alertaEnviado: { type: Boolean, default: false },      // evita spam de alerta
-  cardapioNomes: { type: [String], default: [] },        // nomes dos itens do cardápio que consomem este estoque
-  consumoPorVenda: { type: Number, default: 1 },         // quanto desconta por unidade vendida
-  tipo:          { type: String, default: "normal" },    // "normal" | "chopp"
-  capacidadeBarril: { type: Number, default: 0 },        // litros (só para chopp)
-  alertaTelefone: { type: String, default: "" },         // telefone do dono para alerta WhatsApp
+  nome:          { type: String, required: true },
+  unidade:       { type: String, default: "un" },
+  quantidade:    { type: Number, default: 0 },
+  minimo:        { type: Number, default: 0 },
+  alertaEnviado: { type: Boolean, default: false },
+  cardapioNomes: { type: [String], default: [] },
+  consumoPorVenda: { type: Number, default: 1 },
+  tipo:          { type: String, default: "normal" },
+  capacidadeBarril: { type: Number, default: 0 },
+  alertaTelefone: { type: String, default: "" },
   ativo:         { type: Boolean, default: true },
   criadoEm:      { type: Date, default: Date.now },
+  // ── Formador de preço ──
+  custoPorUnidade:  { type: Number, default: 0 },   // custo de compra por unidade
+  margemDesejada:   { type: Number, default: 0 },   // margem em % desejada
+  precoVendaAtual:  { type: Number, default: 0 },   // preço atual no cardápio (preenchido automaticamente)
 });
 
 const MovEstoqueSchema = new mongoose.Schema({
