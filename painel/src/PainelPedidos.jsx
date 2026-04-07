@@ -3003,36 +3003,41 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
         </div>
       )}
 
-      {/* MESAS ESPECIAIS */}
+      {/* MESAS ESPECIAIS — compactas, em linha */}
       {(()=>{
         const CORES_ESPECIAL = {
-          funcionarios: {bg:"#ede9fe",border:"#7c3aed",text:"#5b21b6",iconBg:"#ddd6fe"},
-          caixa_direto: {bg:"#fef3c7",border:"#d97706",text:"#92400e",iconBg:"#fde68a"},
+          funcionarios: {bg:"rgba(237,233,254,0.9)",border:"#7c3aed",text:"#5b21b6"},
+          caixa_direto: {bg:"rgba(254,243,199,0.9)",border:"#d97706",text:"#92400e"},
         };
         const especiais = mesas.filter(m=>m.tipo);
         if(!especiais.length) return null;
         return (
-          <div style={{padding:"10px 14px 0"}}>
-            <div style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.5)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Mesas Especiais</div>
-            <div style={{display:"flex",gap:10}}>
-              {especiais.map(m=>{
-                const cor = CORES_ESPECIAL[m.tipo]||{bg:"#f0f0f0",border:"#aaa",text:"#555",iconBg:"#e0e0e0"};
-                const totM = totMesaCompleta(m);
-                const s = STATUS_MESA[m.status];
-                return(
-                  <div key={m.id} onClick={()=>{setSel(m.id);setSelSC(0);setTelaSalao("comanda");}} style={{flex:1,background:cor.bg,borderRadius:14,padding:"12px 10px",textAlign:"center",cursor:"pointer",border:`2px solid ${m.status==="livre"?cor.border:s.c}`,boxShadow:m.status!=="livre"?`0 0 0 2px ${s.c}40`:"none",position:"relative"}}>
-                    {(m.status==="chamando"||m.status==="conta")&&<div style={{position:"absolute",top:-6,right:-6,width:16,height:16,background:s.c,borderRadius:"50%",fontSize:8,color:"#fff",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>!</div>}
-                    <div style={{fontSize:24,marginBottom:2}}>{m.icon}</div>
-                    <div style={{fontWeight:800,fontSize:13,color:cor.text}}>{m.nome}</div>
-                    <div style={{fontSize:8,background:m.status==="livre"?cor.iconBg:s.bg,color:m.status==="livre"?cor.text:s.c,borderRadius:10,padding:"1px 7px",marginTop:3,fontWeight:700,display:"inline-block"}}>
-                      {m.status==="livre"?"Livre":s.l}
+          <div style={{display:"flex",gap:8,padding:"8px 14px 0"}}>
+            {especiais.map(m=>{
+              const cor = CORES_ESPECIAL[m.tipo]||{bg:"rgba(240,240,240,0.9)",border:"#aaa",text:"#555"};
+              const totM = totMesaCompleta(m);
+              const s = STATUS_MESA[m.status];
+              const ativo = m.status!=="livre";
+              return(
+                <button key={m.id} onClick={()=>{setSel(m.id);setSelSC(0);setTelaSalao("comanda");}} style={{
+                  flex:1, display:"flex", alignItems:"center", gap:8,
+                  padding:"8px 12px", borderRadius:12, cursor:"pointer",
+                  border:`1.5px solid ${ativo?s.c:cor.border}`,
+                  background:ativo?s.bg:cor.bg,
+                  boxShadow:ativo?`0 0 0 2px ${s.c}30`:"none",
+                  position:"relative"
+                }}>
+                  {(m.status==="chamando"||m.status==="conta")&&<div style={{position:"absolute",top:-5,right:-5,width:14,height:14,background:s.c,borderRadius:"50%",fontSize:8,color:"#fff",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>!</div>}
+                  <span style={{fontSize:16}}>{m.icon}</span>
+                  <div style={{textAlign:"left",flex:1,minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:12,color:ativo?s.c:cor.text,whiteSpace:"nowrap"}}>{m.nome}</div>
+                    <div style={{fontSize:10,color:ativo?s.c:cor.text,opacity:0.75}}>
+                      {ativo?`${fmtR(totM)}${m.abertura?" · ⏱️"+tempoAberto(m.abertura):""}` : "Livre"}
                     </div>
-                    {totM>0&&<div style={{fontSize:12,fontWeight:800,color:cor.text,marginTop:4}}>{fmtR(totM)}</div>}
-                    {m.abertura&&<div style={{fontSize:9,color:cor.text,opacity:0.6,marginTop:2}}>⏱️{tempoAberto(m.abertura)}</div>}
                   </div>
-                );
-              })}
-            </div>
+                </button>
+              );
+            })}
           </div>
         );
       })()}
