@@ -816,20 +816,21 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const [aplicando, setAplicando] = useState(false);
   const [aplicadoMsg, setAplicadoMsg] = useState(null);
 
-  // Converte string digitada (aceita vírgula e R$) para número
+  // Converte "R$ 3,50" ou "3,50" para número
   function parseMoeda(str) {
     return parseFloat(String(str||0).replace(/R\$\s?/g,"").replace(/\./g,"").replace(",",".")) || 0;
   }
-  // Handler para campos de moeda
-  function handleMoeda(campo, val) {
-    const limpo = val.replace(/R\$\s?/g,"").replace(/[^\d,\.]/g,"");
-    onChange(campo, limpo);
+  // Máscara de moeda em tempo real — formata enquanto digita
+  function mascaraMoeda(val) {
+    const nums = String(val).replace(/\D/g,"");
+    if(!nums) return "";
+    const n = parseInt(nums,10) / 100;
+    return "R$ " + n.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
   }
-  // Formata número para exibição com R$ e vírgula
-  function formatarMoeda(val) {
-    const n = parseMoeda(val);
-    if (!n) return "";
-    return "R$ " + n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  function handleMascara(campo, val) {
+    const nums = val.replace(/\D/g,"");
+    const formatted = nums ? mascaraMoeda(nums) : "";
+    onChange(campo, formatted);
   }
 
   const c   = parseMoeda(custo);
@@ -900,20 +901,9 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
         <div style={{display:"flex",gap:8}}>
           <div style={{flex:1}}>
             <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo (R$/un)</div>
-            <input type="text" inputMode="decimal"
+            <input type="text" inputMode="numeric"
               value={custo}
-              onChange={e=>{
-                const raw = e.target.value.replace(/[^\d,]/g,"");
-                onChange("custoPorUnidade", raw);
-              }}
-              onBlur={()=>{
-                const n = parseMoeda(custo);
-                if(n>0) onChange("custoPorUnidade", "R$ "+n.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}));
-              }}
-              onFocus={()=>{
-                const n = parseMoeda(custo);
-                if(n>0) onChange("custoPorUnidade", String(n).replace(".",","));
-              }}
+              onChange={e=>handleMascara("custoPorUnidade", e.target.value)}
               placeholder="R$ 0,00" style={inpBase}/>
           </div>
           <div style={{width:80}}>
@@ -925,20 +915,9 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
         </div>
         <div>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual (R$)</div>
-          <input type="text" inputMode="decimal"
+          <input type="text" inputMode="numeric"
             value={precoVenda}
-            onChange={e=>{
-              const raw = e.target.value.replace(/[^\d,]/g,"");
-              onChange("precoVendaAtual", raw);
-            }}
-            onBlur={()=>{
-              const n = parseMoeda(precoVenda);
-              if(n>0) onChange("precoVendaAtual", "R$ "+n.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2}));
-            }}
-            onFocus={()=>{
-              const n = parseMoeda(precoVenda);
-              if(n>0) onChange("precoVendaAtual", String(n).replace(".",","));
-            }}
+            onChange={e=>handleMascara("precoVendaAtual", e.target.value)}
             placeholder="Preenchido ao selecionar do cardápio" style={inpBase}/>
         </div>
       </div>
@@ -1441,7 +1420,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
                     tipo: eChopp ? "chopp" : "normal",
                     unidade: eChopp ? "litros" : p.unidade,
                     consumoPorVenda: eChopp ? "0.4" : p.consumoPorVenda,
-                    precoVendaAtual: itemCard?.preco ? String(itemCard.preco) : p.precoVendaAtual,
+                    precoVendaAtual: itemCard?.preco ? mascaraMoeda(String(Math.round(itemCard.preco*100))) : p.precoVendaAtual,
                   }));
                 }}
                 nomeManual={novo.nome}
