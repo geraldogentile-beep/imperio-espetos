@@ -809,6 +809,108 @@ function GarcomManager({ garcons, onReload }) {
   );
 }
 
+// ── FORMADOR DE PREÇO ─────────────────────────────────────────
+function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange }) {
+  const c = parseFloat(custo) || 0;
+  const m = parseFloat(margem) || 0;
+  const pv = parseFloat(precoVenda) || 0;
+  const cpv = parseFloat(consumoPorVenda) || 1;
+
+  // Custo por venda = custo unitário × consumo por venda
+  const custoVenda = c * cpv;
+  // Preço sugerido baseado na margem desejada
+  const precoSugerido = custoVenda > 0 && m > 0 ? custoVenda / (1 - m / 100) : 0;
+  // Margem real com o preço atual do cardápio
+  const margemReal = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / pv) * 100 : null;
+  // Lucro por venda
+  const lucroPorVenda = pv > 0 ? pv - custoVenda : 0;
+
+  // Semáforo
+  let status = null;
+  if (margemReal !== null && m > 0) {
+    if (margemReal >= m)        status = "ok";
+    else if (margemReal >= m * 0.8) status = "atencao";
+    else                        status = "alerta";
+  }
+
+  const corStatus = { ok:"#10b981", atencao:"#f59e0b", alerta:"#ef4444" };
+  const bgStatus  = { ok:"#d1fae5", atencao:"#fef3c7", alerta:"#fee2e2" };
+  const txtStatus = { ok:"#065f46", atencao:"#92400e", alerta:"#991b1b" };
+  const icnStatus = { ok:"✅", atencao:"⚠️", alerta:"🚨" };
+  const msgStatus = {
+    ok:      `Margem real ${margemReal?.toFixed(1)}% — acima da meta!`,
+    atencao: `Margem real ${margemReal?.toFixed(1)}% — próximo do limite.`,
+    alerta:  `Margem real ${margemReal?.toFixed(1)}% — abaixo da meta de ${m}%!`,
+  };
+
+  const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
+
+  return (
+    <div style={{background:"#f8f7f5",borderRadius:12,padding:14,display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#555",display:"flex",alignItems:"center",gap:6}}>
+        💰 Formador de Preço
+      </div>
+
+      <div style={{display:"flex",gap:8}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo de compra ({`R$/un`})</div>
+          <input type="number" step="0.01" value={custo} onChange={e=>onChange("custoPorUnidade", e.target.value)}
+            placeholder="Ex: 3.50" style={inp}/>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem desejada (%)</div>
+          <input type="number" step="1" min="0" max="100" value={margem} onChange={e=>onChange("margemDesejada", e.target.value)}
+            placeholder="Ex: 60" style={inp}/>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço de venda (R$)</div>
+          <input type="number" step="0.50" value={precoVenda} onChange={e=>onChange("precoVendaAtual", e.target.value)}
+            placeholder="Do cardápio" style={{...inp, background: pv>0?"#fff":"#f0f0f0"}}/>
+        </div>
+      </div>
+
+      {/* Resultados calculados */}
+      {c > 0 && (
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <div style={{flex:1,background:"#fff",borderRadius:8,padding:"8px 10px",minWidth:90}}>
+            <div style={{fontSize:10,color:"#888"}}>Custo por venda</div>
+            <div style={{fontWeight:700,fontSize:13,color:"#1a1a1a",marginTop:2}}>R$ {custoVenda.toFixed(2)}</div>
+          </div>
+          {precoSugerido > 0 && (
+            <div style={{flex:1,background:"#fff",borderRadius:8,padding:"8px 10px",minWidth:90}}>
+              <div style={{fontSize:10,color:"#888"}}>Preço sugerido</div>
+              <div style={{fontWeight:700,fontSize:13,color:"#7b1a0a",marginTop:2}}>R$ {precoSugerido.toFixed(2)}</div>
+            </div>
+          )}
+          {pv > 0 && (
+            <div style={{flex:1,background:"#fff",borderRadius:8,padding:"8px 10px",minWidth:90}}>
+              <div style={{fontSize:10,color:"#888"}}>Lucro por venda</div>
+              <div style={{fontWeight:700,fontSize:13,color:lucroPorVenda>=0?"#10b981":"#ef4444",marginTop:2}}>R$ {lucroPorVenda.toFixed(2)}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Semáforo */}
+      {status && (
+        <div style={{background:bgStatus[status],border:`1.5px solid ${corStatus[status]}`,borderRadius:8,padding:"8px 12px",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:16}}>{icnStatus[status]}</span>
+          <div>
+            <div style={{fontWeight:700,fontSize:12,color:txtStatus[status]}}>{msgStatus[status]}</div>
+            {status==="alerta"&&precoSugerido>0&&(
+              <div style={{fontSize:11,color:txtStatus[status],marginTop:2}}>
+                Ajuste o preço para pelo menos <strong>R$ {precoSugerido.toFixed(2)}</strong> para atingir a meta.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {c===0&&<div style={{fontSize:11,color:"#bbb",textAlign:"center"}}>Preencha o custo de compra para calcular</div>}
+    </div>
+  );
+}
+
 // ── DROPDOWN CARDÁPIO ─────────────────────────────────────────
 function CardapioDropdown({ valor, onChange, nomeManual, onNomeManual, cardapio = [] }) {
   const [busca, setBusca] = useState("");
@@ -895,7 +997,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [editando, setEditando] = useState(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
-  const [novo, setNovo] = useState({ nome:"", unidade:"un", quantidade:"", minimo:"", cardapioNomes:"", consumoPorVenda:"1", tipo:"normal", capacidadeBarril:"", alertaTelefone:"" });
+  const [novo, setNovo] = useState({ nome:"", unidade:"un", quantidade:"", minimo:"", cardapioNomes:"", consumoPorVenda:"1", tipo:"normal", capacidadeBarril:"", alertaTelefone:"", custoPorUnidade:"", margemDesejada:"", precoVendaAtual:"" });
   const [entradaQtd, setEntradaQtd] = useState("");
   const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
   const [ajusteQtd, setAjusteQtd] = useState("");
@@ -935,11 +1037,11 @@ function Estoque({ backendUrl, cardapio = [] }) {
     if(!novo.nome.trim()) return showMsg("Nome é obrigatório.","erro");
     setSaving(true);
     try {
-      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) };
+      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean), custoPorUnidade:parseFloat(novo.custoPorUnidade)||0, margemDesejada:parseFloat(novo.margemDesejada)||0, precoVendaAtual:parseFloat(novo.precoVendaAtual)||0 };
       const r = await fetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok) return showMsg((await r.json()).erro||"Erro ao criar.","erro");
       showMsg(`✅ ${novo.nome} cadastrado!`);
-      setNovo({nome:"",unidade:"un",quantidade:"",minimo:"",cardapioNomes:"",consumoPorVenda:"1",tipo:"normal",capacidadeBarril:"",alertaTelefone:""});
+      setNovo({nome:"",unidade:"un",quantidade:"",minimo:"",cardapioNomes:"",consumoPorVenda:"1",tipo:"normal",capacidadeBarril:"",alertaTelefone:"",custoPorUnidade:"",margemDesejada:"",precoVendaAtual:""});
       setNovoForm(false);
       carregar();
     } catch { showMsg("Erro de conexão.","erro"); }
@@ -1024,6 +1126,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
               />
             </div>
             {editando.tipo==="chopp"&&<div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={editando.capacidadeBarril||""} onChange={e=>setEditando(p=>({...p,capacidadeBarril:parseFloat(e.target.value)}))} style={inp}/></div>}
+            <FormadorPreco
+              custo={editando.custoPorUnidade||""}
+              margem={editando.margemDesejada||""}
+              precoVenda={editando.precoVendaAtual||""}
+              consumoPorVenda={editando.consumoPorVenda||1}
+              onChange={(campo,val)=>setEditando(p=>({...p,[campo]:val}))}
+            />
             <div style={{display:"flex",gap:8}}>
               <button onClick={salvarEdicao} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"💾 Salvar"}</button>
               <button onClick={()=>setEditando(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
@@ -1067,6 +1176,17 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <div style={{background:"#f8f7f5",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#555",marginBottom:10}}>
                 🔗 Cardápio: <strong>{it.cardapioNomes.join(", ")}</strong>
               </div>
+            )}
+
+            {/* Formador de preço — somente visualização no detalhe */}
+            {(it.custoPorUnidade>0||it.margemDesejada>0)&&(
+              <FormadorPreco
+                custo={it.custoPorUnidade||0}
+                margem={it.margemDesejada||0}
+                precoVenda={it.precoVendaAtual||0}
+                consumoPorVenda={it.consumoPorVenda||1}
+                onChange={()=>{}}
+              />
             )}
 
             <div style={{display:"flex",gap:8}}>
@@ -1170,8 +1290,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
                 valor={novo.cardapioNomes}
                 onChange={lista=>{
                   const nomeAuto = lista.length>=1 ? lista[0] : novo.nome;
-                  // Detecta chopp automaticamente pelo nome
                   const eChopp = lista.some(n=>n.toLowerCase().includes("chopp"));
+                  const itemCard = cardapio.find(i=>i.nome===lista[0]);
                   setNovo(p=>({
                     ...p,
                     cardapioNomes: lista.join(", "),
@@ -1179,6 +1299,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
                     tipo: eChopp ? "chopp" : "normal",
                     unidade: eChopp ? "litros" : p.unidade,
                     consumoPorVenda: eChopp ? "0.4" : p.consumoPorVenda,
+                    precoVendaAtual: itemCard?.preco ? String(itemCard.preco) : p.precoVendaAtual,
                   }));
                 }}
                 nomeManual={novo.nome}
@@ -1239,6 +1360,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda {novo.tipo==="chopp"&&<span style={{color:"#92400e"}}>(litros por caneca)</span>}</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4":"1"} style={inp}/></div>
               <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tel. alerta</div><input value={novo.alertaTelefone} onChange={e=>setNovo(p=>({...p,alertaTelefone:e.target.value}))} placeholder="5511..." style={inp}/></div>
             </div>
+            <FormadorPreco
+              custo={novo.custoPorUnidade}
+              margem={novo.margemDesejada}
+              precoVenda={novo.precoVendaAtual}
+              consumoPorVenda={novo.consumoPorVenda}
+              onChange={(campo, val)=>setNovo(p=>({...p,[campo]:val}))}
+            />
             <div style={{display:"flex",gap:8}}>
               <button onClick={criarItem} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"✅ Cadastrar"}</button>
               <button onClick={()=>setNovoForm(false)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
