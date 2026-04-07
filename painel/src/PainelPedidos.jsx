@@ -810,27 +810,27 @@ function GarcomManager({ garcons, onReload }) {
 }
 
 // ── FORMADOR DE PREÇO ─────────────────────────────────────────
+// Helpers de moeda — escopo global para uso em múltiplos componentes
+function mascaraMoeda(val) {
+  const nums = String(val).replace(/\D/g,"");
+  if(!nums) return "";
+  const n = parseInt(nums,10) / 100;
+  return "R$ " + n.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function parseMoedaGlobal(str) {
+  return parseFloat(String(str||0).replace(/R\$\s?/g,"").replace(/\./g,"").replace(",",".")) || 0;
+}
+
 function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, cardapioNomes = [], cardapio = [], backendUrl = "" }) {
   const [modoPreco, setModoPreco] = useState("sugerido"); // "sugerido" | "manual"
   const [precoManual, setPrecoManual] = useState("");
   const [aplicando, setAplicando] = useState(false);
   const [aplicadoMsg, setAplicadoMsg] = useState(null);
 
-  // Converte "R$ 3,50" ou "3,50" para número
-  function parseMoeda(str) {
-    return parseFloat(String(str||0).replace(/R\$\s?/g,"").replace(/\./g,"").replace(",",".")) || 0;
-  }
-  // Máscara de moeda em tempo real — formata enquanto digita
-  function mascaraMoeda(val) {
-    const nums = String(val).replace(/\D/g,"");
-    if(!nums) return "";
-    const n = parseInt(nums,10) / 100;
-    return "R$ " + n.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
-  }
+  function parseMoeda(str) { return parseMoedaGlobal(str); }
   function handleMascara(campo, val) {
     const nums = val.replace(/\D/g,"");
-    const formatted = nums ? mascaraMoeda(nums) : "";
-    onChange(campo, formatted);
+    onChange(campo, nums ? mascaraMoeda(nums) : "");
   }
 
   const c   = parseMoeda(custo);
