@@ -579,7 +579,7 @@ function Cardapio({ cardapio, onReload }) {
 // ── COMPONENTE TROCA DE PIN ───────────────────────────────────
 function PinManager() {
   const [pins, setPins] = useState(() => {
-    try { const s = localStorage.getItem("imperio_pins"); return s ? JSON.parse(s) : { dono: "9999", garcom: "1234", caixa: "5678" }; } catch { return { dono: "9999", garcom: "1234", caixa: "5678" }; }
+    try { const s = localStorage.getItem("imperio_pins"); return s ? JSON.parse(s) : { dono: "9999", caixa: "5678" }; } catch { return { dono: "9999", caixa: "5678" }; }
   });
   const [editando, setEditando] = useState(null); // "dono" | "garcom" | "caixa"
   const [novo, setNovo] = useState("");
@@ -588,7 +588,6 @@ function PinManager() {
 
   const perfis = [
     { key: "dono",   icon: "👑", label: "Dono",   desc: "Acesso completo ao painel" },
-    { key: "garcom", icon: "🧑‍🍳", label: "Garçom", desc: "Acesso ao salão — lança pedidos" },
     { key: "caixa",  icon: "💁‍♀️", label: "Caixa",  desc: "Acesso ao salão — fecha contas" },
   ];
 
