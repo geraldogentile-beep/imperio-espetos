@@ -728,29 +728,33 @@ app.get("/qrcode", (req, res) => {
 app.post("/auth/login", loginLimiter, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter 4 dígitos" });
+
+  // Verifica PINs de dono/caixa primeiro (funciona mesmo sem MongoDB)
+  let pins = { dono: process.env.PIN_DONO || "9999", caixa: process.env.PIN_CAIXA || "5678" };
   try {
-    // Verifica garçom
+    const cfg = await ConfigDB.findOne({ chave: "pins" });
+    if (cfg?.valor) pins = { ...pins, ...cfg.valor };
+  } catch (e) { console.error("Erro ao buscar pins do DB (usando env vars):", e.message); }
+
+  if (pin === pins.dono) {
+    const token = gerarToken({ role: "dono" });
+    return res.json({ token, role: "dono" });
+  }
+  if (pin === pins.caixa) {
+    const token = gerarToken({ role: "caixa" });
+    return res.json({ token, role: "caixa" });
+  }
+
+  // Verifica garçom no banco
+  try {
     const garcom = await GarcomDB.findOne({ pin, ativo: true }).lean();
     if (garcom) {
       const token = gerarToken({ role: "garcom", nome: garcom.nome, id: garcom._id });
       return res.json({ token, role: "garcom", nome: garcom.nome, id: garcom._id });
     }
-    // PINs de dono/caixa vêm das configs (não hardcoded)
-    const cfg = await ConfigDB.findOne({ chave: "pins" });
-    const pins = cfg?.valor || { dono: process.env.PIN_DONO || "9999", caixa: process.env.PIN_CAIXA || "5678" };
-    if (pin === pins.dono) {
-      const token = gerarToken({ role: "dono" });
-      return res.json({ token, role: "dono" });
-    }
-    if (pin === pins.caixa) {
-      const token = gerarToken({ role: "caixa" });
-      return res.json({ token, role: "caixa" });
-    }
-    return res.status(401).json({ erro: "PIN incorreto" });
-  } catch (e) {
-    console.error("Erro no login:", e.message);
-    return res.status(500).json({ erro: "Erro interno no login" });
-  }
+  } catch (e) { console.error("Erro ao buscar garçom:", e.message); }
+
+  return res.status(401).json({ erro: "PIN incorreto" });
 });
 
 app.put("/auth/pins", authMiddleware(["dono"]), async (req, res) => {
