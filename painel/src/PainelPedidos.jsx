@@ -2841,13 +2841,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   }
 
   function addItem(item){
-    const itens=[...sc.itens];
-    const ex=itens.find(i=>i.id===item.id);
-    if(ex) ex.qty+=1; else itens.push({...item,qty:1});
+    const existe=sc.itens.find(i=>i.id===item.id);
+    const itens=existe
+      ? sc.itens.map(i=>i.id===item.id?{...i,qty:(i.qty||1)+1}:i)
+      : [...sc.itens,{...item,qty:1}];
     const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
     const novaAbertura = mesa.abertura||new Date().toISOString();
     const novoStatus = mesa.status==="livre"?"ocupada":mesa.status;
-    updSC({...sc,itens});
     upd({...mesa, garcom:nomeGarcom, status:novoStatus, abertura:novaAbertura,
          subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
   }
