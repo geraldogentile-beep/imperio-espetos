@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { authFetch, authHeaders } from "./App.jsx";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
 
@@ -162,7 +163,7 @@ function Cupons({ cupons, onReload }) {
     if (!novo.codigo || !novo.valor) return;
     setSaving(true);
     try {
-      await fetch(BACKEND_URL + "/cupons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novo, valor: parseFloat(novo.valor), usoMax: novo.usoMax ? parseInt(novo.usoMax) : null }) });
+      await authFetch(BACKEND_URL + "/cupons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novo, valor: parseFloat(novo.valor), usoMax: novo.usoMax ? parseInt(novo.usoMax) : null }) });
       onReload();
     } catch { onReload(); }
     setSaving(false);
@@ -171,17 +172,17 @@ function Cupons({ cupons, onReload }) {
   }
 
   async function toggleCupom(codigo, ativo) {
-    try { await fetch(BACKEND_URL + "/cupons/" + codigo + "/ativo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo }) }); onReload(); } catch { onReload(); }
+    try { await authFetch(BACKEND_URL + "/cupons/" + codigo + "/ativo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo }) }); onReload(); } catch { onReload(); }
   }
 
   async function deletarCupom(codigo) {
     if (!window.confirm("Remover cupom " + codigo + "?")) return;
-    try { await fetch(BACKEND_URL + "/cupons/" + codigo, { method: "DELETE" }); onReload(); } catch { onReload(); }
+    try { await authFetch(BACKEND_URL + "/cupons/" + codigo, { method: "DELETE" }); onReload(); } catch { onReload(); }
   }
 
   async function testarCupom() {
     try {
-      const res = await fetch(BACKEND_URL + "/cupons/validar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codigo: testeCodigo, subtotal: parseFloat(testeSubtotal) }) });
+      const res = await authFetch(BACKEND_URL + "/cupons/validar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codigo: testeCodigo, subtotal: parseFloat(testeSubtotal) }) });
       setResultadoTeste(await res.json());
     } catch { setResultadoTeste({ erro: "Erro ao testar" }); }
   }
@@ -478,21 +479,21 @@ function Cardapio({ cardapio, onReload }) {
   const inputStyle = { width: "100%", padding: "7px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
 
   async function toggleAtivo(item) {
-    try { await fetch(BACKEND_URL + "/cardapio/" + item.id + "/ativo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo: !item.ativo }) }); onReload(); } catch { onReload(); }
+    try { await authFetch(BACKEND_URL + "/cardapio/" + item.id + "/ativo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo: !item.ativo }) }); onReload(); } catch { onReload(); }
   }
   async function salvarEdicao(item) {
     setSaving(true);
-    try { await fetch(BACKEND_URL + "/cardapio/" + item.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(item) }); onReload(); } catch { onReload(); }
+    try { await authFetch(BACKEND_URL + "/cardapio/" + item.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(item) }); onReload(); } catch { onReload(); }
     setSaving(false); setEditando(null);
   }
   async function deletarItem(id) {
     if (!window.confirm("Remover item?")) return;
-    try { await fetch(BACKEND_URL + "/cardapio/" + id, { method: "DELETE" }); onReload(); } catch { onReload(); }
+    try { await authFetch(BACKEND_URL + "/cardapio/" + id, { method: "DELETE" }); onReload(); } catch { onReload(); }
   }
   async function adicionarItem() {
     if (!novoItem.categoria || !novoItem.nome || !novoItem.preco) return;
     setSaving(true);
-    try { await fetch(BACKEND_URL + "/cardapio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novoItem, preco: parseFloat(novoItem.preco), tempoPreparo: parseInt(novoItem.tempoPreparo) }) }); onReload(); } catch { onReload(); }
+    try { await authFetch(BACKEND_URL + "/cardapio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novoItem, preco: parseFloat(novoItem.preco), tempoPreparo: parseInt(novoItem.tempoPreparo) }) }); onReload(); } catch { onReload(); }
     setSaving(false); setAdicionando(false); setNovoItem({ categoria: "", nome: "", preco: "", tempoPreparo: 10, obs: "" });
   }
 
@@ -661,7 +662,7 @@ function GarcomManager({ garcons, onReload }) {
     if (!novo.nome.trim() || !novo.pin) return showMsg("Preencha nome e PIN.", "erro");
     setSaving(true);
     try {
-      const res = await fetch(BACKEND_URL + "/garcons", {
+      const res = await authFetch(BACKEND_URL + "/garcons", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nome: novo.nome.trim(), pin: novo.pin }),
@@ -681,7 +682,7 @@ function GarcomManager({ garcons, onReload }) {
     const body = { nome: editando.nome };
     if (editando.novoPin) body.pin = editando.novoPin;
     try {
-      const res = await fetch(BACKEND_URL + "/garcons/" + editando._id, {
+      const res = await authFetch(BACKEND_URL + "/garcons/" + editando._id, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -697,7 +698,7 @@ function GarcomManager({ garcons, onReload }) {
 
   async function toggleAtivo(g) {
     try {
-      await fetch(BACKEND_URL + "/garcons/" + g._id, {
+      await authFetch(BACKEND_URL + "/garcons/" + g._id, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ativo: !g.ativo }),
@@ -709,7 +710,7 @@ function GarcomManager({ garcons, onReload }) {
   async function deletarGarcom(g) {
     if (!window.confirm(`Remover ${g.nome}? Esta ação não pode ser desfeita.`)) return;
     try {
-      await fetch(BACKEND_URL + "/garcons/" + g._id, { method: "DELETE" });
+      await authFetch(BACKEND_URL + "/garcons/" + g._id, { method: "DELETE" });
       showMsg(`${g.nome} removido.`, "ok");
       onReload();
     } catch { showMsg("Erro ao remover.", "erro"); }
@@ -2052,7 +2053,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
   async function carregarRelGarcons() {
     setLoadingGarcons(true);
     try {
-      const res = await fetch(BACKEND_URL + "/garcons/relatorio");
+      const res = await authFetch(BACKEND_URL + "/garcons/relatorio");
       if (res.ok) setRelGarcons(await res.json());
     } catch {}
     setLoadingGarcons(false);
@@ -2281,7 +2282,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
                           if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
                             // Remove do MongoDB se tiver _id
                             if (v._id) {
-                              try { await fetch(BACKEND_URL + "/vendas-salao/" + v._id, { method: "DELETE" }); } catch {}
+                              try { await authFetch(BACKEND_URL + "/vendas-salao/" + v._id, { method: "DELETE" }); } catch {}
                             }
                             if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => x.id !== v.id));
                             if (setFaturadoSalaoRel) setFaturadoSalaoRel(f => Math.max(0, f - v.total));
@@ -2915,7 +2916,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       fechamento: new Date().toISOString(),
     };
     try {
-      const res = await fetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
+      const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
       if(res.ok){const salvo=await res.json();registro._id=salvo._id;}
     } catch(e){console.warn("Falha ao salvar venda:",e);}
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
@@ -2949,7 +2950,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       itens:todosItens, total:totalMesa, pagamento:pagSalao,
       abertura:mesa.abertura, fechamento:new Date().toISOString(),
     };
-    try{const res=await fetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});if(res.ok){const salvo=await res.json();registro._id=salvo._id;}}catch(e){console.warn(e);}
+    try{const res=await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});if(res.ok){const salvo=await res.json();registro._id=salvo._id;}}catch(e){console.warn(e);}
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
     setFaturado(f=>f+totalMesa);
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
@@ -3622,13 +3623,13 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const fetchAll = useCallback(async () => {
     try {
       const [rp, rc, rcu, ra, rcfg, rs, rg] = await Promise.all([
-        fetch(BACKEND_URL + "/pedidos"),
-        fetch(BACKEND_URL + "/cardapio"),
-        fetch(BACKEND_URL + "/cupons"),
-        fetch(BACKEND_URL + "/avaliacoes"),
-        fetch(BACKEND_URL + "/config"),
-        fetch(BACKEND_URL + "/config/status-loja"),
-        fetch(BACKEND_URL + "/garcons"),
+        authFetch(BACKEND_URL + "/pedidos"),
+        authFetch(BACKEND_URL + "/cardapio"),
+        authFetch(BACKEND_URL + "/cupons"),
+        authFetch(BACKEND_URL + "/avaliacoes"),
+        authFetch(BACKEND_URL + "/config"),
+        authFetch(BACKEND_URL + "/config/status-loja"),
+        authFetch(BACKEND_URL + "/garcons"),
       ]);
       if (rp.ok) { const data = await rp.json(); const ids = new Set(data.map(p => p.id)); const novos = [...ids].filter(id => !ant.current.has(id)); if (novos.length > 0 && ant.current.size > 0) { setExpanded(novos[0]); tocarSom(); } ant.current = ids; setPedidos(data); }
       if (rc.ok) setCardapio(await rc.json());
@@ -3652,7 +3653,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const updateStatus = async (id, novoStatus) => {
     setAtualizando(prev => ({ ...prev, [id]: true }));
     try {
-      const r = await fetch(BACKEND_URL + "/pedidos/" + id + "/status", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: novoStatus }) });
+      const r = await authFetch(BACKEND_URL + "/pedidos/" + id + "/status", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: novoStatus }) });
       if (!r.ok) throw new Error();
       const at = await r.json();
       setPedidos(prev => prev.map(p => p.id === id ? { ...p, status: at.status } : p));
@@ -3661,7 +3662,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   };
 
   const saveConfig = async (novoCfg) => {
-    try { await fetch(BACKEND_URL + "/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(novoCfg) }); setConfig(novoCfg); const rs = await fetch(BACKEND_URL + "/config/status-loja"); if (rs.ok) setStatusLoja(await rs.json()); } catch { setConfig(novoCfg); }
+    try { await authFetch(BACKEND_URL + "/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(novoCfg) }); setConfig(novoCfg); const rs = await authFetch(BACKEND_URL + "/config/status-loja"); if (rs.ok) setStatusLoja(await rs.json()); } catch { setConfig(novoCfg); }
   };
 
   const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidos.filter(p => p.status === s).length; return a; }, {});

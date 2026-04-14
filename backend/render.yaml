@@ -9,11 +9,15 @@ services:
         value: production
       - key: PORT
         value: 3000
-      - key: EVOLUTION_URL
-        sync: false
-      - key: EVOLUTION_KEY
-        sync: false
-      - key: EVOLUTION_INSTANCE
-        sync: false
       - key: ANTHROPIC_KEY
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: PIN_DONO
+        sync: false
+      - key: PIN_CAIXA
         sync: false

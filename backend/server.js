@@ -12,42 +12,126 @@ import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
 import mongoose from "mongoose";
+import jwt from "jsonwebtoken";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import crypto from "crypto";
 
 const app = express();
-app.use(express.json());
+
+// ── SEGURANÇA ────────────────────────────────────────────────
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(express.json({ limit: "1mb" }));
+
+// CORS restrito a domínios conhecidos
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const allowedOrigins = [
+    ENV.FRONTEND_URL,
+    "http://localhost:5173",
+    "http://localhost:3000",
+  ].filter(Boolean);
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
+// Rate limiting geral
+const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300, message: { erro: "Muitas requisições. Tente novamente em alguns minutos." } });
+app.use(limiter);
+
+// Rate limiting específico para login (anti brute-force)
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 15, message: { erro: "Muitas tentativas de login. Aguarde 15 minutos." } });
+
+// ── JWT AUTH ─────────────────────────────────────────────────
+function gerarToken(payload) {
+  return jwt.sign(payload, ENV.JWT_SECRET, { expiresIn: "8h" });
+}
+
+function authMiddleware(rolesPermitidas = []) {
+  return (req, res, next) => {
+    const header = req.headers.authorization;
+    if (!header?.startsWith("Bearer ")) return res.status(401).json({ erro: "Token não fornecido" });
+    try {
+      const decoded = jwt.verify(header.slice(7), ENV.JWT_SECRET);
+      req.user = decoded;
+      if (rolesPermitidas.length > 0 && !rolesPermitidas.includes(decoded.role)) {
+        return res.status(403).json({ erro: "Sem permissão para esta operação" });
+      }
+      next();
+    } catch {
+      return res.status(401).json({ erro: "Token inválido ou expirado" });
+    }
+  };
+}
+
+// Middleware que aceita autenticado OU não (para rotas que funcionam com/sem auth)
+function authOpcional(req, res, next) {
+  const header = req.headers.authorization;
+  if (header?.startsWith("Bearer ")) {
+    try { req.user = jwt.verify(header.slice(7), ENV.JWT_SECRET); } catch {}
+  }
+  next();
+}
+
 // ── ENV ───────────────────────────────────────────────────────
+// ── VALIDAÇÃO DE ENV VARS (obrigatórias em produção) ─────────
+function requiredEnv(name) {
+  const val = process.env[name];
+  if (!val) {
+    console.error(`❌ Variável de ambiente ${name} não definida!`);
+    process.exit(1);
+  }
+  return val;
+}
+
 const ENV = {
-  ANTHROPIC_KEY: process.env.ANTHROPIC_KEY || "sua-chave-anthropic-aqui",
-  MONGO_URI:     process.env.MONGO_URI     || "mongodb+srv://geraldogentile_db_user:p6AEJhBDgj9YXOgm@cluster0.l4v1ubi.mongodb.net/imperioespetos?appName=Cluster0",
-  PORT:          process.env.PORT          || 3000,
+  ANTHROPIC_KEY: process.env.NODE_ENV === "production" ? requiredEnv("ANTHROPIC_KEY") : (process.env.ANTHROPIC_KEY || ""),
+  MONGO_URI:     process.env.NODE_ENV === "production" ? requiredEnv("MONGO_URI")     : (process.env.MONGO_URI || ""),
+  PORT:          process.env.PORT || 3000,
+  JWT_SECRET:    process.env.JWT_SECRET || "imperio-dev-secret-trocar-em-prod",
+  FRONTEND_URL:  process.env.FRONTEND_URL || "http://localhost:5173",
 };
 
 // ── MONGODB — SCHEMAS & CONEXÃO ──────────────────────────────
 const PedidoSchema = new mongoose.Schema({
-  id: String, cliente: String, telefone: String, endereco: String,
-  itens: Array, subtotal: Number, desconto: Number, cupom: String,
-  total: Number, obs: String, tempoPreparo: Number,
-  status: { type: String, default: "novo" },
+  id: { type: String, required: true, unique: true },
+  cliente: { type: String, required: true },
+  telefone: { type: String, required: true },
+  endereco: { type: String, required: true },
+  itens: { type: Array, required: true },
+  subtotal: { type: Number, required: true, min: 0 },
+  desconto: { type: Number, default: 0, min: 0 },
+  cupom: String,
+  total: { type: Number, required: true, min: 0 },
+  obs: String,
+  tempoPreparo: { type: Number, min: 0 },
+  status: { type: String, default: "novo", enum: ["novo", "preparando", "entrega", "entregue", "cancelado"] },
   horario: { type: Date, default: Date.now },
 }, { timestamps: true });
 
 const CupomSchema = new mongoose.Schema({
-  codigo: String, tipo: String, valor: Number, ativo: Boolean,
-  usoMax: Number, usoAtual: { type: Number, default: 0 },
-  validade: Date, descricao: String,
+  codigo: { type: String, required: true, unique: true, uppercase: true },
+  tipo: { type: String, required: true, enum: ["percentual", "fixo", "frete"] },
+  valor: { type: Number, required: true, min: 0 },
+  ativo: { type: Boolean, default: true },
+  usoMax: Number,
+  usoAtual: { type: Number, default: 0, min: 0 },
+  validade: Date,
+  descricao: String,
 });
 
 const AvaliacaoSchema = new mongoose.Schema({
-  pedidoId: String, telefone: String, cliente: String,
-  nota: Number, horario: { type: Date, default: Date.now },
+  pedidoId: { type: String, required: true },
+  telefone: { type: String, required: true },
+  cliente: String,
+  nota: { type: Number, required: true, min: 1, max: 5 },
+  horario: { type: Date, default: Date.now },
 });
 
 const FidelidadeSchema = new mongoose.Schema({
@@ -62,14 +146,25 @@ const ConfigSchema = new mongoose.Schema({
 });
 
 const CardapioSchema = new mongoose.Schema({
-  id: Number, categoria: String, nome: String, preco: Number,
-  tempoPreparo: Number, ativo: Boolean, obs: String,
+  id: { type: Number, required: true, unique: true },
+  categoria: { type: String, required: true },
+  nome: { type: String, required: true },
+  preco: { type: Number, required: true, min: 0 },
+  tempoPreparo: { type: Number, default: 10, min: 0 },
+  ativo: { type: Boolean, default: true },
+  obs: String,
 });
 
 const VendaSalaoSchema = new mongoose.Schema({
-  mesa: Number, cliente: String, garcom: String, garcomId: String,
-  itens: Array, total: Number, pagamento: String,
-  abertura: Date, fechamento: { type: Date, default: Date.now },
+  mesa: { type: Number, required: true, min: 0 },
+  cliente: String,
+  garcom: String,
+  garcomId: String,
+  itens: { type: Array, required: true },
+  total: { type: Number, required: true, min: 0 },
+  pagamento: { type: String, required: true, enum: ["pix", "cartao", "dinheiro"] },
+  abertura: Date,
+  fechamento: { type: Date, default: Date.now },
 }, { timestamps: true });
 
 const GarcomSchema = new mongoose.Schema({
@@ -102,8 +197,8 @@ const FechamentoDiaSchema = new mongoose.Schema({
 const EstoqueSchema = new mongoose.Schema({
   nome:          { type: String, required: true },
   unidade:       { type: String, default: "un" },
-  quantidade:    { type: Number, default: 0 },
-  minimo:        { type: Number, default: 0 },
+  quantidade:    { type: Number, default: 0, min: 0 },
+  minimo:        { type: Number, default: 0, min: 0 },
   alertaEnviado: { type: Boolean, default: false },
   cardapioNomes: { type: [String], default: [] },
   consumoPorVenda: { type: Number, default: 1 },
@@ -144,10 +239,28 @@ async function conectarMongo() {
   try {
     await mongoose.connect(ENV.MONGO_URI);
     console.log("✅ MongoDB conectado!");
+    await criarIndices();
     await inicializarDados();
   } catch (e) {
     console.error("⚠️  MongoDB falhou — usando memória:", e.message);
   }
+}
+
+async function criarIndices() {
+  try {
+    await PedidoDB.collection.createIndex({ horario: -1 });
+    await PedidoDB.collection.createIndex({ status: 1 });
+    await PedidoDB.collection.createIndex({ telefone: 1 });
+    await PedidoDB.collection.createIndex({ id: 1 }, { unique: true });
+    await VendaSalaoDB.collection.createIndex({ fechamento: -1 });
+    await VendaSalaoDB.collection.createIndex({ garcom: 1 });
+    await MovEstoqueDB.collection.createIndex({ estoqueId: 1, horario: -1 });
+    await MovEstoqueDB.collection.createIndex({ tipo: 1, horario: -1 });
+    await AvaliacaoDB.collection.createIndex({ horario: -1 });
+    await FechamentoDB.collection.createIndex({ dataStr: 1 }, { unique: true });
+    await EstoqueDB.collection.createIndex({ ativo: 1, nome: 1 });
+    console.log("📊 Índices criados/verificados!");
+  } catch (e) { console.error("Erro ao criar índices:", e.message); }
 }
 
 async function inicializarDados() {
@@ -185,6 +298,8 @@ let sock = null;
 let qrCodeBase64 = null;
 let whatsappStatus = "disconnected"; // disconnected | qr | connected
 let authDir = "./auth_info";
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 // ── CONFIG ────────────────────────────────────────────────────
 let CONFIG = {
@@ -279,7 +394,7 @@ function getFidelidade(tel) {
   return fidelidadeClientes.get(tel);
 }
 async function salvarFidelidade(tel, dados) {
-  try { await FidelidadeDB.updateOne({ telefone: tel }, { $set: dados }, { upsert: true }); } catch {}
+  try { await FidelidadeDB.updateOne({ telefone: tel }, { $set: dados }, { upsert: true }); } catch (e) { console.error("Erro ao salvar fidelidade:", e.message); }
 }
 
 // ── AVALIAÇÕES ────────────────────────────────────────────────
@@ -406,7 +521,11 @@ async function chamarClaude(historico, tel) {
     headers: { "Content-Type": "application/json", "x-api-key": ENV.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: buildSystemPrompt(tel), messages: historico }),
   });
-  if (!res.ok) throw new Error(`Claude error ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 429) throw new Error("Claude API: rate limit atingido. Tente novamente em instantes.");
+    if (res.status === 401) throw new Error("Claude API: chave inválida. Verifique ANTHROPIC_KEY.");
+    throw new Error(`Claude API erro ${res.status}`);
+  }
   const data = await res.json();
   return data.content?.[0]?.text || "Desculpe, tive um probleminha. Pode repetir?";
 }
@@ -486,16 +605,23 @@ async function conectarWhatsApp() {
       const shouldReconnect = (lastDisconnect?.error instanceof Boom)
         ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
         : true;
-      console.log("🔌 Conexão fechada. Reconectando:", shouldReconnect);
       whatsappStatus = "disconnected";
       qrCodeBase64 = null;
-      if (shouldReconnect) setTimeout(conectarWhatsApp, 5000);
+      if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        const delay = Math.min(5000 * Math.pow(2, reconnectAttempts - 1), 300000); // max 5min
+        console.log(`🔌 Conexão fechada. Reconectando em ${delay/1000}s (tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+        setTimeout(conectarWhatsApp, delay);
+      } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.error("❌ Máximo de tentativas de reconexão atingido. Reinicie o servidor.");
+      }
     }
 
     if (connection === "open") {
       console.log("✅ WhatsApp conectado!");
       whatsappStatus = "connected";
       qrCodeBase64 = null;
+      reconnectAttempts = 0; // reset no sucesso
     }
   });
 
@@ -519,7 +645,7 @@ async function conectarWhatsApp() {
           const pedido = pedidos.find(p => p.id === pedidoId);
           const novaAv = { pedidoId, telefone: tel, cliente: pedido?.cliente || tel, nota, horario: new Date().toISOString() };
             avaliacoes.push(novaAv);
-            try { await AvaliacaoDB.create(novaAv); } catch {}
+            try { await AvaliacaoDB.create(novaAv); } catch (e) { console.error("Erro ao salvar avaliação:", e.message); }
           aguardandoAvaliacao.delete(tel);
           const agradecimento = CONFIG.avaliacao.mensagemObrigado.replace(/{cliente}/g, pedido?.cliente || "");
           await enviarMsg(tel, agradecimento);
@@ -540,12 +666,17 @@ async function conectarWhatsApp() {
             const { desconto, cupom: cupomObj } = aplicarCupom(subtotal, dadosPedido.cupom);
             dadosPedido.desconto = desconto;
             dadosPedido.total = subtotal + CONFIG.taxaEntrega - desconto;
-            if (cupomObj) cupomObj.usoAtual += 1;
+            if (cupomObj) {
+              cupomObj.usoAtual += 1;
+              // Atualização atômica no DB para evitar race condition
+              try { await CupomDB.updateOne({ codigo: cupomObj.codigo }, { $inc: { usoAtual: 1 } }); } catch (e) { console.error("Erro ao incrementar uso do cupom:", e.message); }
+            }
           }
           const tempoPreparo = calcularTempoPreparo(dadosPedido.itens);
-          const pedido = { id: String(counter++).padStart(3, "0"), ...dadosPedido, telefone: tel, tempoPreparo, status: "novo", horario: new Date().toISOString() };
+          const pedidoId = String(counter++).padStart(5, "0");
+          const pedido = { id: pedidoId, ...dadosPedido, telefone: tel, tempoPreparo, status: "novo", horario: new Date().toISOString() };
           pedidos.push(pedido);
-          try { await PedidoDB.create(pedido); } catch {}
+          try { await PedidoDB.create(pedido); } catch (e) { console.error("Erro ao salvar pedido no DB:", e.message); }
           console.log(`📦 Pedido #${pedido.id} — ${pedido.cliente}`);
           await enviarMsg(tel, resposta);
           await enviarMsg(tel, `⏱️ Tempo estimado: *${tempoPreparo} minutos*`);
@@ -593,10 +724,63 @@ app.get("/qrcode", (req, res) => {
   </body></html>`);
 });
 
-// ── PEDIDOS API ───────────────────────────────────────────────
-app.get("/pedidos", async (req, res) => { try { const lista = await PedidoDB.find().sort({ horario: -1 }).lean(); res.json(lista); } catch { res.json(pedidos); } });
+// ── AUTH API ─────────────────────────────────────────────────
+app.post("/auth/login", loginLimiter, async (req, res) => {
+  const { pin } = req.body;
+  if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter 4 dígitos" });
+  try {
+    // Verifica garçom
+    const garcom = await GarcomDB.findOne({ pin, ativo: true }).lean();
+    if (garcom) {
+      const token = gerarToken({ role: "garcom", nome: garcom.nome, id: garcom._id });
+      return res.json({ token, role: "garcom", nome: garcom.nome, id: garcom._id });
+    }
+    // PINs de dono/caixa vêm das configs (não hardcoded)
+    const cfg = await ConfigDB.findOne({ chave: "pins" });
+    const pins = cfg?.valor || { dono: process.env.PIN_DONO || "9999", caixa: process.env.PIN_CAIXA || "5678" };
+    if (pin === pins.dono) {
+      const token = gerarToken({ role: "dono" });
+      return res.json({ token, role: "dono" });
+    }
+    if (pin === pins.caixa) {
+      const token = gerarToken({ role: "caixa" });
+      return res.json({ token, role: "caixa" });
+    }
+    return res.status(401).json({ erro: "PIN incorreto" });
+  } catch (e) {
+    console.error("Erro no login:", e.message);
+    return res.status(500).json({ erro: "Erro interno no login" });
+  }
+});
 
-app.patch("/pedidos/:id/status", async (req, res) => {
+app.put("/auth/pins", authMiddleware(["dono"]), async (req, res) => {
+  const { dono, caixa } = req.body;
+  if (dono && !/^\d{4}$/.test(dono)) return res.status(400).json({ erro: "PIN do dono deve ter 4 dígitos" });
+  if (caixa && !/^\d{4}$/.test(caixa)) return res.status(400).json({ erro: "PIN do caixa deve ter 4 dígitos" });
+  try {
+    const atual = await ConfigDB.findOne({ chave: "pins" });
+    const pins = atual?.valor || {};
+    if (dono) pins.dono = dono;
+    if (caixa) pins.caixa = caixa;
+    await ConfigDB.updateOne({ chave: "pins" }, { valor: pins }, { upsert: true });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── PEDIDOS API ───────────────────────────────────────────────
+app.get("/pedidos", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const lista = await PedidoDB.find().sort({ horario: -1 }).skip(skip).limit(parseInt(limit)).lean();
+    res.json(lista);
+  } catch (e) {
+    console.error("Erro ao buscar pedidos:", e.message);
+    res.json(pedidos);
+  }
+});
+
+app.patch("/pedidos/:id/status", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
   if (!["novo","preparando","entrega","entregue","cancelado"].includes(status)) return res.status(400).json({ erro: "Status inválido" });
@@ -604,7 +788,7 @@ app.patch("/pedidos/:id/status", async (req, res) => {
   try {
     const atualizado = await PedidoDB.findOneAndUpdate({ id }, { status }, { new: true }).lean();
     if (atualizado) pedido = atualizado;
-  } catch {}
+  } catch (e) { console.error("Erro ao atualizar pedido:", e.message); }
   if (!pedido) return res.status(404).json({ erro: "Pedido não encontrado" });
   pedido.status = status;
   await enviarMsgStatus(pedido, status);
@@ -616,7 +800,7 @@ app.patch("/pedidos/:id/status", async (req, res) => {
 // ── WHATSAPP STATUS API ───────────────────────────────────────
 app.get("/whatsapp/status", (req, res) => res.json({ status: whatsappStatus }));
 
-app.post("/whatsapp/logout", async (req, res) => {
+app.post("/whatsapp/logout", authMiddleware(["dono"]), async (req, res) => {
   try {
     if (sock) await sock.logout();
     if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true });
@@ -631,7 +815,7 @@ app.post("/whatsapp/logout", async (req, res) => {
 
 // ── CUPONS API ────────────────────────────────────────────────
 app.get("/cupons", async (req, res) => { try { const lista = await CupomDB.find().lean(); res.json(lista); } catch { res.json(cupons); } });
-app.post("/cupons", async (req, res) => {
+app.post("/cupons", authMiddleware(["dono"]), async (req, res) => {
   const { codigo, tipo, valor, usoMax, validade, descricao } = req.body;
   if (!codigo || !tipo || valor === undefined) return res.status(400).json({ erro: "codigo, tipo e valor obrigatórios" });
   const novo = { codigo: codigo.toUpperCase(), tipo, valor: parseFloat(valor), ativo: true, usoMax: usoMax || null, usoAtual: 0, validade: validade || null, descricao: descricao || "" };
@@ -643,16 +827,16 @@ app.post("/cupons", async (req, res) => {
     res.status(201).json(criado);
   } catch { cupons.push(novo); res.status(201).json(novo); }
 });
-app.patch("/cupons/:codigo/ativo", async (req, res) => {
+app.patch("/cupons/:codigo/ativo", authMiddleware(["dono"]), async (req, res) => {
   const codigo = req.params.codigo.toUpperCase();
-  try { await CupomDB.updateOne({ codigo }, { ativo: req.body.ativo }); } catch {}
+  try { await CupomDB.updateOne({ codigo }, { ativo: req.body.ativo }); } catch (e) { console.error("Erro ao atualizar cupom:", e.message); }
   const cupom = cupons.find(c => c.codigo === codigo);
   if (cupom) cupom.ativo = req.body.ativo;
   res.json(cupom || { codigo, ativo: req.body.ativo });
 });
-app.delete("/cupons/:codigo", async (req, res) => {
+app.delete("/cupons/:codigo", authMiddleware(["dono"]), async (req, res) => {
   const codigo = req.params.codigo.toUpperCase();
-  try { await CupomDB.deleteOne({ codigo }); } catch {}
+  try { await CupomDB.deleteOne({ codigo }); } catch (e) { console.error("Erro ao deletar cupom:", e.message); }
   const idx = cupons.findIndex(c => c.codigo === codigo);
   const removido = idx !== -1 ? cupons.splice(idx, 1)[0] : { codigo };
   res.json({ ok: true, removido });
@@ -663,7 +847,14 @@ app.post("/cupons/validar", (req, res) => {
 });
 
 // ── AVALIAÇÕES API ────────────────────────────────────────────
-app.get("/avaliacoes", async (req, res) => { try { const lista = await AvaliacaoDB.find().sort({ horario: -1 }).lean(); res.json(lista); } catch { res.json(avaliacoes); } });
+app.get("/avaliacoes", async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const lista = await AvaliacaoDB.find().sort({ horario: -1 }).skip(skip).limit(parseInt(limit)).lean();
+    res.json(lista);
+  } catch (e) { console.error("Erro ao buscar avaliações:", e.message); res.json(avaliacoes); }
+});
 app.get("/avaliacoes/resumo", async (req, res) => {
   try {
     const lista = await AvaliacaoDB.find().lean();
@@ -696,47 +887,60 @@ app.get("/fidelidade", async (req, res) => {
 
 // ── CARDÁPIO API ──────────────────────────────────────────────
 app.get("/cardapio", (req, res) => res.json(CARDAPIO));
-app.post("/cardapio", async (req, res) => {
+app.post("/cardapio", authMiddleware(["dono"]), async (req, res) => {
   const { categoria, nome, preco, tempoPreparo, obs } = req.body;
   if (!categoria || !nome || !preco) return res.status(400).json({ erro: "categoria, nome e preco obrigatórios" });
   const item = { id: nextItemId++, categoria, nome, preco: parseFloat(preco), tempoPreparo: parseInt(tempoPreparo) || 10, ativo: true, obs: obs || null };
-  try { await CardapioDB.create(item); } catch {}
+  try { await CardapioDB.create(item); } catch (e) { console.error("Erro ao criar item no cardápio:", e.message); }
   CARDAPIO.push(item);
   res.status(201).json(item);
 });
-app.put("/cardapio/:id", async (req, res) => {
+app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const id = parseInt(req.params.id);
   const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
-  CARDAPIO[idx] = { ...CARDAPIO[idx], ...req.body, id };
-  try { await CardapioDB.updateOne({ id }, { $set: req.body }); } catch {}
+  // Apenas campos permitidos
+  const allowed = ["categoria", "nome", "preco", "tempoPreparo", "ativo", "obs"];
+  const update = {};
+  for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
+  if (update.preco !== undefined) update.preco = parseFloat(update.preco);
+  if (update.tempoPreparo !== undefined) update.tempoPreparo = parseInt(update.tempoPreparo);
+  CARDAPIO[idx] = { ...CARDAPIO[idx], ...update, id };
+  try { await CardapioDB.updateOne({ id }, { $set: update }); } catch (e) { console.error("Erro ao atualizar cardápio:", e.message); }
   res.json(CARDAPIO[idx]);
 });
-app.patch("/cardapio/:id/ativo", async (req, res) => {
+app.patch("/cardapio/:id/ativo", authMiddleware(["dono"]), async (req, res) => {
   const id = parseInt(req.params.id);
   const item = CARDAPIO.find(i => i.id === id);
   if (!item) return res.status(404).json({ erro: "Item não encontrado" });
   item.ativo = req.body.ativo;
-  try { await CardapioDB.updateOne({ id }, { ativo: req.body.ativo }); } catch {}
+  try { await CardapioDB.updateOne({ id }, { ativo: req.body.ativo }); } catch (e) { console.error("Erro ao toggle cardápio:", e.message); }
   res.json(item);
 });
-app.delete("/cardapio/:id", async (req, res) => {
+app.delete("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const id = parseInt(req.params.id);
   const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   const [removido] = CARDAPIO.splice(idx, 1);
-  try { await CardapioDB.deleteOne({ id }); } catch {}
+  try { await CardapioDB.deleteOne({ id }); } catch (e) { console.error("Erro ao deletar item cardápio:", e.message); }
   res.json({ ok: true, removido });
 });
 
 // ── CONFIG API ────────────────────────────────────────────────
 app.get("/config", (req, res) => res.json(CONFIG));
-async function salvarConfig() { try { await ConfigDB.updateOne({ chave: "config" }, { valor: CONFIG }, { upsert: true }); } catch {} }
-app.put("/config", async (req, res) => { CONFIG = { ...CONFIG, ...req.body }; await salvarConfig(); res.json(CONFIG); });
-app.put("/config/horario", async (req, res) => { CONFIG.horarioFuncionamento = { ...CONFIG.horarioFuncionamento, ...req.body }; await salvarConfig(); res.json(CONFIG.horarioFuncionamento); });
-app.put("/config/mensagens", async (req, res) => { CONFIG.mensagensAutomaticas = { ...CONFIG.mensagensAutomaticas, ...req.body }; await salvarConfig(); res.json(CONFIG.mensagensAutomaticas); });
-app.put("/config/fidelidade", async (req, res) => { CONFIG.fidelidade = { ...CONFIG.fidelidade, ...req.body }; await salvarConfig(); res.json(CONFIG.fidelidade); });
-app.put("/config/avaliacao", async (req, res) => { CONFIG.avaliacao = { ...CONFIG.avaliacao, ...req.body }; await salvarConfig(); res.json(CONFIG.avaliacao); });
+async function salvarConfig() { try { await ConfigDB.updateOne({ chave: "config" }, { valor: CONFIG }, { upsert: true }); } catch (e) { console.error("Erro ao salvar config:", e.message); } }
+app.put("/config", authMiddleware(["dono"]), async (req, res) => {
+  const allowed = ["nomeEstabelecimento", "nomeAgente", "taxaEntrega", "tempoEntregaMin", "tempoEntregaMax", "entregaCEP"];
+  const update = {};
+  for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
+  CONFIG = { ...CONFIG, ...update };
+  await salvarConfig();
+  res.json(CONFIG);
+});
+app.put("/config/horario", authMiddleware(["dono"]), async (req, res) => { CONFIG.horarioFuncionamento = { ...CONFIG.horarioFuncionamento, ...req.body }; await salvarConfig(); res.json(CONFIG.horarioFuncionamento); });
+app.put("/config/mensagens", authMiddleware(["dono"]), async (req, res) => { CONFIG.mensagensAutomaticas = { ...CONFIG.mensagensAutomaticas, ...req.body }; await salvarConfig(); res.json(CONFIG.mensagensAutomaticas); });
+app.put("/config/fidelidade", authMiddleware(["dono"]), async (req, res) => { CONFIG.fidelidade = { ...CONFIG.fidelidade, ...req.body }; await salvarConfig(); res.json(CONFIG.fidelidade); });
+app.put("/config/avaliacao", authMiddleware(["dono"]), async (req, res) => { CONFIG.avaliacao = { ...CONFIG.avaliacao, ...req.body }; await salvarConfig(); res.json(CONFIG.avaliacao); });
 app.get("/config/status-loja", (req, res) => res.json({ aberto: estaAberto(), proximaAbertura: proximaAbertura() }));
 
 // ── VENDAS SALÃO API ─────────────────────────────────────────
@@ -747,7 +951,11 @@ app.get("/vendas-salao", async (req, res) => {
     res.json(lista);
   } catch { res.json([]); }
 });
-app.post("/vendas-salao", async (req, res) => {
+app.post("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  const { mesa, itens, total, pagamento } = req.body;
+  if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
+  if (!total || total <= 0) return res.status(400).json({ erro: "Total inválido" });
+  if (!pagamento) return res.status(400).json({ erro: "Forma de pagamento obrigatória" });
   try {
     const venda = await VendaSalaoDB.create(req.body);
     // Baixa automática no estoque
@@ -756,7 +964,7 @@ app.post("/vendas-salao", async (req, res) => {
   }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
-app.delete("/vendas-salao/:id", async (req, res) => {
+app.delete("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
   try { await VendaSalaoDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
@@ -818,7 +1026,7 @@ app.get("/estoque", async (req, res) => {
   } catch { res.json([]); }
 });
 
-app.post("/estoque", async (req, res) => {
+app.post("/estoque", authMiddleware(["dono"]), async (req, res) => {
   const { nome, unidade, quantidade, minimo, cardapioNomes, consumoPorVenda, tipo, capacidadeBarril, alertaTelefone } = req.body;
   if (!nome) return res.status(400).json({ erro: "nome é obrigatório" });
   try {
@@ -838,7 +1046,7 @@ app.post("/estoque", async (req, res) => {
 });
 
 // Excluir movimentação (deve vir ANTES das rotas com :id para não conflitar)
-app.delete("/estoque/movimentacoes/:movId", async (req, res) => {
+app.delete("/estoque/movimentacoes/:movId", authMiddleware(["dono"]), async (req, res) => {
   try {
     const mov = await MovEstoqueDB.findById(req.params.movId).lean();
     if (!mov) return res.status(404).json({ erro: "Movimentação não encontrada" });
@@ -878,7 +1086,7 @@ app.get("/estoque/relatorio/consumo", async (req, res) => {
   } catch { res.json([]); }
 });
 
-app.put("/estoque/:id", async (req, res) => {
+app.put("/estoque/:id", authMiddleware(["dono"]), async (req, res) => {
   try {
     const item = await EstoqueDB.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean();
     if (!item) return res.status(404).json({ erro: "Item não encontrado" });
@@ -886,7 +1094,7 @@ app.put("/estoque/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
-app.delete("/estoque/:id", async (req, res) => {
+app.delete("/estoque/:id", authMiddleware(["dono"]), async (req, res) => {
   try {
     await EstoqueDB.findByIdAndUpdate(req.params.id, { ativo: false });
     res.json({ ok: true });
@@ -894,7 +1102,7 @@ app.delete("/estoque/:id", async (req, res) => {
 });
 
 // Entrada de mercadoria
-app.post("/estoque/:id/entrada", async (req, res) => {
+app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
   const { quantidade, motivo } = req.body;
   if (!quantidade || quantidade <= 0) return res.status(400).json({ erro: "quantidade inválida" });
   try {
@@ -915,7 +1123,7 @@ app.post("/estoque/:id/entrada", async (req, res) => {
 });
 
 // Ajuste manual (inventário)
-app.post("/estoque/:id/ajuste", async (req, res) => {
+app.post("/estoque/:id/ajuste", authMiddleware(["dono"]), async (req, res) => {
   const { quantidade, motivo } = req.body;
   if (quantidade === undefined) return res.status(400).json({ erro: "quantidade obrigatória" });
   try {
@@ -1027,7 +1235,7 @@ app.get("/garcons", async (req, res) => {
   } catch { res.json([]); }
 });
 
-app.post("/garcons", async (req, res) => {
+app.post("/garcons", authMiddleware(["dono"]), async (req, res) => {
   const { nome, pin } = req.body;
   if (!nome || !pin) return res.status(400).json({ erro: "nome e pin são obrigatórios" });
   if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter exatamente 4 dígitos" });
@@ -1040,7 +1248,7 @@ app.post("/garcons", async (req, res) => {
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
-app.put("/garcons/:id", async (req, res) => {
+app.put("/garcons/:id", authMiddleware(["dono"]), async (req, res) => {
   const { nome, pin, ativo } = req.body;
   const update = {};
   if (nome) update.nome = nome.trim();
@@ -1059,7 +1267,7 @@ app.put("/garcons/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
-app.delete("/garcons/:id", async (req, res) => {
+app.delete("/garcons/:id", authMiddleware(["dono"]), async (req, res) => {
   try { await GarcomDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
@@ -1112,7 +1320,7 @@ app.get("/garcons/relatorio", async (req, res) => {
 });
 
 // ── FECHAMENTO DO DIA API ─────────────────────────────────────
-app.post("/fechamento-dia", async (req, res) => {
+app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) => {
   try {
     const { obs, criadoPor } = req.body;
     const hoje = new Date();
@@ -1186,7 +1394,7 @@ app.get("/fechamento-dia/:dataStr", async (req, res) => {
 });
 
 // ── RESET (apagar dados de teste) ────────────────────────────
-app.post("/reset/dados-teste", async (req, res) => {
+app.post("/reset/dados-teste", authMiddleware(["dono"]), async (req, res) => {
   const { confirmar } = req.body;
   if (confirmar !== "CONFIRMAR_RESET") return res.status(400).json({ erro: "Confirmação incorreta" });
   try {

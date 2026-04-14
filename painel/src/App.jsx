@@ -27,44 +27,91 @@ const T = {
   radiusL: "24px",
 };
 
-function getPins() {
-  try {
-    const saved = localStorage.getItem("imperio_pins");
-    return saved ? JSON.parse(saved) : { dono: "9999", caixa: "5678" };
-  } catch { return { dono: "9999", caixa: "5678" }; }
+// ── AUTH HELPERS ──────────────────────────────────────────────
+function getToken() { return sessionStorage.getItem("imperio_token"); }
+function setToken(token) { sessionStorage.setItem("imperio_token", token); }
+function clearToken() { sessionStorage.removeItem("imperio_token"); sessionStorage.removeItem("imperio_login"); }
+function getSavedLogin() {
+  try { const s = sessionStorage.getItem("imperio_login"); return s ? JSON.parse(s) : null; } catch { return null; }
+}
+function saveLogin(login) { sessionStorage.setItem("imperio_login", JSON.stringify(login)); }
+
+// Header de auth para todas as requisições
+export function authHeaders() {
+  const token = getToken();
+  return token ? { "Content-Type": "application/json", "Authorization": `Bearer ${token}` } : { "Content-Type": "application/json" };
+}
+
+// Fetch com auth automático
+export async function authFetch(url, opts = {}) {
+  const res = await fetch(url, { ...opts, headers: { ...authHeaders(), ...opts.headers } });
+  if (res.status === 401) { clearToken(); window.location.reload(); }
+  return res;
 }
 
 function TelaLogin({ onLogin }) {
   const [pin, setPin] = useState("");
   const [erro, setErro] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [msgErro, setMsgErro] = useState("❌ PIN incorreto. Tente novamente.");
+  const [msgErro, setMsgErro] = useState("PIN incorreto. Tente novamente.");
+  const [tentativas, setTentativas] = useState(0);
+  const [bloqueado, setBloqueado] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+
+  // Countdown de bloqueio
+  useEffect(() => {
+    if (bloqueado && countdown > 0) {
+      const t = setTimeout(() => setCountdown(c => c - 1), 1000);
+      return () => clearTimeout(t);
+    }
+    if (bloqueado && countdown === 0) { setBloqueado(false); setTentativas(0); }
+  }, [bloqueado, countdown]);
 
   async function verificarPin(novoPin) {
+    if (bloqueado) return;
     setLoading(true);
-    const pins = getPins();
 
-    // Verifica dono
-    if (novoPin === pins.dono) { onLogin({ role: "dono" }); return; }
-    // Verifica caixa
-    if (novoPin === pins.caixa) { onLogin({ role: "caixa" }); return; }
-
-    // Verifica garçom no backend
     try {
-      const res = await fetch(BACKEND_URL + "/garcons/verificar-pin", {
+      const res = await fetch(BACKEND_URL + "/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pin: novoPin }),
       });
+
       if (res.ok) {
-        const garcom = await res.json();
-        onLogin({ role: "garcom", nome: garcom.nome, id: garcom.id });
+        const data = await res.json();
+        setToken(data.token);
+        const login = { role: data.role, nome: data.nome, id: data.id };
+        saveLogin(login);
+        onLogin(login);
         return;
       }
-    } catch {}
 
-    // PIN não encontrado
-    setMsgErro("❌ PIN incorreto. Tente novamente.");
+      if (res.status === 429) {
+        setMsgErro("Muitas tentativas. Aguarde 15 minutos.");
+        setErro(true);
+        setPin("");
+        setLoading(false);
+        return;
+      }
+    } catch (e) {
+      setMsgErro("Erro de conexão. Verifique sua internet.");
+      setErro(true);
+      setPin("");
+      setLoading(false);
+      return;
+    }
+
+    // PIN incorreto
+    const novasTentativas = tentativas + 1;
+    setTentativas(novasTentativas);
+    if (novasTentativas >= 5) {
+      setBloqueado(true);
+      setCountdown(60);
+      setMsgErro("Muitas tentativas. Aguarde 60 segundos.");
+    } else {
+      setMsgErro(`PIN incorreto. ${5 - novasTentativas} tentativa${5 - novasTentativas !== 1 ? "s" : ""} restante${5 - novasTentativas !== 1 ? "s" : ""}.`);
+    }
     setErro(true);
     setPin("");
     setLoading(false);
@@ -127,8 +174,8 @@ function TelaLogin({ onLogin }) {
         ))}
       </div>
 
-      <div style={{ height: 20, marginBottom: 20, fontSize: 13, color: erro ? "#FFB3B3" : "rgba(255,255,255,0.4)", fontWeight: erro ? 600 : 400 }}>
-        {erro ? msgErro : loading ? "Verificando..." : pin.length > 0 ? "•".repeat(pin.length) + "○".repeat(4-pin.length) : ""}
+      <div style={{ height: 30, marginBottom: 16, fontSize: 13, color: erro ? "#FFB3B3" : bloqueado ? "#FFB3B3" : "rgba(255,255,255,0.4)", fontWeight: erro || bloqueado ? 600 : 400, textAlign: "center", maxWidth: 260 }}>
+        {bloqueado ? `Bloqueado por ${countdown}s` : erro ? msgErro : loading ? "Verificando..." : pin.length > 0 ? "\u2022".repeat(pin.length) + "\u25CB".repeat(4-pin.length) : ""}
       </div>
 
       {/* Keypad */}
@@ -174,8 +221,15 @@ function TelaLogin({ onLogin }) {
 }
 
 export default function App() {
-  // login = null | { role: "dono"|"garcom"|"caixa", nome?: string, id?: string }
-  const [login, setLogin] = useState(null);
+  const [login, setLogin] = useState(() => {
+    // Restaura sessão se token válido
+    const token = getToken();
+    if (token) {
+      const saved = getSavedLogin();
+      if (saved) return saved;
+    }
+    return null;
+  });
   const [installPrompt, setInstallPrompt] = useState(null);
   const [showInstall, setShowInstall] = useState(false);
 
@@ -222,10 +276,10 @@ export default function App() {
       <PainelPedidos
         abrirSalao={login.role}
         garcomLogado={login.role === "garcom" ? { nome: login.nome, id: login.id } : null}
-        onSair={() => setLogin(null)}
+        onSair={() => { clearToken(); setLogin(null); }}
       />
     );
   }
 
-  return <PainelPedidos onSair={() => setLogin(null)} />;
+  return <PainelPedidos onSair={() => { clearToken(); setLogin(null); }} />;
 }
