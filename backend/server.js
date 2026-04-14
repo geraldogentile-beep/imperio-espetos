@@ -801,6 +801,52 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono", "caixa", "garcom"]), as
   res.json(pedido);
 });
 
+// ── EDITAR PEDIDO (itens) ─────────────────────────────────────
+app.put("/pedidos/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  const { id } = req.params;
+  const { itens, obs } = req.body;
+  if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
+  // Valida cada item
+  for (const item of itens) {
+    if (!item.nome || !item.preco || item.preco <= 0) return res.status(400).json({ erro: "Item inválido: nome e preço obrigatórios" });
+    if (!item.qty || item.qty < 1) return res.status(400).json({ erro: `Quantidade inválida para ${item.nome}` });
+  }
+  try {
+    // Atualização atômica — só permite se status for "novo" ou "preparando"
+    const pedidoAtual = await PedidoDB.findOne({ id, status: { $in: ["novo", "preparando"] } }).lean();
+    if (!pedidoAtual) return res.status(409).json({ erro: "Pedido não encontrado ou já avançou de status" });
+    // Recalcula valores
+    const subtotal = itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0);
+    let desconto = 0;
+    if (pedidoAtual.cupom) {
+      const resultado = aplicarCupom(subtotal, pedidoAtual.cupom);
+      desconto = resultado.desconto || 0;
+    }
+    const total = subtotal + CONFIG.taxaEntrega - desconto;
+    const tempoPreparo = calcularTempoPreparo(itens);
+    const update = {
+      itens, subtotal: parseFloat(subtotal.toFixed(2)),
+      desconto: parseFloat(desconto.toFixed(2)),
+      total: parseFloat(total.toFixed(2)),
+      tempoPreparo,
+      obs: obs !== undefined ? obs : pedidoAtual.obs,
+    };
+    const atualizado = await PedidoDB.findOneAndUpdate(
+      { id, status: { $in: ["novo", "preparando"] } },
+      { $set: update },
+      { new: true }
+    ).lean();
+    if (!atualizado) return res.status(409).json({ erro: "Pedido já avançou de status durante a edição" });
+    // Atualiza memória
+    const idx = pedidos.findIndex(p => p.id === id);
+    if (idx !== -1) pedidos[idx] = { ...pedidos[idx], ...update };
+    res.json(atualizado);
+  } catch (e) {
+    console.error("Erro ao editar pedido:", e.message);
+    res.status(500).json({ erro: "Erro ao editar pedido" });
+  }
+});
+
 // ── WHATSAPP STATUS API ───────────────────────────────────────
 app.get("/whatsapp/status", (req, res) => res.json({ status: whatsappStatus }));
 

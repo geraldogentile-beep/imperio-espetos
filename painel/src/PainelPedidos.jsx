@@ -2615,51 +2615,142 @@ function Clientes({ pedidos }) {
 }
 
 // ── CARD PEDIDO ───────────────────────────────────────────────
-function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando }) {
+function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit, cardapio }) {
   const total = calcTotal(pedido.itens, pedido.desconto || 0);
   const sc = STATUS_CONFIG[pedido.status] || STATUS_CONFIG.novo;
   const nxt = { novo: "preparando", preparando: "entrega", entrega: "entregue" }[pedido.status];
   const isNovo = pedido.status === "novo";
+  const podeEditar = pedido.status === "novo" || pedido.status === "preparando";
+
+  const [editMode, setEditMode] = useState(false);
+  const [editItens, setEditItens] = useState([]);
+  const [editObs, setEditObs] = useState("");
+  const [addAberto, setAddAberto] = useState(false);
+  const [buscaItem, setBuscaItem] = useState("");
+
+  function iniciarEdicao() {
+    setEditItens((pedido.itens || []).map(i => ({ ...i, qty: i.qty || 1 })));
+    setEditObs(pedido.obs || "");
+    setEditMode(true);
+    setAddAberto(false);
+  }
+
+  function editQty(idx, delta) {
+    setEditItens(prev => prev.map((it, i) => i === idx ? { ...it, qty: it.qty + delta } : it).filter(it => it.qty > 0));
+  }
+
+  function removerItem(idx) {
+    setEditItens(prev => prev.filter((_, i) => i !== idx));
+  }
+
+  function adicionarItem(item) {
+    const existe = editItens.findIndex(i => i.nome.toLowerCase() === item.nome.toLowerCase());
+    if (existe >= 0) {
+      setEditItens(prev => prev.map((it, i) => i === existe ? { ...it, qty: it.qty + 1 } : it));
+    } else {
+      setEditItens(prev => [...prev, { nome: item.nome, preco: item.preco, qty: 1 }]);
+    }
+    setAddAberto(false);
+    setBuscaItem("");
+  }
+
+  const editSubtotal = editItens.reduce((s, i) => s + i.qty * i.preco, 0);
+  const editTotal = editSubtotal + 5 - (pedido.desconto || 0);
+
+  const cardapioFiltrado = (cardapio || []).filter(c => c.ativo !== false && c.nome.toLowerCase().includes(buscaItem.toLowerCase()));
+
   return (
-    <div style={{ background: T.white, borderRadius: T.radius, boxShadow: isNovo ? `0 0 0 2px ${T.amber}, ${T.shadowM}` : T.shadow, overflow: "hidden", opacity: atualizando ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${isNovo ? T.amber+"40" : T.grayL}` }}>
-      <div onClick={onToggle} style={{ padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, borderLeft: `3px solid ${sc.color}`, userSelect: "none" }}>
-        <div style={{ width: 42, height: 42, borderRadius: T.radiusS, background: sc.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0, border: `1px solid ${sc.color}20` }}>{atualizando ? "⏳" : sc.icon}</div>
+    <div style={{ background: T.white, borderRadius: T.radius, boxShadow: isNovo ? `0 0 0 2px ${T.amber}, ${T.shadowM}` : T.shadow, overflow: "hidden", opacity: atualizando ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${editMode ? T.blue+"60" : isNovo ? T.amber+"40" : T.grayL}` }}>
+      <div onClick={onToggle} style={{ padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, borderLeft: `3px solid ${editMode ? T.blue : sc.color}`, userSelect: "none" }}>
+        <div style={{ width: 42, height: 42, borderRadius: T.radiusS, background: editMode ? T.blueL : sc.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0, border: `1px solid ${editMode ? T.blue+"20" : sc.color+"20"}` }}>{atualizando ? "⏳" : editMode ? "✏️" : sc.icon}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span style={{ fontWeight: 700, fontSize: 14, color: T.dark, fontFamily:"'DM Sans',sans-serif" }}>#{pedido.id} — {pedido.cliente}</span>
-            <Badge status={pedido.status} />
+            {editMode ? <span style={{ background: T.blueL, color: T.blue, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 600 }}>Editando</span> : <Badge status={pedido.status} />}
             {pedido.cupom && <span style={{ background: T.purpleL, color: T.purple, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 600 }}>🎟️ {pedido.cupom}</span>}
           </div>
           <div style={{ fontSize: 12, color: T.gray, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📍 {pedido.endereco}</div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: T.wine }}>R$ {total.toFixed(2)}</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: editMode ? T.blue : T.wine }}>R$ {editMode ? editTotal.toFixed(2) : total.toFixed(2)}</div>
           <div style={{ fontSize: 11, color: T.gray, marginTop: 1 }}>⏱️ {pedido.tempoPreparo || "—"}min</div>
         </div>
         <div style={{ color: T.grayL, fontSize: 16, flexShrink: 0 }}>{expanded ? "▴" : "▾"}</div>
       </div>
       {expanded && (
-        <div style={{ borderTop: `1px solid ${T.grayL}`, padding: "14px 16px", background: T.grayLL }}>
-          <div style={{ background: T.white, borderRadius: T.radiusS, padding: "12px", marginBottom: 12, border: `1px solid ${T.grayL}` }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: T.gray, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Itens do pedido</div>
-            {(pedido.itens || []).map((it, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.grayL}`, fontSize: 13, color: T.dark }}>
-                <span style={{ color: T.gray }}>{it.qty || 1}× <span style={{ color: T.dark }}>{it.nome}</span></span>
-                <span style={{ fontWeight: 600, color: T.dark }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span>
-              </div>
-            ))}
+        <div style={{ borderTop: `1px solid ${T.grayL}`, padding: "14px 16px", background: editMode ? T.blueL+"30" : T.grayLL }}>
+          <div style={{ background: T.white, borderRadius: T.radiusS, padding: "12px", marginBottom: 12, border: `1px solid ${editMode ? T.blue+"40" : T.grayL}` }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.gray, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>{editMode ? "Editando itens" : "Itens do pedido"}</div>
+            {editMode ? (
+              <>
+                {editItens.map((it, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${T.grayL}` }}>
+                    <button onClick={() => removerItem(i)} style={{ width: 24, height: 24, borderRadius: "50%", border: "none", background: T.redL, color: T.red, fontWeight: 800, fontSize: 14, cursor: "pointer", flexShrink: 0 }}>×</button>
+                    <div style={{ flex: 1, fontSize: 13 }}>{it.nome}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button onClick={() => editQty(i, -1)} style={{ width: 26, height: 26, borderRadius: "50%", border: "none", background: T.redL, color: T.red, fontWeight: 800, fontSize: 15, cursor: "pointer" }}>−</button>
+                      <span style={{ fontWeight: 800, minWidth: 18, textAlign: "center" }}>{it.qty}</span>
+                      <button onClick={() => editQty(i, 1)} style={{ width: 26, height: 26, borderRadius: "50%", border: "none", background: T.greenL, color: T.green, fontWeight: 800, fontSize: 15, cursor: "pointer" }}>+</button>
+                    </div>
+                    <span style={{ fontWeight: 600, fontSize: 13, minWidth: 60, textAlign: "right" }}>R$ {(it.qty * it.preco).toFixed(2)}</span>
+                  </div>
+                ))}
+                {editItens.length === 0 && <div style={{ textAlign: "center", padding: 10, color: T.gray, fontSize: 13 }}>Nenhum item</div>}
+                {/* Adicionar item */}
+                {!addAberto ? (
+                  <button onClick={() => setAddAberto(true)} style={{ width: "100%", marginTop: 8, padding: "8px", background: T.greenL, color: T.green, border: `1px dashed ${T.green}`, borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>+ Adicionar item</button>
+                ) : (
+                  <div style={{ marginTop: 8, border: `1px solid ${T.grayL}`, borderRadius: 8, overflow: "hidden" }}>
+                    <input value={buscaItem} onChange={e => setBuscaItem(e.target.value)} placeholder="Buscar item..." autoFocus style={{ width: "100%", padding: "8px 10px", border: "none", borderBottom: `1px solid ${T.grayL}`, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+                    <div style={{ maxHeight: 150, overflowY: "auto" }}>
+                      {cardapioFiltrado.slice(0, 10).map(c => (
+                        <div key={c.id} onClick={() => adicionarItem(c)} style={{ padding: "8px 10px", cursor: "pointer", display: "flex", justifyContent: "space-between", fontSize: 13, borderBottom: `1px solid ${T.grayL}` }}
+                          onMouseEnter={e => e.currentTarget.style.background = T.grayLL} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          <span>{c.nome}</span><span style={{ color: T.gray }}>R$ {c.preco.toFixed(2)}</span>
+                        </div>
+                      ))}
+                      {cardapioFiltrado.length === 0 && <div style={{ padding: 10, textAlign: "center", color: T.gray, fontSize: 12 }}>Nenhum item encontrado</div>}
+                    </div>
+                    <button onClick={() => { setAddAberto(false); setBuscaItem(""); }} style={{ width: "100%", padding: 6, background: T.grayL, border: "none", fontSize: 12, cursor: "pointer", color: T.gray }}>Fechar</button>
+                  </div>
+                )}
+                {/* Obs */}
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 11, color: T.gray, marginBottom: 4 }}>Observação</div>
+                  <input value={editObs} onChange={e => setEditObs(e.target.value)} placeholder="Obs do pedido..." style={{ width: "100%", padding: "7px 10px", border: `1px solid ${T.grayL}`, borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+                </div>
+              </>
+            ) : (
+              <>
+                {(pedido.itens || []).map((it, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.grayL}`, fontSize: 13, color: T.dark }}>
+                    <span style={{ color: T.gray }}>{it.qty || 1}× <span style={{ color: T.dark }}>{it.nome}</span></span>
+                    <span style={{ fontWeight: 600, color: T.dark }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span>
+                  </div>
+                ))}
+              </>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.gray }}><span>Taxa de entrega</span><span>R$ 5,00</span></div>
-            {pedido.desconto > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.purple }}><span>🎟️ Desconto ({pedido.cupom})</span><span>−R$ {pedido.desconto.toFixed(2)}</span></div>}
-            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 4, borderTop: `1px solid ${T.grayL}`, fontSize: 15, fontWeight: 700, color: T.wine }}><span>Total</span><span>R$ {total.toFixed(2)}</span></div>
+            {(editMode ? pedido.desconto : pedido.desconto) > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.purple }}><span>🎟️ Desconto ({pedido.cupom})</span><span>-R$ {pedido.desconto.toFixed(2)}</span></div>}
+            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 4, borderTop: `1px solid ${T.grayL}`, fontSize: 15, fontWeight: 700, color: editMode ? T.blue : T.wine }}><span>Total</span><span>R$ {editMode ? editTotal.toFixed(2) : total.toFixed(2)}</span></div>
           </div>
-          {pedido.obs && <div style={{ background: T.amberL, border: `1px solid ${T.amber}40`, borderRadius: T.radiusS, padding: "8px 12px", marginBottom: 12, fontSize: 13, color: T.amber }}>⚠️ <strong>Obs:</strong> {pedido.obs}</div>}
+          {!editMode && pedido.obs && <div style={{ background: T.amberL, border: `1px solid ${T.amber}40`, borderRadius: T.radiusS, padding: "8px 12px", marginBottom: 12, fontSize: 13, color: T.amber }}>⚠️ <strong>Obs:</strong> {pedido.obs}</div>}
           <div style={{ fontSize: 12, color: T.gray, marginBottom: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
             <span>📞 {pedido.telefone}</span>
             <span>🕐 {horaFmt(pedido.horario)}</span>
             {pedido.tempoPreparo && <span>⏱️ ~{pedido.tempoPreparo}min</span>}
           </div>
-          {pedido.status !== "entregue" && pedido.status !== "cancelado" && (
+          {editMode ? (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { if (editItens.length === 0) return; onEdit(pedido.id, editItens, editObs); setEditMode(false); }} disabled={atualizando || editItens.length === 0}
+                style={{ flex: 1, background: editItens.length > 0 ? `linear-gradient(135deg,${T.green},#1a6b3c)` : T.grayL, color: T.white, border: "none", borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: editItens.length > 0 ? "pointer" : "not-allowed", fontFamily:"'DM Sans',sans-serif" }}>
+                Salvar alteracao
+              </button>
+              <button onClick={() => setEditMode(false)} style={{ background: T.white, color: T.gray, border: `1.5px solid ${T.grayL}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>Cancelar</button>
+            </div>
+          ) : pedido.status !== "entregue" && pedido.status !== "cancelado" && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {podeEditar && <button onClick={iniciarEdicao} style={{ background: T.white, color: T.blue, border: `1.5px solid ${T.blue}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>✏️ Editar</button>}
               {nxt && <button onClick={() => onStatus(pedido.id, nxt)} disabled={atualizando} style={{ flex: 1, minWidth: 140, background: atualizando ? T.grayL : `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily:"'DM Sans',sans-serif" }}>{STATUS_CONFIG[nxt].icon} {STATUS_CONFIG[nxt].label}</button>}
               <button onClick={() => onStatus(pedido.id, "cancelado")} disabled={atualizando} style={{ background: T.white, color: T.red, border: `1.5px solid ${T.red}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>❌ Cancelar</button>
             </div>
@@ -2803,6 +2894,72 @@ function PinLogin({ onLogin }) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
+// ── EDITOR DE RODADAS (ITENS JÁ ENVIADOS À COZINHA) ─────────
+function RodadasEditor({ rodadas, isDono, onSave }) {
+  const [editIdx, setEditIdx] = useState(null);
+  const [editItens, setEditItens] = useState([]);
+
+  function iniciarEdicao(ri) {
+    setEditItens((rodadas[ri].itens || []).map(i => ({ ...i, qty: i.qty || 1 })));
+    setEditIdx(ri);
+  }
+
+  function salvar() {
+    const novasRodadas = rodadas.map((r, i) => i === editIdx ? { ...r, itens: editItens, editadoEm: new Date().toISOString() } : r);
+    onSave(novasRodadas);
+    setEditIdx(null);
+  }
+
+  function chgEditQty(idx, delta) {
+    setEditItens(prev => prev.map((it, i) => i === idx ? { ...it, qty: it.qty + delta } : it).filter(it => it.qty > 0));
+  }
+
+  return (
+    <div style={{background:"#fff",borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:8}}>
+      <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Enviados à cozinha</div>
+      {rodadas.map((r, ri) => (
+        <div key={ri} style={{marginBottom:8,paddingBottom:8,borderBottom:"1px dashed #f0f0f0"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+            <div style={{fontSize:11,color:"#aaa"}}>
+              Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+              {r.editadoEm && <span style={{color:"#f59e0b",marginLeft:6}}>(editado)</span>}
+            </div>
+            {isDono && editIdx !== ri && (
+              <button onClick={() => iniciarEdicao(ri)} style={{background:"#eff6ff",color:"#1d4ed8",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✏️ Editar</button>
+            )}
+          </div>
+          {editIdx === ri ? (
+            <div>
+              {editItens.map((it, ii) => (
+                <div key={ii} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid #f8f8f8"}}>
+                  <button onClick={() => setEditItens(prev => prev.filter((_, i) => i !== ii))} style={{width:22,height:22,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:12,cursor:"pointer",flexShrink:0}}>×</button>
+                  <div style={{flex:1,fontSize:12}}>{it.nome}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:4}}>
+                    <button onClick={() => chgEditQty(ii, -1)} style={{width:24,height:24,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:14,cursor:"pointer"}}>−</button>
+                    <span style={{fontWeight:800,minWidth:16,textAlign:"center",fontSize:13}}>{it.qty}</span>
+                    <button onClick={() => chgEditQty(ii, 1)} style={{width:24,height:24,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:14,cursor:"pointer"}}>+</button>
+                  </div>
+                </div>
+              ))}
+              {editItens.length === 0 && <div style={{textAlign:"center",padding:6,color:"#ccc",fontSize:12}}>Todos os itens removidos</div>}
+              <div style={{display:"flex",gap:6,marginTop:6}}>
+                <button onClick={salvar} style={{flex:1,background:"linear-gradient(135deg,#2D7A4F,#1a6b3c)",color:"#fff",border:"none",borderRadius:8,padding:"7px",fontWeight:600,fontSize:12,cursor:"pointer"}}>Salvar</button>
+                <button onClick={() => setEditIdx(null)} style={{background:"#f0f0f0",color:"#666",border:"none",borderRadius:8,padding:"7px 12px",fontWeight:600,fontSize:12,cursor:"pointer"}}>Cancelar</button>
+              </div>
+            </div>
+          ) : (
+            r.itens.map((it, ii) => (
+              <div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#555",padding:"2px 0"}}>
+                <span>{it.qty||1}x {it.nome}</span>
+              </div>
+            ))
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado }) {
   const perfil = perfilSalao;
   const setPerfil = setPerfilSalao;
@@ -3211,15 +3368,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             </div>
           )}
           {(sc.rodadas||[]).length>0&&(
-            <div style={card2}>
-              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Enviados à cozinha</div>
-              {(sc.rodadas||[]).map((r,ri)=>(
-                <div key={ri} style={{marginBottom:6,paddingBottom:6,borderBottom:"1px dashed #f0f0f0"}}>
-                  <div style={{fontSize:11,color:"#aaa",marginBottom:3}}>Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}</div>
-                  {r.itens.map((it,ii)=><div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#555"}}><span>{it.qty||1}x {it.nome}</span></div>)}
-                </div>
-              ))}
-            </div>
+            <RodadasEditor rodadas={sc.rodadas} isDono={isDono} onSave={(novasRodadas) => {
+              upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,rodadas:novasRodadas}:s)});
+            }} />
           )}
           <div style={{...card2}}>
             <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observações da mesa..." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
@@ -3668,6 +3819,20 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     finally { setAtualizando(prev => ({ ...prev, [id]: false })); }
   };
 
+  const editPedido = async (id, itens, obs) => {
+    setAtualizando(prev => ({ ...prev, [id]: true }));
+    try {
+      const r = await authFetch(BACKEND_URL + "/pedidos/" + id, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itens, obs }),
+      });
+      if (!r.ok) { const err = await r.json(); alert(err.erro || "Erro ao editar pedido"); return; }
+      const at = await r.json();
+      setPedidos(prev => prev.map(p => p.id === id ? at : p));
+    } catch { alert("Erro de conexão ao editar pedido"); }
+    finally { setAtualizando(prev => ({ ...prev, [id]: false })); }
+  };
+
   const saveConfig = async (novoCfg) => {
     try { await authFetch(BACKEND_URL + "/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(novoCfg) }); setConfig(novoCfg); const rs = await authFetch(BACKEND_URL + "/config/status-loja"); if (rs.ok) setStatusLoja(await rs.json()); } catch { setConfig(novoCfg); }
   };
@@ -3818,7 +3983,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
             <div style={{ padding: "20px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 14 }}>
               {pf.length === 0
                 ? <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "80px 20px", color: T.gray, fontSize: 16 }}><div style={{ fontSize: 50, marginBottom: 12, opacity: 0.3 }}>🍢</div>Nenhum pedido encontrado.</div>
-                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} atualizando={!!atualizando[p.id]} />)
+                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} onEdit={editPedido} cardapio={cardapio} atualizando={!!atualizando[p.id]} />)
               }
             </div>
           )}
