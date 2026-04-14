@@ -2852,7 +2852,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
          subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
   }
   function chgQty(id,d){
-    const itens=sc.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>(i.qty||1)>0);
+    const itens=sc.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>i.qty>0);
     const allEmpty = mesa.subComandas.every((s,i)=>i===scIdx?itens.length===0:s.itens.length===0&&(s.rodadas||[]).length===0);
     upd({...mesa, status:allEmpty?"livre":mesa.status,
          subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
