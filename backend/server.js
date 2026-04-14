@@ -818,7 +818,7 @@ app.post("/whatsapp/logout", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── CUPONS API ────────────────────────────────────────────────
-app.get("/cupons", async (req, res) => { try { const lista = await CupomDB.find().lean(); res.json(lista); } catch { res.json(cupons); } });
+app.get("/cupons", authMiddleware(["dono"]), async (req, res) => { try { const lista = await CupomDB.find().lean(); res.json(lista); } catch (e) { console.error("Erro ao buscar cupons:", e.message); res.json(cupons); } });
 app.post("/cupons", authMiddleware(["dono"]), async (req, res) => {
   const { codigo, tipo, valor, usoMax, validade, descricao } = req.body;
   if (!codigo || !tipo || valor === undefined) return res.status(400).json({ erro: "codigo, tipo e valor obrigatórios" });
@@ -851,7 +851,7 @@ app.post("/cupons/validar", (req, res) => {
 });
 
 // ── AVALIAÇÕES API ────────────────────────────────────────────
-app.get("/avaliacoes", async (req, res) => {
+app.get("/avaliacoes", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -859,7 +859,7 @@ app.get("/avaliacoes", async (req, res) => {
     res.json(lista);
   } catch (e) { console.error("Erro ao buscar avaliações:", e.message); res.json(avaliacoes); }
 });
-app.get("/avaliacoes/resumo", async (req, res) => {
+app.get("/avaliacoes/resumo", authMiddleware(["dono"]), async (req, res) => {
   try {
     const lista = await AvaliacaoDB.find().lean();
     if (!lista.length) return res.json({ media: 0, total: 0, distribuicao: {} });
@@ -875,7 +875,7 @@ app.get("/avaliacoes/resumo", async (req, res) => {
 });
 
 // ── FIDELIDADE API ────────────────────────────────────────────
-app.get("/fidelidade", async (req, res) => {
+app.get("/fidelidade", authMiddleware(["dono"]), async (req, res) => {
   try {
     const lista = await FidelidadeDB.find().lean();
     const result = await Promise.all(lista.map(async f => {
@@ -890,7 +890,7 @@ app.get("/fidelidade", async (req, res) => {
 });
 
 // ── CARDÁPIO API ──────────────────────────────────────────────
-app.get("/cardapio", (req, res) => res.json(CARDAPIO));
+app.get("/cardapio", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json(CARDAPIO));
 app.post("/cardapio", authMiddleware(["dono"]), async (req, res) => {
   const { categoria, nome, preco, tempoPreparo, obs } = req.body;
   if (!categoria || !nome || !preco) return res.status(400).json({ erro: "categoria, nome e preco obrigatórios" });
@@ -931,7 +931,7 @@ app.delete("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── CONFIG API ────────────────────────────────────────────────
-app.get("/config", (req, res) => res.json(CONFIG));
+app.get("/config", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json(CONFIG));
 async function salvarConfig() { try { await ConfigDB.updateOne({ chave: "config" }, { valor: CONFIG }, { upsert: true }); } catch (e) { console.error("Erro ao salvar config:", e.message); } }
 app.put("/config", authMiddleware(["dono"]), async (req, res) => {
   const allowed = ["nomeEstabelecimento", "nomeAgente", "taxaEntrega", "tempoEntregaMin", "tempoEntregaMax", "entregaCEP"];
@@ -948,7 +948,7 @@ app.put("/config/avaliacao", authMiddleware(["dono"]), async (req, res) => { CON
 app.get("/config/status-loja", (req, res) => res.json({ aberto: estaAberto(), proximaAbertura: proximaAbertura() }));
 
 // ── VENDAS SALÃO API ─────────────────────────────────────────
-app.get("/vendas-salao", async (req, res) => {
+app.get("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
   try {
     const hoje = new Date(); hoje.setHours(0,0,0,0);
     const lista = await VendaSalaoDB.find({ fechamento: { $gte: hoje } }).sort({ fechamento: -1 }).lean();
@@ -972,7 +972,7 @@ app.delete("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, r
   try { await VendaSalaoDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
-app.get("/vendas-salao/historico", async (req, res) => {
+app.get("/vendas-salao/historico", authMiddleware(["dono", "caixa"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
     const filtro = {};
@@ -1023,7 +1023,7 @@ async function baixarEstoqueVenda(itens, vendaId) {
 }
 
 // ── ESTOQUE API ───────────────────────────────────────────────
-app.get("/estoque", async (req, res) => {
+app.get("/estoque", authMiddleware(["dono"]), async (req, res) => {
   try {
     const lista = await EstoqueDB.find({ ativo: true }).sort({ nome: 1 }).lean();
     res.json(lista);
@@ -1070,7 +1070,7 @@ app.delete("/estoque/movimentacoes/:movId", authMiddleware(["dono"]), async (req
 });
 
 // Relatório geral de consumo (deve vir ANTES de :id para não conflitar)
-app.get("/estoque/relatorio/consumo", async (req, res) => {
+app.get("/estoque/relatorio/consumo", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
     const filtro = { tipo: "saida" };
@@ -1148,7 +1148,7 @@ app.post("/estoque/:id/ajuste", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // Movimentações / histórico
-app.get("/estoque/:id/movimentacoes", async (req, res) => {
+app.get("/estoque/:id/movimentacoes", authMiddleware(["dono"]), async (req, res) => {
   try {
     const lista = await MovEstoqueDB.find({ estoqueId: req.params.id })
       .sort({ horario: -1 }).limit(100).lean();
@@ -1158,7 +1158,7 @@ app.get("/estoque/:id/movimentacoes", async (req, res) => {
 
 // ── LUCRO API ─────────────────────────────────────────────────
 // Calcula lucro cruzando vendas com custo cadastrado no estoque
-app.get("/relatorio/lucro", async (req, res) => {
+app.get("/relatorio/lucro", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
     const filtro = {};
@@ -1232,7 +1232,7 @@ app.get("/relatorio/lucro", async (req, res) => {
 });
 
 // ── GARÇONS API ───────────────────────────────────────────────
-app.get("/garcons", async (req, res) => {
+app.get("/garcons", authMiddleware(["dono"]), async (req, res) => {
   try {
     const lista = await GarcomDB.find().lean();
     res.json(lista.map(g => ({ ...g, pin: undefined }))); // nunca expõe o PIN
@@ -1276,19 +1276,8 @@ app.delete("/garcons/:id", authMiddleware(["dono"]), async (req, res) => {
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
-// Verifica PIN do garçom no login (não expõe lista de PINs)
-app.post("/garcons/verificar-pin", async (req, res) => {
-  const { pin } = req.body;
-  if (!pin) return res.status(400).json({ erro: "pin obrigatório" });
-  try {
-    const g = await GarcomDB.findOne({ pin, ativo: true }).lean();
-    if (!g) return res.status(404).json({ erro: "PIN não encontrado ou garçom inativo" });
-    res.json({ nome: g.nome, id: g._id });
-  } catch (e) { res.status(500).json({ erro: e.message }); }
-});
-
 // Relatório de desempenho por garçom
-app.get("/garcons/relatorio", async (req, res) => {
+app.get("/garcons/relatorio", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
     const filtro = {};
@@ -1382,14 +1371,14 @@ app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) 
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
-app.get("/fechamento-dia", async (req, res) => {
+app.get("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) => {
   try {
     const lista = await FechamentoDB.find().sort({ data: -1 }).limit(90).lean();
     res.json(lista);
   } catch { res.json([]); }
 });
 
-app.get("/fechamento-dia/:dataStr", async (req, res) => {
+app.get("/fechamento-dia/:dataStr", authMiddleware(["dono", "caixa"]), async (req, res) => {
   try {
     const f = await FechamentoDB.findOne({ dataStr: req.params.dataStr }).lean();
     if (!f) return res.status(404).json({ erro: "Fechamento não encontrado" });

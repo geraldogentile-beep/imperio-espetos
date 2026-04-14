@@ -875,7 +875,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
       for (const nome of nomes) {
         const item = cardapio.find(i=>i.nome===nome);
         if (!item) continue;
-        const r = await fetch(`${backendUrl}/cardapio/${item.id}`, {
+        const r = await authFetch(`${backendUrl}/cardapio/${item.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...item, preco: parseFloat(precoFinal.toFixed(2)) }),
@@ -1110,21 +1110,21 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
   async function carregar() {
     try {
-      const r = await fetch(backendUrl+"/estoque");
+      const r = await authFetch(backendUrl+"/estoque");
       if(r.ok) setItens(await r.json());
     } catch {}
   }
 
   async function carregarConsumo() {
     try {
-      const r = await fetch(backendUrl+"/estoque/relatorio/consumo");
+      const r = await authFetch(backendUrl+"/estoque/relatorio/consumo");
       if(r.ok) setRelConsumo(await r.json());
     } catch {}
   }
 
   async function carregarMovs(id) {
     try {
-      const r = await fetch(backendUrl+`/estoque/${id}/movimentacoes`);
+      const r = await authFetch(backendUrl+`/estoque/${id}/movimentacoes`);
       if(r.ok) setMovs(await r.json());
     } catch {}
   }
@@ -1140,7 +1140,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
     setSaving(true);
     try {
       const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean), custoPorUnidade:parseFloat(novo.custoPorUnidade)||0, margemDesejada:parseFloat(novo.margemDesejada)||0, precoVendaAtual:parseFloat(novo.precoVendaAtual)||0 };
-      const r = await fetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const r = await authFetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok) return showMsg((await r.json()).erro||"Erro ao criar.","erro");
       showMsg(`✅ ${novo.nome} cadastrado!`);
       setNovo({nome:"",unidade:"un",quantidade:"",minimo:"",cardapioNomes:"",consumoPorVenda:"1",tipo:"normal",capacidadeBarril:"",alertaTelefone:"",custoPorUnidade:"",margemDesejada:"",precoVendaAtual:""});
@@ -1154,7 +1154,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
     setSaving(true);
     try {
       const body = { ...editando, cardapioNomes: typeof editando.cardapioNomes === "string" ? editando.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) : editando.cardapioNomes };
-      const r = await fetch(backendUrl+`/estoque/${editando._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const r = await authFetch(backendUrl+`/estoque/${editando._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok) return showMsg("Erro ao salvar.","erro");
       showMsg("✅ Alterações salvas!");
       setEditando(null);
@@ -1168,7 +1168,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
     if(!entradaQtd||parseFloat(entradaQtd)<=0) return showMsg("Informe a quantidade.","erro");
     setSaving(true);
     try {
-      await fetch(backendUrl+`/estoque/${entradaForm._id}/entrada`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(entradaQtd),motivo:entradaMotivo})});
+      await authFetch(backendUrl+`/estoque/${entradaForm._id}/entrada`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(entradaQtd),motivo:entradaMotivo})});
       showMsg(`✅ +${entradaQtd} ${entradaForm.unidade} adicionados!`);
       setEntradaForm(null); setEntradaQtd(""); carregar();
       if(selItem?._id===entradaForm._id) carregarMovs(entradaForm._id);
@@ -1180,7 +1180,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
     if(ajusteQtd===""||isNaN(parseFloat(ajusteQtd))) return showMsg("Informe a quantidade.","erro");
     setSaving(true);
     try {
-      await fetch(backendUrl+`/estoque/${ajusteForm._id}/ajuste`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(ajusteQtd),motivo:ajusteMotivo})});
+      await authFetch(backendUrl+`/estoque/${ajusteForm._id}/ajuste`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(ajusteQtd),motivo:ajusteMotivo})});
       showMsg(`✅ Estoque ajustado para ${ajusteQtd} ${ajusteForm.unidade}.`);
       setAjusteForm(null); setAjusteQtd(""); carregar();
       if(selItem?._id===ajusteForm._id) carregarMovs(ajusteForm._id);
@@ -1190,7 +1190,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
   async function deletarItem(id) {
     if(!window.confirm("Remover este item do estoque?")) return;
-    try { await fetch(backendUrl+`/estoque/${id}`,{method:"DELETE"}); carregar(); }
+    try { await authFetch(backendUrl+`/estoque/${id}`,{method:"DELETE"}); carregar(); }
     catch { showMsg("Erro ao remover.","erro"); }
   }
 
@@ -1294,7 +1294,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
                 cardapio={cardapio}
                 backendUrl={backendUrl}
                 onChange={async (campo,val)=>{
-                  await fetch(backendUrl+`/estoque/${it._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({[campo]:parseFloat(val)||0})});
+                  await authFetch(backendUrl+`/estoque/${it._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({[campo]:parseFloat(val)||0})});
                   carregar();
                 }}
               />
@@ -1354,7 +1354,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
                   <button onClick={async()=>{
                     if(!window.confirm(`Excluir esta movimentação? A quantidade no estoque será revertida.`)) return;
                     try {
-                      const r = await fetch(backendUrl+`/estoque/movimentacoes/${m._id}`,{method:"DELETE"});
+                      const r = await authFetch(backendUrl+`/estoque/movimentacoes/${m._id}`,{method:"DELETE"});
                       if(r.ok){ await carregar(); await carregarMovs(it._id); showMsg("✅ Movimentação excluída e estoque revertido."); }
                       else showMsg("❌ Erro ao excluir.","erro");
                     } catch { showMsg("❌ Erro de conexão.","erro"); }
@@ -1579,7 +1579,7 @@ function ResetDados({ backendUrl }) {
     if (digitado !== SENHA) return;
     setLoading(true);
     try {
-      const r = await fetch(backendUrl + "/reset/dados-teste", {
+      const r = await authFetch(backendUrl +"/reset/dados-teste", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirmar: "CONFIRMAR_RESET" }),
       });
@@ -1818,7 +1818,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 
   async function carregar() {
     try {
-      const r = await fetch(backendUrl+"/fechamento-dia");
+      const r = await authFetch(backendUrl+"/fechamento-dia");
       if(r.ok) setHistorico(await r.json());
     } catch {}
   }
@@ -1849,7 +1849,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   async function fecharDia() {
     setLoading(true);
     try {
-      const r = await fetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs})});
+      const r = await authFetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs})});
       const data = await r.json();
       if(!r.ok) return showMsg(data.erro||"Erro ao fechar o dia.","erro");
       showMsg("✅ Fechamento do dia realizado com sucesso!");
@@ -2065,7 +2065,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
       const hoje = new Date();
       const dias = { hoje: 0, semana: 6, mes: 29 }[periodo];
       const de = new Date(hoje); de.setDate(de.getDate() - dias); de.setHours(0,0,0,0);
-      const res = await fetch(`${BACKEND_URL}/relatorio/lucro?de=${de.toISOString()}&ate=${hoje.toISOString()}`);
+      const res = await authFetch(`${BACKEND_URL}/relatorio/lucro?de=${de.toISOString()}&ate=${hoje.toISOString()}`);
       if (res.ok) setRelLucro(await res.json());
     } catch {}
     setLoadingLucro(false);
@@ -3440,7 +3440,7 @@ function WhatsAppConexao({ conexao, backendUrl }) {
 
   async function carregarStatus() {
     try {
-      const r = await fetch(backendUrl + "/health");
+      const r = await authFetch(backendUrl +"/health");
       const d = await r.json();
       setStatus(d);
     } catch {}
@@ -3449,7 +3449,7 @@ function WhatsAppConexao({ conexao, backendUrl }) {
   async function carregarQR() {
     setLoading(true);
     try {
-      const r = await fetch(backendUrl + "/qrcode");
+      const r = await authFetch(backendUrl +"/qrcode");
       const html = await r.text();
       // Extrai o src da imagem do QR
       const match = html.match(/src="(data:image\/png;base64,[^"]+)"/);
@@ -3462,7 +3462,7 @@ function WhatsAppConexao({ conexao, backendUrl }) {
   async function desconectar() {
     setDesconectando(true);
     try {
-      await fetch(backendUrl + "/whatsapp/logout", { method: "POST" });
+      await authFetch(backendUrl +"/whatsapp/logout", { method: "POST" });
       setQrCode(null);
       setStatus(null);
       setTimeout(carregarStatus, 3000);
