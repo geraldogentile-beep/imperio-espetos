@@ -2896,6 +2896,9 @@ function PinLogin({ onLogin }) {
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
 // ── EDITOR DE RODADAS (ITENS JÁ ENVIADOS À COZINHA) ─────────
 function RodadasEditor({ rodadas, isDono, onSave }) {
+  // Detecta rodada recém-adicionada (últimos 5 segundos)
+  const agora = Date.now();
+  function isRecente(hora) { return agora - new Date(hora).getTime() < 5000; }
   const [editIdx, setEditIdx] = useState(null);
   const [editItens, setEditItens] = useState([]);
 
@@ -2917,11 +2920,14 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
   return (
     <div style={{background:"#fff",borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:8}}>
       <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Enviados à cozinha</div>
-      {rodadas.map((r, ri) => (
-        <div key={ri} style={{marginBottom:8,paddingBottom:8,borderBottom:"1px dashed #f0f0f0"}}>
+      {rodadas.map((r, ri) => {
+        const recente = isRecente(r.hora);
+        return (
+        <div key={ri} style={{marginBottom:8,paddingBottom:8,borderBottom:"1px dashed #f0f0f0",borderRadius:recente?10:0,background:recente?"#d1fae5":"transparent",padding:recente?"8px 10px":"0",transition:"background 1s ease",border:recente?"1.5px solid #10b981":"none"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
-            <div style={{fontSize:11,color:"#aaa"}}>
-              Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+            <div style={{fontSize:11,color:recente?"#065f46":"#aaa"}}>
+              {recente && "✅ "} Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+              {recente && <span style={{fontWeight:700,marginLeft:6}}>Enviado!</span>}
               {r.editadoEm && <span style={{color:"#f59e0b",marginLeft:6}}>(editado)</span>}
             </div>
             {isDono && editIdx !== ri && (
@@ -2955,7 +2961,8 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
             ))
           )}
         </div>
-      ))}
+      );
+      })}
     </div>
   );
 }
@@ -2981,7 +2988,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
     ? cardapioExterno.filter(i=>i.ativo!==false).map(i=>({...i,cat:i.categoria||i.cat}))
     : CARDAPIO_SALAO;
 
-  function msgSalao(txt,cor="#10b981"){setToastSalao({txt,cor});setTimeout(()=>setToastSalao(null),2500);}
+  function msgSalao(txt,cor="#10b981"){setToastSalao({txt,cor,ts:Date.now()});setTimeout(()=>setToastSalao(null),4000);}
   const mesaRaw = mesas.find(m=>m.id===sel);
   const mesa = mesaRaw ? migrarMesa(mesaRaw) : null;
   function upd(m){setMesas(p=>p.map(x=>x.id===m.id?m:x));}
@@ -3145,7 +3152,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   // TELA ADICIONAR
   if(telaSalao==="adicionar") return (
     <div style={{background:T.cream,minHeight:"100%"}}>
-      {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
+      {toastSalao&&<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:16,padding:"14px 28px",fontWeight:700,fontSize:15,zIndex:9999,boxShadow:"0 8px 32px rgba(0,0,0,0.3)",minWidth:200,textAlign:"center",animation:"slideDown 0.3s ease"}}>{toastSalao.txt}</div>}
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
@@ -3277,7 +3284,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   if(telaSalao==="comanda"&&mesa) {
     return (
       <div style={{background:T.cream,minHeight:"100%"}}>
-        {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
+        {toastSalao&&<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:16,padding:"14px 28px",fontWeight:700,fontSize:15,zIndex:9999,boxShadow:"0 8px 32px rgba(0,0,0,0.3)",minWidth:200,textAlign:"center",animation:"slideDown 0.3s ease"}}>{toastSalao.txt}</div>}
         <div style={H2}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
             <button style={BK2} onClick={()=>{setSel(null);setTelaSalao("mapa");}}>← Salão</button>
@@ -3475,7 +3482,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   // MAPA DE MESAS
   return (
     <div style={{background:T.cream,minHeight:"100%"}}>
-      {toastSalao&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:12,padding:"10px 20px",fontWeight:700,zIndex:999}}>{toastSalao.txt}</div>}
+      {toastSalao&&<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:16,padding:"14px 28px",fontWeight:700,fontSize:15,zIndex:9999,boxShadow:"0 8px 32px rgba(0,0,0,0.3)",minWidth:200,textAlign:"center",animation:"slideDown 0.3s ease"}}>{toastSalao.txt}</div>}
       <div style={{background:`linear-gradient(135deg,${T.wineD},${T.wine})`,color:"#fff",padding:"12px 16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <div>
@@ -4086,6 +4093,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           .mobile-nav { display: none !important; }
         }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
+        @keyframes slideDown { from { opacity: 0; transform: translateX(-50%) translateY(-20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(139,38,53,0.15); border-radius: 10px; }
