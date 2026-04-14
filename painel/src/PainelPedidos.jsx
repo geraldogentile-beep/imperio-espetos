@@ -3010,15 +3010,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           return(
             <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":"transparent"}`}}>
               <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{item.nome}</div><div style={{fontSize:12,color:"#888"}}>{fmtR(item.preco)}</div></div>
-              {na?(
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <button onClick={()=>chgQty(item.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:18,cursor:"pointer"}}>−</button>
-                  <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{na.qty||1}</span>
-                  <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
-                </div>
-              ):(
-                <button onClick={()=>addItem(item)} style={{background:"#7b1a0a",color:"#fff",border:"none",borderRadius:10,padding:"7px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Add</button>
-              )}
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <button onClick={()=>na&&chgQty(item.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:na?"#fee2e2":"#f0f0f0",color:na?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:na?"pointer":"default"}}>−</button>
+                <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{na?na.qty||1:0}</span>
+                <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
+              </div>
             </div>
           );
         })}
