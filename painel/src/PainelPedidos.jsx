@@ -578,28 +578,40 @@ function Cardapio({ cardapio, onReload }) {
 
 // ── COMPONENTE TROCA DE PIN ───────────────────────────────────
 function PinManager() {
-  const [pins, setPins] = useState(() => {
-    try { const s = localStorage.getItem("imperio_pins"); return s ? JSON.parse(s) : { dono: "9999", caixa: "5678" }; } catch { return { dono: "9999", caixa: "5678" }; }
-  });
-  const [editando, setEditando] = useState(null); // "dono" | "garcom" | "caixa"
+  const [editando, setEditando] = useState(null); // "dono" | "caixa"
   const [novo, setNovo] = useState("");
   const [confirma, setConfirma] = useState("");
   const [msg, setMsg] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   const perfis = [
     { key: "dono",   icon: "👑", label: "Dono",   desc: "Acesso completo ao painel" },
     { key: "caixa",  icon: "💁‍♀️", label: "Caixa",  desc: "Acesso ao salão — fecha contas" },
   ];
 
-  function salvar() {
+  async function salvar() {
     if (novo.length !== 4 || !/^\d{4}$/.test(novo)) { setMsg({ tipo: "erro", texto: "PIN deve ter 4 números." }); return; }
     if (novo !== confirma) { setMsg({ tipo: "erro", texto: "PINs não conferem." }); return; }
-    const novosPins = { ...pins, [editando]: novo };
-    setPins(novosPins);
-    try { localStorage.setItem("imperio_pins", JSON.stringify(novosPins)); } catch {}
-    setEditando(null); setNovo(""); setConfirma("");
-    setMsg({ tipo: "ok", texto: `PIN do ${perfis.find(p=>p.key===editando)?.label} alterado! ✅` });
-    setTimeout(() => setMsg(null), 3000);
+    setSaving(true);
+    try {
+      const res = await authFetch(BACKEND_URL + "/auth/pins", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [editando]: novo }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setMsg({ tipo: "erro", texto: data.erro || "Erro ao salvar PIN." });
+        setSaving(false);
+        return;
+      }
+      setEditando(null); setNovo(""); setConfirma("");
+      setMsg({ tipo: "ok", texto: `PIN do ${perfis.find(p=>p.key===editando)?.label} alterado!` });
+      setTimeout(() => setMsg(null), 3000);
+    } catch {
+      setMsg({ tipo: "erro", texto: "Erro de conexão." });
+    }
+    setSaving(false);
   }
 
   const inp = { width: "100%", padding: "10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 22, color: "#333", outline: "none", boxSizing: "border-box", letterSpacing: 10, textAlign: "center" };
@@ -630,8 +642,8 @@ function PinManager() {
                   <input type="password" inputMode="numeric" maxLength={4} value={confirma} onChange={e => setConfirma(e.target.value.replace(/\D/g,"").slice(0,4))} placeholder="••••" style={inp} />
                 </div>
               </div>
-              <button onClick={salvar} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                💾 Salvar PIN do {p.label}
+              <button onClick={salvar} disabled={saving} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1 }}>
+                {saving ? "Salvando..." : `Salvar PIN do ${p.label}`}
               </button>
             </div>
           )}
