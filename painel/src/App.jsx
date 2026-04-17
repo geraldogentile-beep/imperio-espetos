@@ -27,27 +27,7 @@ const T = {
   radiusL: "24px",
 };
 
-// ── AUTH HELPERS ──────────────────────────────────────────────
-function getToken() { return sessionStorage.getItem("imperio_token"); }
-function setToken(token) { sessionStorage.setItem("imperio_token", token); }
-function clearToken() { sessionStorage.removeItem("imperio_token"); sessionStorage.removeItem("imperio_login"); }
-function getSavedLogin() {
-  try { const s = sessionStorage.getItem("imperio_login"); return s ? JSON.parse(s) : null; } catch { return null; }
-}
-function saveLogin(login) { sessionStorage.setItem("imperio_login", JSON.stringify(login)); }
-
-// Header de auth para todas as requisições
-export function authHeaders() {
-  const token = getToken();
-  return token ? { "Content-Type": "application/json", "Authorization": `Bearer ${token}` } : { "Content-Type": "application/json" };
-}
-
-// Fetch com auth automático
-export async function authFetch(url, opts = {}) {
-  const res = await fetch(url, { ...opts, headers: { ...authHeaders(), ...opts.headers } });
-  if (res.status === 401) { clearToken(); window.location.reload(); }
-  return res;
-}
+import { getToken, setToken, clearToken, getSavedLogin, saveLogin, authFetch } from "./auth.js";
 
 function TelaLogin({ onLogin }) {
   const [pin, setPin] = useState("");
