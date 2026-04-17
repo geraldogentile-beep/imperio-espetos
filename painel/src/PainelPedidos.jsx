@@ -3150,7 +3150,16 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   if(!perfil) return <PinLogin onLogin={setPerfil} />;
 
   // TELA ADICIONAR
-  if(telaSalao==="adicionar") return (
+  if(telaSalao==="adicionar") {
+    const espetoCats = ["Tradicionais","Especiais"];
+    const catsComEspetos = ["todos","Espetos",...new Set(cardapio.map(i=>i.cat||i.categoria).filter(c=>!espetoCats.includes(c)))];
+    const catIconsExt = {...catIcons, "Espetos":"🍢"};
+    const filtrarCardapio = (item) => {
+      if(catFiltro==="todos") return true;
+      if(catFiltro==="Espetos") return espetoCats.includes(item.cat||item.categoria);
+      return (item.cat||item.categoria)===catFiltro;
+    };
+    return (
     <div style={{background:T.cream,minHeight:"100%"}}>
       {toastSalao&&<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:16,padding:"14px 28px",fontWeight:700,fontSize:15,zIndex:9999,boxShadow:"0 8px 32px rgba(0,0,0,0.3)",minWidth:200,textAlign:"center",animation:"slideDown 0.3s ease"}}>{toastSalao.txt}</div>}
       <div style={H2}>
@@ -3158,18 +3167,21 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
           <div style={{fontWeight:800,fontSize:15,flex:1}}>{mesa.nome || `Mesa ${mesa.id}`} — {sc.label}</div>
           <div style={{fontWeight:800,color:"#f0c040"}}>{fmtR(totMesa(sc.itens))}</div>
+          {sc.itens.length>0&&(
+            <button onClick={()=>setTelaSalao("comanda")} style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:10,padding:"8px 14px",fontWeight:700,fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>✅ Comanda ({sc.itens.reduce((s,i)=>s+(i.qty||1),0)})</button>
+          )}
         </div>
       </div>
       <div style={{display:"flex",gap:5,flexWrap:"wrap",padding:"10px 14px",background:"#fff",borderBottom:"1px solid #eee"}}>
-        {cats.map(c=>(
+        {catsComEspetos.map(c=>(
           <button key={c} onClick={()=>setCatFiltro(c)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 8px",borderRadius:10,border:`2px solid ${catFiltro===c?"#7b1a0a":"transparent"}`,background:catFiltro===c?"#fef0ed":"#f8f8f8",cursor:"pointer",minWidth:48}}>
-            <span style={{fontSize:16}}>{catIcons[c]||"🍽️"}</span>
-            <span style={{fontSize:9,fontWeight:catFiltro===c?700:500,color:catFiltro===c?"#7b1a0a":"#666"}}>{c==="todos"?"Todos":c.length>7?c.slice(0,6)+".":c}</span>
+            <span style={{fontSize:16}}>{catIconsExt[c]||"🍽️"}</span>
+            <span style={{fontSize:9,fontWeight:catFiltro===c?700:500,color:catFiltro===c?"#7b1a0a":"#666"}}>{c==="todos"?"Todos":c.length>8?c.slice(0,7)+".":c}</span>
           </button>
         ))}
       </div>
       <div style={{padding:"10px 14px 80px",display:"flex",flexDirection:"column",gap:8}}>
-        {cardapio.filter(i=>(catFiltro==="todos"||(i.cat||i.categoria)===catFiltro)).map(item=>{
+        {cardapio.filter(filtrarCardapio).map(item=>{
           const na=sc.itens.find(i=>i.id===item.id);
           return(
             <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":"transparent"}`}}>
@@ -3190,6 +3202,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       )}
     </div>
   );
+  }
 
   // TELA FECHAR
   if(telaSalao==="fechar") {
