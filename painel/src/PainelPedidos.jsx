@@ -3151,7 +3151,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
 
   // TELA ADICIONAR
   if(telaSalao==="adicionar") {
-    const espetoCats = ["Tradicionais","Especiais"];
+    const espetoCats = ["Tradicionais","Especiais","Doces","Churrasco Grego"];
     const catsComEspetos = ["todos","Espetos",...new Set(cardapio.map(i=>i.cat||i.categoria).filter(c=>!espetoCats.includes(c)))];
     const catIconsExt = {...catIcons, "Espetos":"🍢"};
     const filtrarCardapio = (item) => {
