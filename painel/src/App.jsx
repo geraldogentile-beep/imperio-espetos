@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import PainelPedidos from "./PainelPedidos.jsx";
+import { getToken, setToken, clearToken, getSavedLogin, saveLogin } from "./auth.js";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
 
@@ -26,8 +27,6 @@ const T = {
   radiusS: "10px",
   radiusL: "24px",
 };
-
-import { getToken, setToken, clearToken, getSavedLogin, saveLogin, authFetch } from "./auth.js";
 
 function TelaLogin({ onLogin }) {
   const [pin, setPin] = useState("");
