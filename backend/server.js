@@ -150,6 +150,7 @@ const CardapioSchema = new mongoose.Schema({
   categoria: { type: String, required: true },
   nome: { type: String, required: true },
   preco: { type: Number, required: true, min: 0 },
+  precoPromocional: { type: Number, default: null, min: 0 },
   tempoPreparo: { type: Number, default: 10, min: 0 },
   ativo: { type: Boolean, default: true },
   obs: String,
@@ -327,6 +328,7 @@ let CONFIG = {
   },
   fidelidade: { ativo: true, pedidosParaGanhar: 5, brinde: "1 espetinho grátis", mensagemGanhou: "🎉 Parabéns {cliente}! Você ganhou *{brinde}*! Mencione no próximo pedido 😄" },
   avaliacao:  { ativo: true, delayMinutos: 10, mensagem: "Olá {cliente}! Como foi seu pedido? Responda com uma nota de *1 a 5* ⭐", mensagemObrigado: "Obrigado pela avaliação, {cliente}! 💛" },
+  modoEvento: { ativo: false, nome: "", agendado: false, inicio: null, fim: null, mensagemWhats: "🏆 *PROMOÇÃO ESPECIAL!* Confira nossos preços diferenciados durante o evento!" },
 };
 
 // ── CARDÁPIO ──────────────────────────────────────────────────
@@ -416,6 +418,24 @@ function addMsg(tel, role, content) {
 }
 
 // ── HELPERS ───────────────────────────────────────────────────
+function estaEmModoEvento() {
+  const me = CONFIG.modoEvento || {};
+  if (me.ativo) return true; // Manual ativo
+  if (me.agendado && me.inicio && me.fim) {
+    const agora = new Date();
+    return agora >= new Date(me.inicio) && agora <= new Date(me.fim);
+  }
+  return false;
+}
+
+function precoAtual(item) {
+  // Usa preço promocional se modo evento estiver ativo E o item tiver preço promocional
+  if (estaEmModoEvento() && item.precoPromocional && item.precoPromocional > 0) {
+    return item.precoPromocional;
+  }
+  return item.preco;
+}
+
 function estaAberto() {
   const agora = new Date();
   const h = CONFIG.horarioFuncionamento[agora.getDay()];
@@ -469,10 +489,16 @@ function formatMsg(tpl, pedido) {
 
 function cardapioTexto() {
   const ativos = CARDAPIO.filter(i => i.ativo);
+  const emEvento = estaEmModoEvento();
   return Object.entries(
     ativos.reduce((acc, item) => {
       if (!acc[item.categoria]) acc[item.categoria] = [];
-      acc[item.categoria].push(`  • ${item.nome}${item.obs ? ` (${item.obs})` : ""}: R$${item.preco.toFixed(2)}`);
+      const preco = precoAtual(item);
+      const temPromo = emEvento && item.precoPromocional && item.precoPromocional > 0 && item.precoPromocional < item.preco;
+      const precoTxt = temPromo
+        ? `~R$${item.preco.toFixed(2)}~ *R$${preco.toFixed(2)}* 🏆`
+        : `R$${preco.toFixed(2)}`;
+      acc[item.categoria].push(`  • ${item.nome}${item.obs ? ` (${item.obs})` : ""}: ${precoTxt}`);
       return acc;
     }, {})
   ).map(([cat, items]) => `${cat}:\n${items.join("\n")}`).join("\n\n");
@@ -480,6 +506,8 @@ function cardapioTexto() {
 
 function buildSystemPrompt(tel) {
   const aberto = estaAberto();
+  const emEvento = estaEmModoEvento();
+  const nomeEvento = CONFIG.modoEvento?.nome || "Evento Especial";
   const cuponsAtivos = cupons.filter(c => c.ativo).map(c => `${c.codigo} — ${c.descricao}`).join(", ");
   const telLimpo = tel ? tel.replace("@s.whatsapp.net","").replace("@lid","").replace(/\D/g,"") : "";
   return `Você é o assistente virtual do *${CONFIG.nomeEstabelecimento}* 👑🔥
@@ -487,6 +515,7 @@ Seu nome é *${CONFIG.nomeAgente}*.
 
 STATUS: ${aberto ? "✅ LOJA ABERTA" : `🔴 LOJA FECHADA — próxima abertura: ${proximaAbertura()}. NÃO aceite pedidos.`}
 
+${emEvento ? `🏆 *PROMOÇÃO ATIVA — ${nomeEvento}*: Os preços marcados com 🏆 no cardápio estão com valor promocional especial! Use sempre o preço promocional ao calcular o pedido. Pode mencionar a promoção ao cliente de forma calorosa.\n` : ""}
 TELEFONE DO CLIENTE: ${telLimpo} (já capturado automaticamente — NUNCA peça o número de telefone ao cliente)
 
 FIDELIDADE: A cada ${CONFIG.fidelidade.pedidosParaGanhar} pedidos o cliente ganha ${CONFIG.fidelidade.brinde}.
@@ -661,6 +690,17 @@ async function conectarWhatsApp() {
 
         const dadosPedido = extrairPedido(resposta);
         if (dadosPedido) {
+          // Reforça preços do cardápio (promocional se em modo evento)
+          if (dadosPedido.itens?.length) {
+            dadosPedido.itens = dadosPedido.itens.map(it => {
+              const cardapioItem = CARDAPIO.find(c => c.nome.toLowerCase() === it.nome?.toLowerCase());
+              if (cardapioItem) return { ...it, preco: precoAtual(cardapioItem) };
+              return it;
+            });
+            const novoSubtotal = dadosPedido.itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0);
+            dadosPedido.subtotal = parseFloat(novoSubtotal.toFixed(2));
+            dadosPedido.total = parseFloat((novoSubtotal + CONFIG.taxaEntrega - (dadosPedido.desconto || 0)).toFixed(2));
+          }
           if (dadosPedido.cupom) {
             const subtotal = dadosPedido.itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0);
             const { desconto, cupom: cupomObj } = aplicarCupom(subtotal, dadosPedido.cupom);
@@ -950,10 +990,11 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   // Apenas campos permitidos
-  const allowed = ["categoria", "nome", "preco", "tempoPreparo", "ativo", "obs"];
+  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs"];
   const update = {};
   for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
   if (update.preco !== undefined) update.preco = parseFloat(update.preco);
+  if (update.precoPromocional !== undefined && update.precoPromocional !== null) update.precoPromocional = parseFloat(update.precoPromocional);
   if (update.tempoPreparo !== undefined) update.tempoPreparo = parseInt(update.tempoPreparo);
   CARDAPIO[idx] = { ...CARDAPIO[idx], ...update, id };
   try { await CardapioDB.updateOne({ id }, { $set: update }); } catch (e) { console.error("Erro ao atualizar cardápio:", e.message); }
@@ -992,6 +1033,38 @@ app.put("/config/mensagens", authMiddleware(["dono"]), async (req, res) => { CON
 app.put("/config/fidelidade", authMiddleware(["dono"]), async (req, res) => { CONFIG.fidelidade = { ...CONFIG.fidelidade, ...req.body }; await salvarConfig(); res.json(CONFIG.fidelidade); });
 app.put("/config/avaliacao", authMiddleware(["dono"]), async (req, res) => { CONFIG.avaliacao = { ...CONFIG.avaliacao, ...req.body }; await salvarConfig(); res.json(CONFIG.avaliacao); });
 app.get("/config/status-loja", (req, res) => res.json({ aberto: estaAberto(), proximaAbertura: proximaAbertura() }));
+
+// ── MODO EVENTO (preços promocionais durante eventos) ────────
+app.get("/modo-evento", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => {
+  res.json({ ...CONFIG.modoEvento, ativoAgora: estaEmModoEvento() });
+});
+app.put("/modo-evento", authMiddleware(["dono"]), async (req, res) => {
+  const { ativo, nome, agendado, inicio, fim, mensagemWhats } = req.body;
+  CONFIG.modoEvento = {
+    ativo: ativo !== undefined ? !!ativo : CONFIG.modoEvento?.ativo,
+    nome: nome !== undefined ? nome : CONFIG.modoEvento?.nome,
+    agendado: agendado !== undefined ? !!agendado : CONFIG.modoEvento?.agendado,
+    inicio: inicio !== undefined ? inicio : CONFIG.modoEvento?.inicio,
+    fim: fim !== undefined ? fim : CONFIG.modoEvento?.fim,
+    mensagemWhats: mensagemWhats !== undefined ? mensagemWhats : CONFIG.modoEvento?.mensagemWhats,
+  };
+  await salvarConfig();
+  res.json({ ...CONFIG.modoEvento, ativoAgora: estaEmModoEvento() });
+});
+
+// Atualizar preço promocional de um item
+app.patch("/cardapio/:id/preco-promocional", authMiddleware(["dono"]), async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { precoPromocional } = req.body;
+  const item = CARDAPIO.find(i => i.id === id);
+  if (!item) return res.status(404).json({ erro: "Item não encontrado" });
+  const valor = precoPromocional === null || precoPromocional === "" ? null : parseFloat(precoPromocional);
+  if (valor !== null && (isNaN(valor) || valor < 0)) return res.status(400).json({ erro: "Preço promocional inválido" });
+  item.precoPromocional = valor;
+  try { await CardapioDB.updateOne({ id }, { $set: { precoPromocional: valor } }); }
+  catch (e) { console.error("Erro ao atualizar preço promocional:", e.message); }
+  res.json(item);
+});
 
 // ── VENDAS SALÃO API ─────────────────────────────────────────
 app.get("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {

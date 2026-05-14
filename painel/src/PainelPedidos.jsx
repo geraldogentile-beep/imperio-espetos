@@ -548,6 +548,12 @@ function Cardapio({ cardapio, onReload }) {
                 <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>⏱️ Preparo (min)</div><input type="number" value={editando.tempoPreparo} onChange={e => setEditando(p => ({ ...p, tempoPreparo: parseInt(e.target.value) }))} style={inputStyle} /></div>
                 <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Obs.</div><input value={editando.obs || ""} onChange={e => setEditando(p => ({ ...p, obs: e.target.value }))} style={inputStyle} /></div>
               </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>🎉 Preço promocional (modo evento)</div>
+                  <input type="number" step="0.50" value={editando.precoPromocional || ""} onChange={e => setEditando(p => ({ ...p, precoPromocional: e.target.value === "" ? null : parseFloat(e.target.value) }))} placeholder="Deixe vazio para não entrar no evento" style={inputStyle} />
+                </div>
+              </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => salvarEdicao(editando)} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{saving ? "Salvando..." : "💾 Salvar"}</button>
                 <button onClick={() => setEditando(null)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
@@ -562,7 +568,10 @@ function Cardapio({ cardapio, onReload }) {
                 </div>
                 <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{item.categoria}{item.obs && " · " + item.obs}{" · ⏱️ " + item.tempoPreparo + "min"}</div>
               </div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a", flexShrink: 0 }}>R$ {item.preco.toFixed(2)}</div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", flexShrink: 0 }}>
+                <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {item.preco.toFixed(2)}</div>
+                {item.precoPromocional > 0 && <div style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>🎉 R$ {item.precoPromocional.toFixed(2)}</div>}
+              </div>
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                 <button onClick={() => toggleAtivo(item)} style={{ background: item.ativo ? "#d1fae5" : "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{item.ativo ? "✅" : "❌"}</button>
                 <button onClick={() => setEditando({ ...item })} style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
@@ -1676,6 +1685,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
   function setCEP(campo, v) { setCfg(p => ({ ...p, entregaCEP: { ...p.entregaCEP, [campo]: v } })); }
   function setFidelidade(campo, v) { setCfg(p => ({ ...p, fidelidade: { ...p.fidelidade, [campo]: v } })); }
   function setAvaliacao(campo, v) { setCfg(p => ({ ...p, avaliacao: { ...p.avaliacao, [campo]: v } })); }
+  function setEvento(campo, v) { setCfg(p => ({ ...p, modoEvento: { ...(p.modoEvento || {}), [campo]: v } })); }
   async function testarCEP() {
     try { const r = await fetch("https://viacep.com.br/ws/" + testeCEP.replace(/\D/g, "") + "/json/"); const d = await r.json(); setResultadoCEP({ valido: !d.erro, endereco: d.erro ? null : d.logradouro + ", " + d.bairro + " - " + d.localidade + "/" + d.uf }); } catch { setResultadoCEP({ valido: false }); }
   }
@@ -1691,7 +1701,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         </div>
       </div>
       <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
+        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
       </div>
@@ -1772,6 +1782,42 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Enviar após (minutos)</div><input type="number" value={cfg.avaliacao.delayMinutos} onChange={e => setAvaliacao("delayMinutos", parseInt(e.target.value))} style={inputStyle} /></div>
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de avaliação</div><textarea value={cfg.avaliacao.mensagem} onChange={e => setAvaliacao("mensagem", e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de agradecimento</div><textarea value={cfg.avaliacao.mensagemObrigado} onChange={e => setAvaliacao("mensagemObrigado", e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
+        </div>
+      )}
+
+      {subAba === "evento" && (
+        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🎉 Modo Evento (preços promocionais)</div>
+          <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e" }}>
+            ℹ️ Defina preços promocionais por item no cardápio. Ative o modo manualmente ou agende horários (ex: durante jogos da Copa). O WhatsApp e o salão usam o preço promocional automaticamente quando o modo está ativo.
+          </div>
+
+          <Toggle value={cfg.modoEvento?.ativo || false} onChange={v => setEvento("ativo", v)} label="Ativar modo evento agora (manual)" sub="Liga imediatamente, independente do agendamento" />
+
+          <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Nome do evento</div><input value={cfg.modoEvento?.nome || ""} onChange={e => setEvento("nome", e.target.value)} placeholder="Ex: Copa do Mundo - Brasil x Argentina" style={inputStyle} /></div>
+
+          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginTop: 4 }}>
+            <Toggle value={cfg.modoEvento?.agendado || false} onChange={v => setEvento("agendado", v)} label="Agendar período" sub="Ativa automaticamente no horário definido" />
+            {cfg.modoEvento?.agendado && (
+              <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#aaa", marginBottom: 3 }}>Início</div>
+                  <input type="datetime-local" value={cfg.modoEvento?.inicio ? new Date(cfg.modoEvento.inicio).toISOString().slice(0,16) : ""} onChange={e => setEvento("inicio", e.target.value ? new Date(e.target.value).toISOString() : null)} style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#aaa", marginBottom: 3 }}>Fim</div>
+                  <input type="datetime-local" value={cfg.modoEvento?.fim ? new Date(cfg.modoEvento.fim).toISOString().slice(0,16) : ""} onChange={e => setEvento("fim", e.target.value ? new Date(e.target.value).toISOString() : null)} style={inputStyle} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginTop: 4 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>💡 Como configurar preços promocionais</div>
+            <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+              Vá na aba <strong>🍢 Cardápio</strong> e clique no item para definir o "Preço promocional". Itens sem preço promocional mantêm o preço normal mesmo durante o evento.
+            </div>
+          </div>
         </div>
       )}
 
@@ -2967,7 +3013,21 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
   );
 }
 
-function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado }) {
+  // ── MODO EVENTO (preços promocionais) ──
+  const modoEvento = configExterna?.modoEvento || {};
+  const emModoEvento = (() => {
+    if (modoEvento.ativo) return true;
+    if (modoEvento.agendado && modoEvento.inicio && modoEvento.fim) {
+      const agora = Date.now();
+      return agora >= new Date(modoEvento.inicio).getTime() && agora <= new Date(modoEvento.fim).getTime();
+    }
+    return false;
+  })();
+  function precoItem(item) {
+    if (emModoEvento && item.precoPromocional && item.precoPromocional > 0) return item.precoPromocional;
+    return item.preco;
+  }
   const perfil = perfilSalao;
   const setPerfil = setPerfilSalao;
   const mesas = mesasSalao;
@@ -3005,10 +3065,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   }
 
   function addItem(item){
+    const itemComPreco = { ...item, preco: precoItem(item) };
     const existe=sc.itens.find(i=>i.id===item.id);
     const itens=existe
       ? sc.itens.map(i=>i.id===item.id?{...i,qty:(i.qty||1)+1}:i)
-      : [...sc.itens,{...item,qty:1}];
+      : [...sc.itens,{...itemComPreco,qty:1}];
     const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
     const novaAbertura = mesa.abertura||new Date().toISOString();
     const novoStatus = mesa.status==="livre"?"ocupada":mesa.status;
@@ -3180,12 +3241,24 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
           ✅ Comanda {sc.itens.length>0?`(${sc.itens.reduce((s,i)=>s+(i.qty||1),0)})`:""}
         </button>
       </div>
+      {emModoEvento && (
+        <div style={{background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#fff",padding:"8px 14px",fontSize:12,fontWeight:700,textAlign:"center"}}>
+          🎉 {modoEvento.nome || "Modo Evento"} ATIVO — preços promocionais aplicados
+        </div>
+      )}
       <div style={{padding:"10px 14px 80px",display:"flex",flexDirection:"column",gap:8}}>
         {cardapio.filter(filtrarCardapio).map(item=>{
           const na=sc.itens.find(i=>i.id===item.id);
+          const precoExibido = precoItem(item);
+          const temPromo = emModoEvento && item.precoPromocional && item.precoPromocional > 0 && item.precoPromocional < item.preco;
           return(
-            <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":"transparent"}`}}>
-              <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{item.nome}</div><div style={{fontSize:12,color:"#888"}}>{fmtR(item.preco)}</div></div>
+            <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":temPromo?"#f59e0b":"transparent"}`}}>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:14}}>{item.nome}</div>
+                <div style={{fontSize:12,color:"#888"}}>
+                  {temPromo ? <><span style={{textDecoration:"line-through",marginRight:6}}>{fmtR(item.preco)}</span><span style={{color:"#f59e0b",fontWeight:700}}>🎉 {fmtR(precoExibido)}</span></> : fmtR(precoExibido)}
+                </div>
+              </div>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <button onClick={()=>na&&chgQty(item.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:na?"#fee2e2":"#f0f0f0",color:na?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:na?"pointer":"default"}}>−</button>
                 <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{na?na.qty||1:0}</span>
@@ -4014,7 +4087,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} />}
           {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
         </div>
