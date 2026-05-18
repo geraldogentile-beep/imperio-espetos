@@ -31,7 +31,9 @@ app.use((req, res, next) => {
     "http://localhost:3000",
   ].filter(Boolean);
   const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin)) {
+  // Em dev, aceita qualquer localhost (5173, 5174, 5175...)
+  const isLocalhostDev = process.env.NODE_ENV !== "production" && origin && /^http:\/\/localhost:\d+$/.test(origin);
+  if (origin && (allowedOrigins.includes(origin) || isLocalhostDev)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
@@ -46,7 +48,14 @@ const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300, message: { erro:
 app.use(limiter);
 
 // Rate limiting específico para login (anti brute-force)
-const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 15, message: { erro: "Muitas tentativas de login. Aguarde 15 minutos." } });
+// 30 tentativas em 15min — generoso o suficiente para múltiplos usuários compartilhando IP
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { erro: "Muitas tentativas de login. Aguarde alguns minutos." },
+  // Não conta logins bem-sucedidos contra o limite
+  skipSuccessfulRequests: true,
+});
 
 // ── JWT AUTH ─────────────────────────────────────────────────
 function gerarToken(payload) {
