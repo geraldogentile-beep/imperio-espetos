@@ -65,15 +65,49 @@ class ImpressoraBT {
     this.device = null;
     this.characteristic = null;
     this.listeners = new Set();
+    this.tentandoReconectar = false;
   }
 
   isSupported() { return !!navigator.bluetooth; }
   isConnected() { return this.device?.gatt?.connected && !!this.characteristic; }
+  // Se tem dispositivo salvo (foi pareado antes)
+  temDispositivoSalvo() {
+    try { return !!localStorage.getItem("imperio_printer_name"); } catch { return false; }
+  }
 
   onStatus(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
   _notify() {
-    const s = { conectada: this.isConnected(), nome: this.device?.name || null };
+    const s = { conectada: this.isConnected(), nome: this.device?.name || null, reconectando: this.tentandoReconectar };
     this.listeners.forEach(cb => { try { cb(s); } catch {} });
+  }
+
+  // Faz a conexão ao GATT e configura característica (compartilhado entre conectar e reconectar)
+  async _setupConexao() {
+    const server = await this.device.gatt.connect();
+
+    let service = null;
+    for (const uuid of SERVICES_CONHECIDOS) {
+      try {
+        service = await server.getPrimaryService(uuid);
+        if (service) break;
+      } catch {}
+    }
+    if (!service) {
+      const services = await server.getPrimaryServices();
+      service = services.find(s => !s.uuid.startsWith("00001800") && !s.uuid.startsWith("00001801"));
+    }
+    if (!service) throw new Error("Nenhum serviço de impressão encontrado");
+
+    const chars = await service.getCharacteristics();
+    this.characteristic = chars.find(c => c.properties.writeWithoutResponse) || chars.find(c => c.properties.write);
+    if (!this.characteristic) throw new Error("Característica de escrita não encontrada");
+
+    this.device.addEventListener("gattserverdisconnected", () => {
+      this.characteristic = null;
+      this._notify();
+      // Tenta reconectar automaticamente após desconexão
+      setTimeout(() => this.reconectarAuto().catch(() => {}), 2000);
+    });
   }
 
   async conectar() {
@@ -85,35 +119,13 @@ class ImpressoraBT {
         acceptAllDevices: true,
         optionalServices: SERVICES_CONHECIDOS,
       });
+      await this._setupConexao();
 
-      const server = await this.device.gatt.connect();
-
-      // Tenta cada service conhecido
-      let service = null;
-      for (const uuid of SERVICES_CONHECIDOS) {
-        try {
-          service = await server.getPrimaryService(uuid);
-          if (service) break;
-        } catch {}
-      }
-      if (!service) {
-        // Última tentativa: pega o primeiro service disponível
-        const services = await server.getPrimaryServices();
-        service = services.find(s => !s.uuid.startsWith("00001800") && !s.uuid.startsWith("00001801"));
-      }
-      if (!service) throw new Error("Nenhum serviço de impressão encontrado");
-
-      const chars = await service.getCharacteristics();
-      this.characteristic = chars.find(c => c.properties.writeWithoutResponse) || chars.find(c => c.properties.write);
-      if (!this.characteristic) throw new Error("Característica de escrita não encontrada");
-
-      this.device.addEventListener("gattserverdisconnected", () => {
-        this.characteristic = null;
-        this._notify();
-      });
-
-      // Salva nome para reconexão
-      try { localStorage.setItem("imperio_printer_name", this.device.name || ""); } catch {}
+      // Salva dados para reconexão automática
+      try {
+        localStorage.setItem("imperio_printer_name", this.device.name || "Impressora");
+        localStorage.setItem("imperio_printer_id", this.device.id || "");
+      } catch {}
       this._notify();
       return { nome: this.device.name };
     } catch (e) {
@@ -123,12 +135,62 @@ class ImpressoraBT {
     }
   }
 
+  // Tenta reconectar automaticamente (sem precisar de interação)
+  // Funciona se: (1) o navegador suporta getDevices, (2) já foi pareado antes, (3) impressora está em alcance
+  async reconectarAuto() {
+    if (this.isConnected()) return { conectada: true };
+    if (!this.isSupported() || !navigator.bluetooth.getDevices) {
+      return { erro: "Reconexão automática não suportada neste navegador" };
+    }
+    if (!this.temDispositivoSalvo()) return { erro: "Nenhuma impressora pareada anteriormente" };
+    if (this.tentandoReconectar) return { erro: "Reconexão já em andamento" };
+
+    this.tentandoReconectar = true;
+    this._notify();
+
+    try {
+      const idSalvo = localStorage.getItem("imperio_printer_id");
+      const nomeSalvo = localStorage.getItem("imperio_printer_name");
+      const devices = await navigator.bluetooth.getDevices();
+      // Tenta achar pelo ID primeiro, fallback no nome
+      this.device = devices.find(d => d.id === idSalvo) || devices.find(d => d.name === nomeSalvo);
+
+      if (!this.device) {
+        this.tentandoReconectar = false;
+        this._notify();
+        return { erro: "Impressora pareada não encontrada (foi removida do Bluetooth do dispositivo?)" };
+      }
+
+      await this._setupConexao();
+      this.tentandoReconectar = false;
+      this._notify();
+      return { conectada: true, nome: this.device.name };
+    } catch (e) {
+      this.device = null;
+      this.characteristic = null;
+      this.tentandoReconectar = false;
+      this._notify();
+      return { erro: e.message || "Falha na reconexão" };
+    }
+  }
+
   async desconectar() {
     if (this.device?.gatt?.connected) this.device.gatt.disconnect();
     this.characteristic = null;
     this.device = null;
-    try { localStorage.removeItem("imperio_printer_name"); } catch {}
+    try {
+      localStorage.removeItem("imperio_printer_name");
+      localStorage.removeItem("imperio_printer_id");
+    } catch {}
     this._notify();
+  }
+
+  // Esquece o dispositivo (precisará escolher de novo no próximo conectar)
+  async esquecer() {
+    try {
+      if (this.device?.forget) await this.device.forget();
+    } catch {}
+    await this.desconectar();
   }
 
   async _sendBytes(bytes) {

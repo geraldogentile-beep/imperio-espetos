@@ -588,11 +588,12 @@ function Cardapio({ cardapio, onReload }) {
 
 // ── CONFIGURAÇÃO DE IMPRESSORA BLUETOOTH ──────────────────────
 function ImpressoraConfig() {
-  const [status, setStatus] = useState({ conectada: impressora.isConnected(), nome: null });
+  const [status, setStatus] = useState({ conectada: impressora.isConnected(), nome: null, reconectando: false });
   const [conectando, setConectando] = useState(false);
   const [imprimindo, setImprimindo] = useState(false);
   const [erro, setErro] = useState(null);
   const supported = impressora.isSupported();
+  const temSalvo = impressora.temDispositivoSalvo();
 
   useEffect(() => {
     const unsub = impressora.onStatus(setStatus);
@@ -609,8 +610,20 @@ function ImpressoraConfig() {
     setConectando(false);
   }
 
+  async function reconectar() {
+    setErro(null); setConectando(true);
+    const r = await impressora.reconectarAuto();
+    if (r?.erro) setErro(r.erro);
+    setConectando(false);
+  }
+
   async function desconectar() {
     await impressora.desconectar();
+  }
+
+  async function esquecer() {
+    if (!window.confirm("Esquecer essa impressora? Você precisará escolher novamente da próxima vez.")) return;
+    await impressora.esquecer();
   }
 
   async function testar() {
@@ -639,31 +652,47 @@ function ImpressoraConfig() {
 
       {supported && (
         <>
-          <div style={{ padding: "14px", borderRadius: 12, background: status.conectada ? "#d1fae5" : "#f5f5f5", border: `1.5px solid ${status.conectada ? "#10b981" : "#e0e0e0"}` }}>
+          <div style={{ padding: "14px", borderRadius: 12, background: status.conectada ? "#d1fae5" : status.reconectando ? "#fef3c7" : "#f5f5f5", border: `1.5px solid ${status.conectada ? "#10b981" : status.reconectando ? "#fbbf24" : "#e0e0e0"}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ fontSize: 28 }}>{status.conectada ? "✅" : "🔌"}</div>
+              <div style={{ fontSize: 28 }}>{status.conectada ? "✅" : status.reconectando ? "⏳" : "🔌"}</div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, color: status.conectada ? "#065f46" : "#555" }}>
-                  {status.conectada ? "Impressora conectada" : "Impressora desconectada"}
+                <div style={{ fontWeight: 700, fontSize: 14, color: status.conectada ? "#065f46" : status.reconectando ? "#92400e" : "#555" }}>
+                  {status.conectada ? "Impressora conectada" : status.reconectando ? "Reconectando..." : "Impressora desconectada"}
                 </div>
                 {status.nome && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>📱 {status.nome}</div>}
+                {!status.conectada && !status.reconectando && temSalvo && (
+                  <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>💾 Tentamos reconectar automaticamente quando você abre o painel</div>
+                )}
               </div>
             </div>
           </div>
 
           {!status.conectada ? (
-            <button onClick={conectar} disabled={conectando} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer", opacity: conectando ? 0.6 : 1 }}>
-              {conectando ? "Procurando dispositivos..." : "🔍 Conectar impressora"}
-            </button>
-          ) : (
             <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={testar} disabled={imprimindo} style={{ flex: 1, background: "linear-gradient(135deg,#10b981,#059669)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer", opacity: imprimindo ? 0.6 : 1 }}>
+              {temSalvo && (
+                <button onClick={reconectar} disabled={conectando || status.reconectando} style={{ flex: 1, background: "linear-gradient(135deg,#3b82f6,#1d4ed8)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer", opacity: (conectando || status.reconectando) ? 0.6 : 1 }}>
+                  {status.reconectando ? "Reconectando..." : "🔄 Reconectar"}
+                </button>
+              )}
+              <button onClick={conectar} disabled={conectando || status.reconectando} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer", opacity: (conectando || status.reconectando) ? 0.6 : 1 }}>
+                {conectando && !status.reconectando ? "Procurando..." : temSalvo ? "🔍 Outra impressora" : "🔍 Conectar impressora"}
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={testar} disabled={imprimindo} style={{ flex: 1, minWidth: 140, background: "linear-gradient(135deg,#10b981,#059669)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer", opacity: imprimindo ? 0.6 : 1 }}>
                 {imprimindo ? "Imprimindo..." : "🖨️ Imprimir teste"}
               </button>
               <button onClick={desconectar} style={{ background: "#fee2e2", color: "#ef4444", border: "1px solid #fca5a5", borderRadius: 10, padding: "12px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
                 Desconectar
               </button>
             </div>
+          )}
+
+          {temSalvo && !status.conectada && (
+            <button onClick={esquecer} style={{ background: "transparent", color: "#888", border: "none", padding: "4px", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
+              Esquecer essa impressora
+            </button>
           )}
 
           {erro && (
@@ -677,8 +706,8 @@ function ImpressoraConfig() {
             1. Ligue a impressora Bluetooth<br />
             2. Mantenha próximo ao dispositivo (até 5m)<br />
             3. Clique em "Conectar impressora" e escolha o dispositivo na lista<br />
-            4. Quando conectada, a comanda da cozinha vai direto pra impressora ao enviar à cozinha<br /><br />
-            <strong style={{ color: "#333" }}>⚠️ Importante:</strong> a conexão se mantém enquanto a aba estiver aberta. Se fechar o navegador, precisa conectar de novo.
+            4. Quando conectada, a comanda da cozinha vai direto pra impressora<br /><br />
+            <strong style={{ color: "#333" }}>🔄 Reconexão automática:</strong> depois da primeira conexão, sempre que você abrir o painel o sistema tenta reconectar sozinho (se a impressora estiver ligada e por perto).
           </div>
         </>
       )}
@@ -4319,6 +4348,19 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
+    }
+  }, []);
+
+  // Tenta reconectar impressora Bluetooth automaticamente ao carregar
+  useEffect(() => {
+    if (impressora.isSupported() && impressora.temDispositivoSalvo() && !impressora.isConnected()) {
+      // Pequeno delay para não competir com outras chamadas iniciais
+      const t = setTimeout(() => {
+        impressora.reconectarAuto().then(r => {
+          if (r?.conectada) console.log("🖨️ Impressora reconectada:", r.nome);
+        }).catch(() => {});
+      }, 1500);
+      return () => clearTimeout(t);
     }
   }, []);
 
