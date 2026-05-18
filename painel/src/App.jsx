@@ -109,16 +109,22 @@ function TelaLogin({ onLogin }) {
   return (
     <div style={{
       minHeight: "100vh",
-      background: `linear-gradient(160deg, ${T.wineD} 0%, ${T.wine} 45%, #A93245 100%)`,
+      background: `radial-gradient(ellipse at top, ${T.wine} 0%, ${T.wineD} 50%, #4A0E1A 100%)`,
       display: "flex", flexDirection: "column",
       alignItems: "center", justifyContent: "center",
       fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
       padding: 24, position: "relative", overflow: "hidden",
+      animation: "fadeInPage 0.5s ease-out",
     }}>
+      <style>{`
+        @keyframes fadeInPage { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes float1 { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
+        @keyframes float2 { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(20px); } }
+      `}</style>
       {/* Decorative circles */}
-      <div style={{ position:"absolute", top:-80, right:-80, width:300, height:300, borderRadius:"50%", background:"rgba(255,255,255,0.04)" }} />
-      <div style={{ position:"absolute", bottom:-60, left:-60, width:200, height:200, borderRadius:"50%", background:"rgba(255,255,255,0.03)" }} />
-      <div style={{ position:"absolute", top:"30%", left:-40, width:120, height:120, borderRadius:"50%", background:"rgba(212,132,42,0.15)" }} />
+      <div style={{ position:"absolute", top:-100, right:-100, width:340, height:340, borderRadius:"50%", background:"radial-gradient(circle, rgba(212,132,42,0.18) 0%, transparent 70%)", animation:"float1 8s ease-in-out infinite" }} />
+      <div style={{ position:"absolute", bottom:-80, left:-80, width:240, height:240, borderRadius:"50%", background:"radial-gradient(circle, rgba(255,255,255,0.06) 0%, transparent 70%)", animation:"float2 10s ease-in-out infinite" }} />
+      <div style={{ position:"absolute", top:"35%", left:-60, width:140, height:140, borderRadius:"50%", background:"radial-gradient(circle, rgba(212,132,42,0.12) 0%, transparent 70%)", animation:"float1 12s ease-in-out infinite" }} />
 
       {/* Logo card */}
       <div style={{
