@@ -585,6 +585,100 @@ function Cardapio({ cardapio, onReload }) {
   );
 }
 
+// ── CONFIGURAÇÃO DE NOTIFICAÇÕES ──────────────────────────────
+function NotificacoesConfig() {
+  const [somAtivo, setSomAtivo] = useState(() => localStorage.getItem("imperio_som_pedido") !== "off");
+  const [notifPush, setNotifPush] = useState(() => localStorage.getItem("imperio_notif_push") !== "off");
+  const [permNotif, setPermNotif] = useState(typeof Notification !== "undefined" ? Notification.permission : "denied");
+
+  function toggleSom(v) {
+    setSomAtivo(v);
+    localStorage.setItem("imperio_som_pedido", v ? "on" : "off");
+  }
+
+  function toggleNotif(v) {
+    setNotifPush(v);
+    localStorage.setItem("imperio_notif_push", v ? "on" : "off");
+  }
+
+  async function pedirPermissao() {
+    if (!("Notification" in window)) {
+      alert("Seu navegador não suporta notificações.");
+      return;
+    }
+    const p = await Notification.requestPermission();
+    setPermNotif(p);
+    if (p === "granted") {
+      new Notification("🔔 Notificações ativadas!", { body: "Você será avisado quando chegar pedido novo.", icon: "/icon-192.png" });
+    }
+  }
+
+  function testarSom() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const tocarNota = (freq, start, dur, vol = 0.35) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+        gain.gain.setValueAtTime(vol, ctx.currentTime + start);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+        osc.start(ctx.currentTime + start);
+        osc.stop(ctx.currentTime + start + dur);
+      };
+      for (let i = 0; i < 3; i++) {
+        const offset = i * 0.6;
+        tocarNota(880, offset, 0.25);
+        tocarNota(660, offset + 0.25, 0.35);
+      }
+    } catch (e) {}
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🔔 Notificações de pedido</div>
+      <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e" }}>
+        ℹ️ Configure como você quer ser avisado quando chegar pedido novo pelo WhatsApp.
+      </div>
+
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <Toggle value={somAtivo} onChange={toggleSom} label="🔊 Som de campainha" sub="Toca um som ao chegar pedido novo" />
+        {somAtivo && (
+          <button onClick={testarSom} style={{ marginTop: 8, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            🔉 Testar som
+          </button>
+        )}
+      </div>
+
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <Toggle value={notifPush} onChange={toggleNotif} label="📲 Notificação push do navegador" sub="Mostra alerta mesmo se a aba estiver em segundo plano" />
+        {permNotif === "default" && notifPush && (
+          <div style={{ marginTop: 10, padding: "12px", background: "#fef3c7", borderRadius: 10, border: "1px solid #fbbf24" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#92400e", marginBottom: 8 }}>⚠️ Permissão necessária</div>
+            <button onClick={pedirPermissao} style={{ background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              Permitir notificações
+            </button>
+          </div>
+        )}
+        {permNotif === "denied" && notifPush && (
+          <div style={{ marginTop: 10, padding: "12px", background: "#fee2e2", borderRadius: 10, border: "1px solid #ef4444", fontSize: 12, color: "#991b1b" }}>
+            ❌ Notificações bloqueadas. Vá nas configurações do navegador para permitir.
+          </div>
+        )}
+        {permNotif === "granted" && notifPush && (
+          <div style={{ marginTop: 10, padding: "10px 12px", background: "#d1fae5", borderRadius: 10, fontSize: 12, color: "#065f46", fontWeight: 600 }}>
+            ✅ Notificações ativas
+          </div>
+        )}
+      </div>
+
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12, fontSize: 12, color: "#888", lineHeight: 1.5 }}>
+        💡 <strong>Dica:</strong> Em celulares, "Adicione à tela inicial" pelo navegador para receber notificações mesmo com o app fechado.
+      </div>
+    </div>
+  );
+}
+
 // ── COMPONENTE TROCA DE PIN ───────────────────────────────────
 function PinManager() {
   const [editando, setEditando] = useState(null); // "dono" | "caixa"
@@ -1701,7 +1795,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         </div>
       </div>
       <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
+        {[["horario","🕐"],["notif","🔔"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
       </div>
@@ -1783,6 +1877,10 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de avaliação</div><textarea value={cfg.avaliacao.mensagem} onChange={e => setAvaliacao("mensagem", e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de agradecimento</div><textarea value={cfg.avaliacao.mensagemObrigado} onChange={e => setAvaliacao("mensagemObrigado", e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
         </div>
+      )}
+
+      {subAba === "notif" && (
+        <NotificacoesConfig />
       )}
 
       {subAba === "evento" && (
@@ -2097,6 +2195,174 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
 function totMesaRel(m) { return totMesaCompleta(m); }
 
+// ── DASHBOARD COM GRÁFICOS ────────────────────────────────────
+function DashboardCharts({ pedidos = [], historicoSalao = [], periodo }) {
+  const dias = periodo === "hoje" ? 1 : periodo === "semana" ? 7 : 30;
+  const agora = new Date();
+  const dataInicio = new Date(agora); dataInicio.setDate(dataInicio.getDate() - dias + 1); dataInicio.setHours(0,0,0,0);
+
+  // Filtra pedidos delivery entregues no período
+  const pedidosEntregues = pedidos.filter(p => p.status === "entregue" && new Date(p.horario) >= dataInicio);
+
+  // Vendas do salão no período
+  const vendasSalao = historicoSalao.filter(v => new Date(v.fechamento) >= dataInicio);
+
+  // ── VENDAS POR HORA (todas as 24h) ──
+  const porHora = Array.from({ length: 24 }, (_, h) => ({ hora: h, valor: 0, qty: 0 }));
+  pedidosEntregues.forEach(p => {
+    const h = new Date(p.horario).getHours();
+    const total = (p.itens||[]).reduce((s,i)=>s+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0);
+    porHora[h].valor += total;
+    porHora[h].qty += 1;
+  });
+  vendasSalao.forEach(v => {
+    const h = new Date(v.fechamento).getHours();
+    porHora[h].valor += v.total || 0;
+    porHora[h].qty += 1;
+  });
+  const horaPico = porHora.reduce((m, c) => c.valor > m.valor ? c : m, porHora[0]);
+
+  // ── VENDAS POR DIA DA SEMANA ──
+  const diasSemana = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const porDiaSemana = diasSemana.map(d => ({ dia: d, valor: 0, qty: 0 }));
+  pedidosEntregues.forEach(p => {
+    const d = new Date(p.horario).getDay();
+    const total = (p.itens||[]).reduce((s,i)=>s+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0);
+    porDiaSemana[d].valor += total;
+    porDiaSemana[d].qty += 1;
+  });
+  vendasSalao.forEach(v => {
+    const d = new Date(v.fechamento).getDay();
+    porDiaSemana[d].valor += v.total || 0;
+    porDiaSemana[d].qty += 1;
+  });
+
+  // ── COMPARATIVO ATUAL vs ANTERIOR ──
+  const dataInicioAnterior = new Date(dataInicio); dataInicioAnterior.setDate(dataInicioAnterior.getDate() - dias);
+  const pedidosAnt = pedidos.filter(p => p.status === "entregue" && new Date(p.horario) >= dataInicioAnterior && new Date(p.horario) < dataInicio);
+  const vendasAnt = historicoSalao.filter(v => new Date(v.fechamento) >= dataInicioAnterior && new Date(v.fechamento) < dataInicio);
+  const totalAtual = pedidosEntregues.reduce((s,p)=>s+((p.itens||[]).reduce((a,i)=>a+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0)),0) + vendasSalao.reduce((s,v)=>s+(v.total||0),0);
+  const totalAnt = pedidosAnt.reduce((s,p)=>s+((p.itens||[]).reduce((a,i)=>a+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0)),0) + vendasAnt.reduce((s,v)=>s+(v.total||0),0);
+  const variacao = totalAnt > 0 ? ((totalAtual - totalAnt) / totalAnt) * 100 : 0;
+
+  // ── TOP ITENS ──
+  const itensMap = {};
+  [...pedidosEntregues, ...vendasSalao].forEach(p => {
+    (p.itens||[]).forEach(it => {
+      if (!itensMap[it.nome]) itensMap[it.nome] = { nome: it.nome, qty: 0, valor: 0 };
+      itensMap[it.nome].qty += it.qty || 1;
+      itensMap[it.nome].valor += (it.qty || 1) * it.preco;
+    });
+  });
+  const topItens = Object.values(itensMap).sort((a,b) => b.qty - a.qty).slice(0, 8);
+
+  // Máximos para escala
+  const maxHora = Math.max(...porHora.map(h => h.valor), 1);
+  const maxDia = Math.max(...porDiaSemana.map(d => d.valor), 1);
+  const maxItem = Math.max(...topItens.map(i => i.qty), 1);
+
+  const totalPedidos = pedidosEntregues.length + vendasSalao.length;
+  const ticketMedio = totalPedidos > 0 ? totalAtual / totalPedidos : 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Card de comparativo destacado */}
+      <div style={{ background: "linear-gradient(135deg, #7b1a0a 0%, #c0392b 100%)", borderRadius: 16, padding: "18px 20px", color: "#fff", boxShadow: "0 4px 20px rgba(123,26,10,0.25)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 10, opacity: 0.75, letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>{periodo === "hoje" ? "Hoje" : periodo === "semana" ? "Últimos 7 dias" : "Últimos 30 dias"}</div>
+            <div className="serif-title" style={{ fontSize: 28, fontWeight: 700, marginTop: 4, lineHeight: 1.1 }}>R$ {totalAtual.toFixed(2)}</div>
+            <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{totalPedidos} {totalPedidos === 1 ? "venda" : "vendas"} · ticket médio R$ {ticketMedio.toFixed(2)}</div>
+          </div>
+          <div style={{ textAlign: "right", background: "rgba(255,255,255,0.15)", borderRadius: 12, padding: "8px 12px", backdropFilter: "blur(8px)" }}>
+            <div style={{ fontSize: 10, opacity: 0.8, marginBottom: 2 }}>vs {periodo === "hoje" ? "ontem" : "período anterior"}</div>
+            <div style={{ fontWeight: 700, fontSize: 18, color: variacao >= 0 ? "#86efac" : "#fca5a5" }}>
+              {variacao >= 0 ? "▲" : "▼"} {Math.abs(variacao).toFixed(1)}%
+            </div>
+            <div style={{ fontSize: 10, opacity: 0.7, marginTop: 1 }}>R$ {totalAnt.toFixed(2)}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Vendas por hora */}
+      <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div className="serif-title" style={{ fontSize: 15, fontWeight: 700, color: "#1a1a1a" }}>⏰ Horários mais movimentados</div>
+          {horaPico.valor > 0 && <div style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600, background: "#fef3c7", borderRadius: 8, padding: "3px 10px" }}>🔥 Pico: {String(horaPico.hora).padStart(2,"0")}h</div>}
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 120, padding: "0 0 4px" }}>
+          {porHora.map((h, i) => {
+            const alt = (h.valor / maxHora) * 100;
+            const ehPico = h.hora === horaPico.hora && h.valor > 0;
+            return (
+              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, position: "relative" }} title={`${String(h.hora).padStart(2,"0")}h: R$ ${h.valor.toFixed(2)} (${h.qty} vendas)`}>
+                <div style={{ width: "85%", height: `${Math.max(alt, h.valor > 0 ? 4 : 0)}%`, background: ehPico ? "linear-gradient(180deg,#f59e0b,#d97706)" : h.valor > 0 ? "linear-gradient(180deg,#c0392b,#7b1a0a)" : "transparent", borderRadius: "4px 4px 0 0", transition: "height 0.6s ease", minHeight: h.valor > 0 ? 4 : 0 }} />
+                {[0,6,12,18,23].includes(h.hora) && <div style={{ fontSize: 9, color: "#888", marginTop: 2 }}>{h.hora}h</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Vendas por dia da semana */}
+      <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+        <div className="serif-title" style={{ fontSize: 15, fontWeight: 700, color: "#1a1a1a", marginBottom: 14 }}>📅 Vendas por dia da semana</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 140 }}>
+          {porDiaSemana.map((d, i) => {
+            const alt = (d.valor / maxDia) * 100;
+            const isHoje = i === agora.getDay();
+            return (
+              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                <div style={{ fontSize: 10, color: d.valor > 0 ? "#7b1a0a" : "#ccc", fontWeight: 700, minHeight: 14 }}>{d.valor > 0 ? `R$${d.valor.toFixed(0)}` : "—"}</div>
+                <div style={{ width: "100%", flex: 1, display: "flex", alignItems: "flex-end" }}>
+                  <div style={{ width: "100%", height: `${Math.max(alt, d.valor > 0 ? 5 : 0)}%`, background: isHoje ? "linear-gradient(180deg,#f59e0b,#d97706)" : d.valor > 0 ? "linear-gradient(180deg,#c0392b,#7b1a0a)" : "#f0f0f0", borderRadius: "6px 6px 0 0", transition: "height 0.6s ease", minHeight: d.valor > 0 ? 6 : 6, boxShadow: isHoje ? "0 0 0 2px #f59e0b40" : "none" }} />
+                </div>
+                <div style={{ fontSize: 11, fontWeight: isHoje ? 700 : 500, color: isHoje ? "#f59e0b" : "#666" }}>{d.dia}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Top itens */}
+      <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+        <div className="serif-title" style={{ fontSize: 15, fontWeight: 700, color: "#1a1a1a", marginBottom: 14 }}>🏆 Itens mais vendidos</div>
+        {topItens.length === 0 ? (
+          <div style={{ textAlign: "center", padding: 20, color: "#ccc", fontSize: 14 }}>Sem dados no período</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {topItens.map((it, i) => {
+              const pct = (it.qty / maxItem) * 100;
+              const medals = ["🥇","🥈","🥉"];
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 28, fontSize: 16, textAlign: "center", flexShrink: 0 }}>{medals[i] || `${i+1}.`}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#1a1a1a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.nome}</div>
+                      <div style={{ fontSize: 12, color: "#888", marginLeft: 8, flexShrink: 0 }}>{it.qty}x · R$ {it.valor.toFixed(2)}</div>
+                    </div>
+                    <div style={{ height: 6, background: "#f5f5f5", borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${pct}%`, background: i < 3 ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 3, transition: "width 0.6s ease" }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Cards de métricas extras */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
+        <Metrica icon="🛵" label="Delivery" valor={pedidosEntregues.length + " " + (pedidosEntregues.length === 1 ? "pedido" : "pedidos")} cor="#10b981" />
+        <Metrica icon="🍽️" label="Salão" valor={vendasSalao.length + " " + (vendasSalao.length === 1 ? "venda" : "vendas")} cor="#3b82f6" />
+        <Metrica icon="💵" label="Ticket médio" valor={"R$ " + ticketMedio.toFixed(2)} cor="#f59e0b" />
+      </div>
+    </div>
+  );
+}
+
 function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
   const [periodo, setPeriodo] = useState("semana");
   const [subAba, setSubAba] = useState("geral");
@@ -2203,10 +2469,15 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["geral","📊 Geral"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
+
+      {/* DASHBOARD */}
+      {subAba === "dash" && (
+        <DashboardCharts pedidos={pedidos} historicoSalao={historicoSalao} periodo={periodo} />
+      )}
 
       {/* GERAL */}
       {subAba === "geral" && <>
@@ -3860,13 +4131,57 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   const tocarSom = useCallback(() => {
     try {
+      const somAtivo = localStorage.getItem("imperio_som_pedido") !== "off";
+      if (!somAtivo) return;
       if (!actx.current) actx.current = new (window.AudioContext || window.webkitAudioContext)();
-      const ctx = actx.current; const osc = ctx.createOscillator(); const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.setValueAtTime(880, ctx.currentTime); osc.frequency.setValueAtTime(660, ctx.currentTime + 0.1);
-      gain.gain.setValueAtTime(0.3, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.4);
-    } catch (e) {}
+      const ctx = actx.current;
+      // Som de "campainha" — toca 3 vezes uma sequência de 2 notas (mais perceptível)
+      const tocarNota = (freq, start, dur, vol = 0.35) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+        gain.gain.setValueAtTime(vol, ctx.currentTime + start);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+        osc.start(ctx.currentTime + start);
+        osc.stop(ctx.currentTime + start + dur);
+      };
+      // 3 ciclos de "ding-dong" (880Hz → 660Hz)
+      for (let i = 0; i < 3; i++) {
+        const offset = i * 0.6;
+        tocarNota(880, offset, 0.25);
+        tocarNota(660, offset + 0.25, 0.35);
+      }
+    } catch (e) { console.warn("Som falhou:", e); }
+  }, []);
+
+  // Notificação push do navegador
+  const notificarPush = useCallback((pedido) => {
+    try {
+      const notifAtivo = localStorage.getItem("imperio_notif_push") !== "off";
+      if (!notifAtivo) return;
+      if (!("Notification" in window)) return;
+      if (Notification.permission !== "granted") return;
+      const total = (pedido.itens || []).reduce((s, i) => s + (i.qty || 1) * i.preco, 0) + 5 - (pedido.desconto || 0);
+      const corpo = `${pedido.cliente || "Cliente"} — R$ ${total.toFixed(2)}\n📍 ${pedido.endereco || ""}`;
+      const n = new Notification(`🔔 Novo pedido #${pedido.id}`, {
+        body: corpo,
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        tag: `pedido-${pedido.id}`,
+        requireInteraction: false,
+        silent: false,
+      });
+      n.onclick = () => { window.focus(); n.close(); };
+      setTimeout(() => n.close(), 12000);
+    } catch (e) { console.warn("Notificação falhou:", e); }
+  }, []);
+
+  // Solicita permissão de notificação ao carregar
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
   }, []);
 
   const fetchAll = useCallback(async () => {
@@ -3880,7 +4195,22 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
         authFetch(BACKEND_URL + "/config/status-loja"),
         authFetch(BACKEND_URL + "/garcons"),
       ]);
-      if (rp.ok) { const data = await rp.json(); const ids = new Set(data.map(p => p.id)); const novos = [...ids].filter(id => !ant.current.has(id)); if (novos.length > 0 && ant.current.size > 0) { setExpanded(novos[0]); tocarSom(); } ant.current = ids; setPedidos(data); }
+      if (rp.ok) {
+        const data = await rp.json();
+        const ids = new Set(data.map(p => p.id));
+        const novos = [...ids].filter(id => !ant.current.has(id));
+        if (novos.length > 0 && ant.current.size > 0) {
+          setExpanded(novos[0]);
+          tocarSom();
+          // Notificação push para cada pedido novo (limite de 3 simultâneos)
+          novos.slice(0, 3).forEach(id => {
+            const pedido = data.find(p => p.id === id);
+            if (pedido && pedido.status === "novo") notificarPush(pedido);
+          });
+        }
+        ant.current = ids;
+        setPedidos(data);
+      }
       if (rc.ok) setCardapio(await rc.json());
       if (rcu.ok) setCupons(await rcu.json());
       if (ra.ok) setAvaliacoes(await ra.json());
