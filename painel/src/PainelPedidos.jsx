@@ -4071,7 +4071,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
           {/* Conteúdo das abas */}
           {aba === "pedidos" && (
-            <div style={{ padding: "20px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 14 }}>
+            <div className="pedidos-grid" style={{ padding: "20px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 14 }}>
               {pf.length === 0
                 ? <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "80px 20px", color: T.gray, fontSize: 16 }}><div style={{ fontSize: 50, marginBottom: 12, opacity: 0.3 }}>🍢</div>Nenhum pedido encontrado.</div>
                 : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} onEdit={editPedido} cardapio={cardapio} atualizando={!!atualizando[p.id]} />)
@@ -4171,6 +4171,16 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           .sidebar-desktop { display: none !important; }
           .mobile-nav { display: block !important; }
           .main-content { padding-bottom: 68px !important; }
+          /* iOS Safari: previne zoom automático ao focar inputs (font-size mínimo 16px) */
+          input, select, textarea {
+            font-size: 16px !important;
+          }
+          /* Reduz padding lateral em containers e cards para mobile */
+          .pedidos-grid { padding: 12px !important; grid-template-columns: 1fr !important; gap: 10px !important; }
+          /* Touch targets mínimos */
+          button { min-height: 36px; }
+          /* Previne overflow horizontal */
+          body, #root { overflow-x: hidden; max-width: 100vw; }
         }
         @media (min-width: 769px) {
           .header-mobile { display: none !important; }
@@ -4184,6 +4194,9 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
         ::-webkit-scrollbar-thumb:hover { background: rgba(139,38,53,0.3); }
         button { transition: all 0.15s ease; }
         * { box-sizing: border-box; }
+        /* Inputs com tap area decente em mobile */
+        input, select, textarea { min-height: 38px; }
+        textarea { min-height: 60px; }
       `}</style>
     </div>
   );
