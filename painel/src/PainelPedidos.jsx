@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { authFetch } from "./auth.js";
+import { impressora } from "./bluetoothPrinter.js";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
 
@@ -581,6 +582,106 @@ function Cardapio({ cardapio, onReload }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── CONFIGURAÇÃO DE IMPRESSORA BLUETOOTH ──────────────────────
+function ImpressoraConfig() {
+  const [status, setStatus] = useState({ conectada: impressora.isConnected(), nome: null });
+  const [conectando, setConectando] = useState(false);
+  const [imprimindo, setImprimindo] = useState(false);
+  const [erro, setErro] = useState(null);
+  const supported = impressora.isSupported();
+
+  useEffect(() => {
+    const unsub = impressora.onStatus(setStatus);
+    return unsub;
+  }, []);
+
+  async function conectar() {
+    setErro(null); setConectando(true);
+    try {
+      await impressora.conectar();
+    } catch (e) {
+      if (!String(e).includes("User cancelled")) setErro(e.message || "Erro ao conectar");
+    }
+    setConectando(false);
+  }
+
+  async function desconectar() {
+    await impressora.desconectar();
+  }
+
+  async function testar() {
+    setErro(null); setImprimindo(true);
+    try {
+      await impressora.imprimirTeste();
+    } catch (e) {
+      setErro("Erro ao imprimir: " + e.message);
+    }
+    setImprimindo(false);
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🖨️ Impressora Bluetooth</div>
+      <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e" }}>
+        ℹ️ Compatível com impressoras térmicas Bluetooth ESC/POS (Baihuo MY-7779 e similares). Use Chrome ou Edge.
+      </div>
+
+      {!supported && (
+        <div style={{ padding: "12px", background: "#fee2e2", borderRadius: 10, border: "1px solid #ef4444", fontSize: 13, color: "#991b1b" }}>
+          ❌ Seu navegador não suporta Bluetooth Web.<br />
+          Use <strong>Chrome</strong> ou <strong>Edge</strong> no Android ou desktop. Safari/iOS não tem suporte.
+        </div>
+      )}
+
+      {supported && (
+        <>
+          <div style={{ padding: "14px", borderRadius: 12, background: status.conectada ? "#d1fae5" : "#f5f5f5", border: `1.5px solid ${status.conectada ? "#10b981" : "#e0e0e0"}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ fontSize: 28 }}>{status.conectada ? "✅" : "🔌"}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: status.conectada ? "#065f46" : "#555" }}>
+                  {status.conectada ? "Impressora conectada" : "Impressora desconectada"}
+                </div>
+                {status.nome && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>📱 {status.nome}</div>}
+              </div>
+            </div>
+          </div>
+
+          {!status.conectada ? (
+            <button onClick={conectar} disabled={conectando} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer", opacity: conectando ? 0.6 : 1 }}>
+              {conectando ? "Procurando dispositivos..." : "🔍 Conectar impressora"}
+            </button>
+          ) : (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={testar} disabled={imprimindo} style={{ flex: 1, background: "linear-gradient(135deg,#10b981,#059669)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: "pointer", opacity: imprimindo ? 0.6 : 1 }}>
+                {imprimindo ? "Imprimindo..." : "🖨️ Imprimir teste"}
+              </button>
+              <button onClick={desconectar} style={{ background: "#fee2e2", color: "#ef4444", border: "1px solid #fca5a5", borderRadius: 10, padding: "12px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+                Desconectar
+              </button>
+            </div>
+          )}
+
+          {erro && (
+            <div style={{ padding: "10px 12px", background: "#fee2e2", borderRadius: 10, border: "1px solid #ef4444", fontSize: 12, color: "#991b1b" }}>
+              ❌ {erro}
+            </div>
+          )}
+
+          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12, fontSize: 12, color: "#888", lineHeight: 1.6 }}>
+            <strong style={{ color: "#333" }}>📌 Como usar:</strong><br />
+            1. Ligue a impressora Bluetooth<br />
+            2. Mantenha próximo ao dispositivo (até 5m)<br />
+            3. Clique em "Conectar impressora" e escolha o dispositivo na lista<br />
+            4. Quando conectada, a comanda da cozinha vai direto pra impressora ao enviar à cozinha<br /><br />
+            <strong style={{ color: "#333" }}>⚠️ Importante:</strong> a conexão se mantém enquanto a aba estiver aberta. Se fechar o navegador, precisa conectar de novo.
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1795,7 +1896,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         </div>
       </div>
       <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["notif","🔔"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
+        {[["horario","🕐"],["notif","🔔"],["impressora","🖨️"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
       </div>
@@ -1881,6 +1982,10 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
 
       {subAba === "notif" && (
         <NotificacoesConfig />
+      )}
+
+      {subAba === "impressora" && (
+        <ImpressoraConfig />
       )}
 
       {subAba === "evento" && (
@@ -3364,10 +3469,30 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   }
 
   // Imprime ticket de cozinha SEM VALORES
-  function imprimirCozinha(rodada, mesaId, scLabel){
+  async function imprimirCozinha(rodada, mesaId, scLabel){
     const agora = new Date();
-    const win = window.open('','_blank','width=360,height=520');
     const nomeGarcom = garcomLogado?.nome || mesa.garcom || "—";
+
+    // Se a impressora Bluetooth estiver conectada, usa ela
+    if (impressora.isConnected()) {
+      try {
+        await impressora.imprimirComanda({
+          mesa: mesaId,
+          label: scLabel,
+          garcom: nomeGarcom,
+          cliente: sc.cliente,
+          itens: rodada.itens,
+          hora: rodada.hora,
+        });
+        return;
+      } catch (e) {
+        console.warn("Falha ao imprimir BT, abrindo janela:", e.message);
+        msgSalao("⚠️ Impressora BT falhou, abrindo janela...", "#f59e0b");
+      }
+    }
+
+    // Fallback: janela do navegador
+    const win = window.open('','_blank','width=360,height=520');
     win.document.write(`<!DOCTYPE html><html>
 <head><title>Cozinha — Mesa ${mesaId}</title>
 <style>
@@ -3429,6 +3554,12 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
     setFaturado(f=>f+totalSC);
 
+    // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
+    if (impressora.isConnected()) {
+      try { await impressora.imprimirRecibo(registro); }
+      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); }
+    }
+
     // Remove a comanda fechada
     const novasSCs = mesa.subComandas.filter((_,i)=>i!==idxSC);
     const novoStatus = novasSCs.length===0||novasSCs.every(s=>s.itens.length===0&&(s.rodadas||[]).length===0)?"livre":"ocupada";
@@ -3460,6 +3591,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     try{const res=await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});if(res.ok){const salvo=await res.json();registro._id=salvo._id;}}catch(e){console.warn(e);}
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
     setFaturado(f=>f+totalMesa);
+
+    // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
+    if (impressora.isConnected()) {
+      try { await impressora.imprimirRecibo(registro); }
+      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); }
+    }
+
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
     upd(initMesa(mesa.id-1));
     setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
