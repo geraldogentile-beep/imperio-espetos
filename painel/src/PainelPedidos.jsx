@@ -3470,11 +3470,12 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   }
 
   function addItem(item){
-    const itemComPreco = { ...item, preco: precoItem(item) };
+    const precoAgora = precoItem(item);
     const existe=sc.itens.find(i=>i.id===item.id);
     const itens=existe
-      ? sc.itens.map(i=>i.id===item.id?{...i,qty:(i.qty||1)+1}:i)
-      : [...sc.itens,{...itemComPreco,qty:1}];
+      // Sempre atualiza o preço para o atual (caso modo evento tenha ligado/desligado)
+      ? sc.itens.map(i=>i.id===item.id?{...i,qty:(i.qty||1)+1,preco:precoAgora}:i)
+      : [...sc.itens,{...item,preco:precoAgora,qty:1}];
     const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
     const novaAbertura = mesa.abertura||new Date().toISOString();
     const novoStatus = mesa.status==="livre"?"ocupada":mesa.status;
@@ -3586,7 +3587,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
     if (impressora.isConnected()) {
       try { await impressora.imprimirRecibo(registro); }
-      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); }
+      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
     }
 
     // Remove a comanda fechada
@@ -3624,7 +3625,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
     if (impressora.isConnected()) {
       try { await impressora.imprimirRecibo(registro); }
-      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); }
+      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
     }
 
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
@@ -4294,6 +4295,8 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [selSalao, setSelSalao] = useState(null); // mesa selecionada — persiste
   const [telaSalao, setTelaSalaoGlobal] = useState("mapa"); // tela atual — persiste
   const ant = useRef(new Set());
+  // Pedidos sendo editados — polling não deve sobrescrevê-los
+  const pedidosEditando = useRef(new Set());
   const actx = useRef(null);
 
   const tocarSom = useCallback(() => {
@@ -4344,11 +4347,14 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     } catch (e) { console.warn("Notificação falhou:", e); }
   }, []);
 
-  // Solicita permissão de notificação ao carregar
+  // Solicita permissão de notificação ao carregar (silenciosamente falha se navegador não suporta)
   useEffect(() => {
-    if ("Notification" in window && Notification.permission === "default") {
+    try {
+      if (!("Notification" in window)) return;
+      if (typeof Notification.requestPermission !== "function") return;
+      if (Notification.permission !== "default") return;
       Notification.requestPermission().catch(() => {});
-    }
+    } catch {}
   }, []);
 
   // Tenta reconectar impressora Bluetooth automaticamente ao carregar
@@ -4389,7 +4395,17 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           });
         }
         ant.current = ids;
-        setPedidos(data);
+        // Não sobrescreve pedidos que estão sendo editados localmente
+        setPedidos(prev => {
+          if (pedidosEditando.current.size === 0) return data;
+          return data.map(pNovo => {
+            if (pedidosEditando.current.has(pNovo.id)) {
+              const pLocal = prev.find(p => p.id === pNovo.id);
+              return pLocal || pNovo;
+            }
+            return pNovo;
+          });
+        });
       }
       if (rc.ok) setCardapio(await rc.json());
       if (rcu.ok) setCupons(await rcu.json());
@@ -4399,7 +4415,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       if (rg.ok) setGarcons(await rg.json());
       setConexao("online"); setUltimaAtt(new Date());
     } catch { setConexao("offline"); }
-  }, [tocarSom]);
+  }, [tocarSom, notificarPush]);
 
   useEffect(() => { fetchAll(); const t = setInterval(fetchAll, POLLING_INTERVAL); return () => clearInterval(t); }, [fetchAll]);
   useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 30000); return () => clearInterval(t); }, []);
@@ -4413,25 +4429,36 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     setAtualizando(prev => ({ ...prev, [id]: true }));
     try {
       const r = await authFetch(BACKEND_URL + "/pedidos/" + id + "/status", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: novoStatus }) });
-      if (!r.ok) throw new Error();
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert("❌ Erro ao atualizar status: " + (err.erro || `código ${r.status}`));
+        return;
+      }
       const at = await r.json();
       setPedidos(prev => prev.map(p => p.id === id ? { ...p, status: at.status } : p));
-    } catch { setPedidos(prev => prev.map(p => p.id === id ? { ...p, status: novoStatus } : p)); }
-    finally { setAtualizando(prev => ({ ...prev, [id]: false })); }
+    } catch {
+      alert("❌ Erro de conexão ao atualizar status. Tente novamente.");
+    } finally {
+      setAtualizando(prev => ({ ...prev, [id]: false }));
+    }
   };
 
   const editPedido = async (id, itens, obs) => {
     setAtualizando(prev => ({ ...prev, [id]: true }));
+    pedidosEditando.current.add(id);
     try {
       const r = await authFetch(BACKEND_URL + "/pedidos/" + id, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ itens, obs }),
       });
-      if (!r.ok) { const err = await r.json(); alert(err.erro || "Erro ao editar pedido"); return; }
+      if (!r.ok) { const err = await r.json().catch(() => ({})); alert("❌ " + (err.erro || "Erro ao editar pedido")); return; }
       const at = await r.json();
       setPedidos(prev => prev.map(p => p.id === id ? at : p));
-    } catch { alert("Erro de conexão ao editar pedido"); }
-    finally { setAtualizando(prev => ({ ...prev, [id]: false })); }
+    } catch { alert("❌ Erro de conexão ao editar pedido"); }
+    finally {
+      setAtualizando(prev => ({ ...prev, [id]: false }));
+      pedidosEditando.current.delete(id);
+    }
   };
 
   const saveConfig = async (novoCfg) => {
