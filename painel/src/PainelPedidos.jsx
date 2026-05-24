@@ -709,6 +709,14 @@ function ImpressoraConfig() {
             4. Quando conectada, a comanda da cozinha vai direto pra impressora<br /><br />
             <strong style={{ color: "#333" }}>🔄 Reconexão automática:</strong> depois da primeira conexão, sempre que você abrir o painel o sistema tenta reconectar sozinho (se a impressora estiver ligada e por perto).
           </div>
+
+          <div style={{ background: "#fef3c7", borderRadius: 10, padding: "12px", fontSize: 12, color: "#92400e", lineHeight: 1.6 }}>
+            <strong>⚠️ Pra manter a conexão durante o expediente:</strong><br /><br />
+            1. <strong>Instale como app</strong>: no Chrome → menu (⋮) → "Adicionar à tela inicial". Vira um ícone igual app nativo, conexão fica mais estável.<br /><br />
+            2. <strong>Não feche</strong> o painel/Chrome durante o expediente.<br /><br />
+            3. <strong>Mantenha o celular plugado</strong> no carregador (a tela acende sozinha quando você usa).<br /><br />
+            4. Se a conexão cair, ao voltar pro painel <strong>reconecta sozinha em 1-2 segundos</strong>.
+          </div>
         </>
       )}
     </div>
@@ -4422,6 +4430,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   // Reconexão automática da impressora Bluetooth
   // - Tenta 1x ao carregar (após 1.5s)
   // - Tenta a cada 30s enquanto estiver desconectada (e tem dispositivo salvo)
+  // - O bluetoothPrinter.js também reage a visibilitychange/focus internamente
   useEffect(() => {
     if (!impressora.isSupported() || !impressora.temDispositivoSalvo()) return;
 
@@ -4440,6 +4449,23 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     const interval = setInterval(tentar, 30000);
 
     return () => { cancelado = true; clearTimeout(t1); clearInterval(interval); };
+  }, []);
+
+  // Mantém a tela do celular acesa (Wake Lock API)
+  // Impede o sistema de suspender a aba, o que mantém Bluetooth e WhatsApp polling vivos
+  useEffect(() => {
+    impressora.manterAtivo(true).catch(()=>{});
+    // Reativa quando a aba volta a ficar visível (Wake Lock libera ao trocar de aba)
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        impressora.manterAtivo(true).catch(()=>{});
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      impressora.manterAtivo(false).catch(()=>{});
+    };
   }, []);
 
   const fetchAll = useCallback(async () => {

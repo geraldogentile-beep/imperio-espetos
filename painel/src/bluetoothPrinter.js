@@ -76,6 +76,39 @@ class ImpressoraBT {
     this.characteristic = null;
     this.listeners = new Set();
     this.tentandoReconectar = false;
+    this.wakeLock = null;
+    this._setupVisibilityListener();
+  }
+
+  // Quando a aba volta a ficar visível, tenta reconectar imediatamente
+  _setupVisibilityListener() {
+    if (typeof document === "undefined") return;
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && !this.isConnected() && this.temDispositivoSalvo()) {
+        // Pequeno delay pra evitar problemas com a transição
+        setTimeout(() => this.reconectarAuto().catch(() => {}), 500);
+      }
+    });
+    // Também tenta reconectar quando a janela ganha foco
+    window.addEventListener("focus", () => {
+      if (!this.isConnected() && this.temDispositivoSalvo()) {
+        setTimeout(() => this.reconectarAuto().catch(() => {}), 500);
+      }
+    });
+  }
+
+  // Mantém a tela do celular ligada (impede o navegador de suspender a aba)
+  async manterAtivo(ativar = true) {
+    try {
+      if (ativar && "wakeLock" in navigator) {
+        if (this.wakeLock) return; // já está ativo
+        this.wakeLock = await navigator.wakeLock.request("screen");
+        this.wakeLock.addEventListener("release", () => { this.wakeLock = null; });
+      } else if (!ativar && this.wakeLock) {
+        await this.wakeLock.release();
+        this.wakeLock = null;
+      }
+    } catch (e) { console.warn("WakeLock falhou:", e.message); }
   }
 
   isSupported() { return !!navigator.bluetooth; }
