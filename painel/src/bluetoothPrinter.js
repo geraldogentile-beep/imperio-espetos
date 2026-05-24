@@ -240,70 +240,79 @@ class ImpressoraBT {
   }
 
   // ── IMPRIMIR COMANDA DA COZINHA ──
+  // Foco: cozinha/churrasqueira ver O QUE preparar.
+  // SEM preços, SEM totais, SEM nome do estabelecimento.
+  // Mesa, garçom, hora e itens em fonte GRANDE.
   async imprimirComanda({ mesa, label, garcom, cliente, itens, hora }) {
     const agora = hora ? new Date(hora) : new Date();
     const cmds = [
-      INIT, CODEPAGE_850,
-      ALIGN_CENTER, SIZE_DOUBLE, BOLD_ON,
-      texto("COZINHA"), NL,
+      INIT,
+      ALIGN_CENTER, SIZE_DOUBLE_H, BOLD_ON,
+      texto("COZINHA / GRILL"), NL,
       SIZE_NORMAL, BOLD_OFF,
-      texto("Império dos Espetos"), NL,
+      texto("=========================="), NL,
       NL,
+      // Mesa e label em destaque
       ALIGN_LEFT, SIZE_DOUBLE_H, BOLD_ON,
-      texto(`Mesa ${mesa}${label && label !== "Comanda 1" ? ` - ${label}` : ""}`), NL,
+      texto(`MESA ${mesa}${label && label !== "Comanda 1" ? ` - ${label}` : ""}`), NL,
       SIZE_NORMAL, BOLD_OFF,
     ];
-    if (cliente) { cmds.push(texto(`Cliente: ${cliente}`), NL); }
-    if (garcom && garcom !== "—") { cmds.push(texto(`Garçom: ${garcom}`), NL); }
-    cmds.push(texto(`${agora.toLocaleDateString("pt-BR")} ${agora.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`), NL);
-    cmds.push(NL, texto("------------------------"), NL);
+    if (cliente && cliente !== "—") cmds.push(texto(`Cliente: ${cliente}`), NL);
+    if (garcom && garcom !== "—") cmds.push(texto(`Garcom: ${garcom}`), NL);
+    cmds.push(texto(`Hora: ${agora.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`), NL);
+    cmds.push(NL, texto("--------------------------"), NL, NL);
+    // Itens em fonte grande pra cozinha ler de longe
     for (const it of (itens || [])) {
-      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`${it.qty||1}x ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
-      if (it.obs) cmds.push(texto(`  obs: ${it.obs}`), NL);
+      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`  ${it.qty||1}x  ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
+      if (it.obs) cmds.push(texto(`     >> ${it.obs}`), NL);
+      cmds.push(NL);
     }
-    cmds.push(texto("------------------------"), NL, NL);
-    cmds.push(ALIGN_CENTER, texto("--- fim ---"), NL);
+    cmds.push(texto("--------------------------"), NL, NL);
+    cmds.push(ALIGN_CENTER, BOLD_ON, texto("*** FIM ***"), NL, BOLD_OFF);
     cmds.push(FEED(4), CUT);
     await this._print(cmds);
   }
 
-  // ── IMPRIMIR RECIBO DO CLIENTE ──
+  // ── IMPRIMIR RECIBO/COMANDA P/ CAIXA ──
+  // Para conferência no caixa: itens COM preços, TOTAL, forma de pagamento
   async imprimirRecibo({ mesa, cliente, garcom, itens, total, pagamento, abertura, fechamento }) {
     const ab = abertura ? new Date(abertura) : new Date();
     const fe = fechamento ? new Date(fechamento) : new Date();
     const cmds = [
-      INIT, CODEPAGE_850,
-      ALIGN_CENTER, SIZE_DOUBLE, BOLD_ON,
-      texto("Império dos Espetos"), NL,
+      INIT,
+      // Nome em altura dobrada (cabe na largura do papel 58mm)
+      ALIGN_CENTER, SIZE_DOUBLE_H, BOLD_ON,
+      texto("Imperio dos Espetos"), NL,
       SIZE_NORMAL, BOLD_OFF,
       texto("e Grill"), NL,
       NL,
-      texto("------- COMPROVANTE -------"), NL,
+      texto("===== COMANDA / CAIXA ====="), NL,
       NL,
       ALIGN_LEFT,
     ];
     if (mesa) cmds.push(BOLD_ON, texto(`Mesa: ${mesa}`), BOLD_OFF, NL);
     if (cliente && cliente !== "—") cmds.push(texto(`Cliente: ${cliente}`), NL);
-    if (garcom && garcom !== "—") cmds.push(texto(`Garçom: ${garcom}`), NL);
+    if (garcom && garcom !== "—") cmds.push(texto(`Garcom: ${garcom}`), NL);
     cmds.push(texto(`Aberta: ${ab.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`), NL);
     cmds.push(texto(`Fechada: ${fe.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`), NL);
     cmds.push(texto(`Data: ${fe.toLocaleDateString("pt-BR")}`), NL);
-    cmds.push(NL, texto("------------------------"), NL);
+    cmds.push(NL, texto("--------------------------"), NL);
     for (const it of (itens || [])) {
-      const linhaItem = `${it.qty||1}x ${it.nome}`;
-      const preco = `R$ ${((it.qty||1)*it.preco).toFixed(2)}`;
-      // Tenta alinhar (32 caracteres por linha em impressora 58mm)
-      const espaco = Math.max(1, 32 - linhaItem.length - preco.length);
-      cmds.push(texto(linhaItem + " ".repeat(espaco) + preco), NL);
+      const qtd = String(it.qty || 1).padStart(2, " ");
+      const nome = it.nome.length > 18 ? it.nome.slice(0, 18) : it.nome;
+      const preco = `${((it.qty||1)*it.preco).toFixed(2)}`;
+      // Layout 32 chars: "QQ NOME (até 18 chars)  PRECO"
+      const meio = nome.padEnd(20, " ");
+      cmds.push(texto(`${qtd} ${meio}${preco.padStart(7, " ")}`), NL);
     }
-    cmds.push(texto("------------------------"), NL, NL);
-    cmds.push(ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL: R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
+    cmds.push(texto("--------------------------"), NL, NL);
+    cmds.push(ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
     if (pagamento) {
-      const pgNome = { pix:"PIX", cartao:"Cartão", dinheiro:"Dinheiro" }[pagamento] || pagamento;
-      cmds.push(ALIGN_LEFT, texto(`Pagamento: ${pgNome}`), NL);
+      const pgNome = { pix:"PIX", cartao:"Cartao", dinheiro:"Dinheiro" }[pagamento] || pagamento;
+      cmds.push(ALIGN_LEFT, NL, texto(`Pagamento: ${pgNome}`), NL);
     }
     cmds.push(NL, NL, ALIGN_CENTER);
-    cmds.push(texto("Obrigado pela visita! 🍢"), NL);
+    cmds.push(texto("Obrigado pela visita!"), NL);
     cmds.push(NL, FEED(3), CUT);
     await this._print(cmds);
   }
@@ -311,11 +320,12 @@ class ImpressoraBT {
   // ── TESTE ──
   async imprimirTeste() {
     const cmds = [
-      INIT, CODEPAGE_850,
-      ALIGN_CENTER, SIZE_DOUBLE, BOLD_ON, texto("TESTE"), NL,
-      SIZE_NORMAL, BOLD_OFF, texto("Império dos Espetos"), NL, NL,
-      ALIGN_LEFT, texto("Teste de impressão OK"), NL,
-      texto("Acentos: ção á é í ó ú ã õ"), NL,
+      INIT,
+      ALIGN_CENTER, SIZE_DOUBLE_H, BOLD_ON, texto("TESTE OK"), NL,
+      SIZE_NORMAL, BOLD_OFF,
+      texto("Imperio dos Espetos"), NL, NL,
+      ALIGN_LEFT,
+      texto("Impressora conectada"), NL,
       texto(`Data: ${new Date().toLocaleString("pt-BR")}`), NL,
       FEED(4), CUT,
     ];

@@ -4022,7 +4022,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                   win.document.close();
                   setTimeout(()=>win.print(),400);
                 }} style={{background:T.grayLL,color:T.dark,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"11px 0",fontWeight:600,fontSize:14,cursor:"pointer",width:"100%"}}>
-                  🖨️ Imprimir comanda
+                  🖨️ Imprimir conta (caixa)
                 </button>
               )}
               <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
