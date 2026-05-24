@@ -48,13 +48,15 @@ const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300, message: { erro:
 app.use(limiter);
 
 // Rate limiting específico para login (anti brute-force)
-// 30 tentativas em 15min — generoso o suficiente para múltiplos usuários compartilhando IP
+// 100 tentativas/15min e SÓ falhas contam. O frontend já tem lockout de 5 tentativas.
+// O objetivo aqui é só barrar bots agressivos, não atrapalhar o uso normal.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 30,
-  message: { erro: "Muitas tentativas de login. Aguarde alguns minutos." },
-  // Não conta logins bem-sucedidos contra o limite
-  skipSuccessfulRequests: true,
+  max: 100,
+  message: { erro: "Muitas tentativas. Aguarde 1 minuto." },
+  skipSuccessfulRequests: true, // logins certos não contam
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 // ── JWT AUTH ─────────────────────────────────────────────────
