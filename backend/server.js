@@ -2,6 +2,7 @@
 // IMPÉRIO DOS ESPETOS — Backend v5
 // WhatsApp via Baileys direto (sem Evolution API)
 // ============================================================
+import 'dotenv/config';
 
 import express from "express";
 import fetch from "node-fetch";
