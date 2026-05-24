@@ -44,7 +44,19 @@ app.use((req, res, next) => {
 });
 
 // Rate limiting geral
-const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300, message: { erro: "Muitas requisições. Tente novamente em alguns minutos." } });
+// IMPORTANTE: o painel faz polling a cada 8s com 7 requests simultâneas
+// = ~50 req/min por usuário. Múltiplos usuários (dono + caixa + garçons)
+// podem facilmente passar de 200 req/min. Por isso o limite precisa ser alto.
+// 5000/15min ≈ 333/min = suporta confortavelmente 6+ usuários simultâneos.
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5000,
+  message: { erro: "Muitas requisições. Aguarde alguns minutos." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  // /health não conta (usado por monitoring externo)
+  skip: (req) => req.path === "/health",
+});
 app.use(limiter);
 
 // Rate limiting específico para login (anti brute-force)
