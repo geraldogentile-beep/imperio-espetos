@@ -275,33 +275,33 @@ class ImpressoraBT {
   // ── IMPRIMIR COMANDA DA COZINHA ──
   // Foco: cozinha/churrasqueira ver O QUE preparar.
   // SEM preços, SEM totais, SEM nome do estabelecimento.
-  // Mesa, garçom, hora e itens em fonte GRANDE.
   async imprimirComanda({ mesa, label, garcom, cliente, itens, hora }) {
     const agora = hora ? new Date(hora) : new Date();
     const cmds = [
       INIT,
-      ALIGN_CENTER, SIZE_DOUBLE_H, BOLD_ON,
+      // Cabeçalho compacto
+      ALIGN_CENTER, BOLD_ON,
       texto("COZINHA / GRILL"), NL,
-      SIZE_NORMAL, BOLD_OFF,
-      texto("=========================="), NL,
+      BOLD_OFF,
+      texto("--------------------------------"), NL,
       NL,
-      // Mesa e label em destaque
-      ALIGN_LEFT, SIZE_DOUBLE_H, BOLD_ON,
-      texto(`MESA ${mesa}${label && label !== "Comanda 1" ? ` - ${label}` : ""}`), NL,
-      SIZE_NORMAL, BOLD_OFF,
+      // Mesa em destaque (texto normal pra ficar limpo)
+      ALIGN_LEFT, BOLD_ON,
+      texto(`Mesa ${mesa}${label && label !== "Comanda 1" ? ` - ${label}` : ""}`), NL,
+      BOLD_OFF,
     ];
     if (cliente && cliente !== "—") cmds.push(texto(`Cliente: ${cliente}`), NL);
     if (garcom && garcom !== "—") cmds.push(texto(`Garcom: ${garcom}`), NL);
     cmds.push(texto(`Hora: ${agora.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`), NL);
-    cmds.push(NL, texto("--------------------------"), NL, NL);
-    // Itens em fonte grande pra cozinha ler de longe
+    cmds.push(NL, texto("--------------------------------"), NL, NL);
+    // Itens em altura dobrada pra cozinha ler de longe
     for (const it of (itens || [])) {
-      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`  ${it.qty||1}x  ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
-      if (it.obs) cmds.push(texto(`     >> ${it.obs}`), NL);
+      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`${it.qty||1}x ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
+      if (it.obs) cmds.push(texto(`   obs: ${it.obs}`), NL);
       cmds.push(NL);
     }
-    cmds.push(texto("--------------------------"), NL, NL);
-    cmds.push(ALIGN_CENTER, BOLD_ON, texto("*** FIM ***"), NL, BOLD_OFF);
+    cmds.push(texto("--------------------------------"), NL);
+    cmds.push(ALIGN_CENTER, texto("--- fim ---"), NL);
     cmds.push(FEED(4), CUT);
     await this._print(cmds);
   }
