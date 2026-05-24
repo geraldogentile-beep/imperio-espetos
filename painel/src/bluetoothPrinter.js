@@ -306,6 +306,57 @@ class ImpressoraBT {
     await this._print(cmds);
   }
 
+  // ── IMPRIMIR PEDIDO DELIVERY ──
+  // Cupom completo: itens (cozinha) + dados do cliente (entrega) + valores (caixa)
+  async imprimirPedidoDelivery({ id, cliente, telefone, endereco, itens, subtotal, desconto, cupom, total, obs, tempoPreparo, horario }) {
+    const hora = horario ? new Date(horario) : new Date();
+    const cmds = [
+      INIT,
+      // Cabeçalho
+      ALIGN_CENTER, SIZE_DOUBLE_H, BOLD_ON,
+      texto("DELIVERY"), NL,
+      SIZE_NORMAL, BOLD_OFF,
+      texto("--------------------------------"), NL,
+      // Número do pedido em destaque
+      SIZE_DOUBLE_H, BOLD_ON,
+      texto(`Pedido #${id}`), NL,
+      SIZE_NORMAL, BOLD_OFF,
+      NL,
+      // Dados do cliente
+      ALIGN_LEFT, BOLD_ON,
+      texto(`Cliente: ${cliente || "—"}`), NL,
+      BOLD_OFF,
+      texto(`Tel: ${telefone || "—"}`), NL,
+      texto(`End: ${endereco || "—"}`), NL,
+      texto(`Hora: ${hora.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`), NL,
+    ];
+    if (tempoPreparo) cmds.push(texto(`Tempo: ~${tempoPreparo}min`), NL);
+    if (obs) cmds.push(NL, BOLD_ON, texto(`OBS: ${obs}`), NL, BOLD_OFF);
+
+    cmds.push(NL, texto("--------------------------------"), NL, NL);
+    // Itens em altura dobrada (cozinha)
+    for (const it of (itens || [])) {
+      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`${it.qty||1}x ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
+      if (it.obs) cmds.push(texto(`   obs: ${it.obs}`), NL);
+      // Preço pequeno do lado (só pro conferente saber)
+      const subItem = ((it.qty||1)*it.preco).toFixed(2);
+      cmds.push(texto(`   R$ ${subItem}`), NL);
+    }
+
+    cmds.push(NL, texto("--------------------------------"), NL);
+    // Valores
+    if (subtotal !== undefined) {
+      cmds.push(texto(`Subtotal:`.padEnd(22) + `R$ ${(subtotal||0).toFixed(2)}`.padStart(10)), NL);
+    }
+    cmds.push(texto(`Taxa entrega:`.padEnd(22) + `R$ 5,00`.padStart(10)), NL);
+    if (desconto && desconto > 0) {
+      cmds.push(texto(`Desconto${cupom ? ` (${cupom})` : ""}:`.padEnd(22) + `-R$ ${desconto.toFixed(2)}`.padStart(10)), NL);
+    }
+    cmds.push(NL, ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
+    cmds.push(NL, NL, FEED(3), CUT);
+    await this._print(cmds);
+  }
+
   // ── IMPRIMIR RECIBO/COMANDA P/ CAIXA ──
   // Para conferência no caixa: itens COM preços, TOTAL, forma de pagamento
   async imprimirRecibo({ mesa, cliente, garcom, itens, total, pagamento, abertura, fechamento }) {

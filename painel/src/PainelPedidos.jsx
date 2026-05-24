@@ -626,6 +626,12 @@ function ImpressoraConfig() {
     await impressora.esquecer();
   }
 
+  const [autoImprimir, setAutoImprimirState] = useState(() => localStorage.getItem("imperio_auto_imprimir_delivery") === "on");
+  function setAutoImprimir(v) {
+    setAutoImprimirState(v);
+    localStorage.setItem("imperio_auto_imprimir_delivery", v ? "on" : "off");
+  }
+
   async function testar() {
     setErro(null); setImprimindo(true);
     try {
@@ -708,6 +714,10 @@ function ImpressoraConfig() {
             3. Clique em "Conectar impressora" e escolha o dispositivo na lista<br />
             4. Quando conectada, a comanda da cozinha vai direto pra impressora<br /><br />
             <strong style={{ color: "#333" }}>🔄 Reconexão automática:</strong> depois da primeira conexão, sempre que você abrir o painel o sistema tenta reconectar sozinho (se a impressora estiver ligada e por perto).
+          </div>
+
+          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+            <Toggle value={autoImprimir} onChange={setAutoImprimir} label="🛵 Imprimir pedidos delivery automaticamente" sub="Quando chegar pedido novo via WhatsApp, imprime imediatamente" />
           </div>
 
           <div style={{ background: "#fef3c7", borderRadius: 10, padding: "12px", fontSize: 12, color: "#92400e", lineHeight: 1.6 }}>
@@ -3209,6 +3219,15 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit,
             </div>
           ) : pedido.status !== "entregue" && pedido.status !== "cancelado" && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={async () => {
+                if (impressora.isDisponivel()) {
+                  try {
+                    await impressora.imprimirPedidoDelivery(pedido);
+                    return;
+                  } catch (e) { console.warn("Erro imprimir delivery:", e.message); }
+                }
+                alert("Impressora Bluetooth não conectada. Vá em Config → Impressora.");
+              }} style={{ background: T.white, color: T.dark, border: `1.5px solid ${T.grayL}`, borderRadius: T.radiusS, padding: "10px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>🖨️ Imprimir</button>
               {podeEditar && <button onClick={iniciarEdicao} style={{ background: T.white, color: T.blue, border: `1.5px solid ${T.blue}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>✏️ Editar</button>}
               {nxt && <button onClick={() => onStatus(pedido.id, nxt)} disabled={atualizando} style={{ flex: 1, minWidth: 140, background: atualizando ? T.grayL : `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily:"'DM Sans',sans-serif" }}>{STATUS_CONFIG[nxt].icon} {STATUS_CONFIG[nxt].label}</button>}
               <button onClick={() => onStatus(pedido.id, "cancelado")} disabled={atualizando} style={{ background: T.white, color: T.red, border: `1.5px solid ${T.red}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>❌ Cancelar</button>
@@ -4491,6 +4510,16 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
             const pedido = data.find(p => p.id === id);
             if (pedido && pedido.status === "novo") notificarPush(pedido);
           });
+          // Impressão automática (configurável em Config → Impressora)
+          const autoImprimir = localStorage.getItem("imperio_auto_imprimir_delivery") === "on";
+          if (autoImprimir && impressora.isDisponivel()) {
+            for (const id of novos) {
+              const pedido = data.find(p => p.id === id);
+              if (pedido && pedido.status === "novo") {
+                impressora.imprimirPedidoDelivery(pedido).catch(e => console.warn("Erro auto-print:", e.message));
+              }
+            }
+          }
         }
         ant.current = ids;
         // Não sobrescreve pedidos que estão sendo editados localmente
