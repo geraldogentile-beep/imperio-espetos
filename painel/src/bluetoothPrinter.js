@@ -70,6 +70,8 @@ class ImpressoraBT {
 
   isSupported() { return !!navigator.bluetooth; }
   isConnected() { return this.device?.gatt?.connected && !!this.characteristic; }
+  // Considera "disponível" se conectada OU se tem dispositivo salvo (vai reconectar automaticamente)
+  isDisponivel() { return this.isConnected() || this.temDispositivoSalvo(); }
   // Se tem dispositivo salvo (foi pareado antes)
   temDispositivoSalvo() {
     try { return !!localStorage.getItem("imperio_printer_name"); } catch { return false; }
@@ -193,8 +195,20 @@ class ImpressoraBT {
     await this.desconectar();
   }
 
+  // Garante conexão antes de imprimir — tenta reconectar se cair
+  async _garantirConexao() {
+    if (this.isConnected()) return true;
+    if (!this.temDispositivoSalvo()) return false;
+    const r = await this.reconectarAuto();
+    return !!r?.conectada;
+  }
+
   async _sendBytes(bytes) {
-    if (!this.isConnected()) throw new Error("Impressora não conectada");
+    // Antes de mandar bytes, garante conexão (tenta reconectar se preciso)
+    if (!this.isConnected()) {
+      const ok = await this._garantirConexao();
+      if (!ok) throw new Error("Impressora não conectada");
+    }
     const tamanho = 100; // BLE max ~180, 100 é seguro
     for (let i = 0; i < bytes.length; i += tamanho) {
       const chunk = bytes.slice(i, i + tamanho);

@@ -3504,7 +3504,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const nomeGarcom = garcomLogado?.nome || mesa.garcom || "—";
 
     // Se a impressora Bluetooth estiver conectada, usa ela
-    if (impressora.isConnected()) {
+    if (impressora.isDisponivel()) {
       try {
         await impressora.imprimirComanda({
           mesa: mesaId,
@@ -3585,7 +3585,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setFaturado(f=>f+totalSC);
 
     // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
-    if (impressora.isConnected()) {
+    if (impressora.isDisponivel()) {
       try { await impressora.imprimirRecibo(registro); }
       catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
     }
@@ -3623,7 +3623,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setFaturado(f=>f+totalMesa);
 
     // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
-    if (impressora.isConnected()) {
+    if (impressora.isDisponivel()) {
       try { await impressora.imprimirRecibo(registro); }
       catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
     }
@@ -3775,7 +3775,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             const abertura = fecharUma?(sc.abertura||mesa.abertura):mesa.abertura;
 
             // Se a impressora Bluetooth estiver conectada, usa ela direto
-            if (impressora.isConnected()) {
+            if (impressora.isDisponivel()) {
               try {
                 await impressora.imprimirRecibo({
                   mesa: mesa.id,
@@ -3969,7 +3969,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                   const clienteNome = (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ") || "—";
 
                   // Se a impressora Bluetooth estiver conectada, usa ela direto
-                  if (impressora.isConnected()) {
+                  if (impressora.isDisponivel()) {
                     try {
                       await impressora.imprimirRecibo({
                         mesa: mesa.id,
@@ -4402,17 +4402,27 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     } catch {}
   }, []);
 
-  // Tenta reconectar impressora Bluetooth automaticamente ao carregar
+  // Reconexão automática da impressora Bluetooth
+  // - Tenta 1x ao carregar (após 1.5s)
+  // - Tenta a cada 30s enquanto estiver desconectada (e tem dispositivo salvo)
   useEffect(() => {
-    if (impressora.isSupported() && impressora.temDispositivoSalvo() && !impressora.isConnected()) {
-      // Pequeno delay para não competir com outras chamadas iniciais
-      const t = setTimeout(() => {
-        impressora.reconectarAuto().then(r => {
-          if (r?.conectada) console.log("🖨️ Impressora reconectada:", r.nome);
-        }).catch(() => {});
-      }, 1500);
-      return () => clearTimeout(t);
-    }
+    if (!impressora.isSupported() || !impressora.temDispositivoSalvo()) return;
+
+    let cancelado = false;
+    const tentar = () => {
+      if (cancelado) return;
+      if (impressora.isConnected()) return;
+      impressora.reconectarAuto().then(r => {
+        if (!cancelado && r?.conectada) console.log("🖨️ Impressora reconectada:", r.nome);
+      }).catch(() => {});
+    };
+
+    // Primeira tentativa rápida (1.5s)
+    const t1 = setTimeout(tentar, 1500);
+    // Tentativas periódicas a cada 30s
+    const interval = setInterval(tentar, 30000);
+
+    return () => { cancelado = true; clearTimeout(t1); clearInterval(interval); };
   }, []);
 
   const fetchAll = useCallback(async () => {
