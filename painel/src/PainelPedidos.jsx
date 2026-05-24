@@ -3769,10 +3769,32 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           </div>
         </div>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>{
+          <button onClick={async()=>{
             const nomeGarcom = garcomLogado?.nome||mesa.garcom||"—";
             const nomeCliente = fecharUma?sc.cliente:"";
             const abertura = fecharUma?(sc.abertura||mesa.abertura):mesa.abertura;
+
+            // Se a impressora Bluetooth estiver conectada, usa ela direto
+            if (impressora.isConnected()) {
+              try {
+                await impressora.imprimirRecibo({
+                  mesa: mesa.id,
+                  cliente: nomeCliente,
+                  garcom: nomeGarcom,
+                  itens: todosItensFechar,
+                  total: totalFechar,
+                  pagamento: pagSalao,
+                  abertura: abertura,
+                  fechamento: new Date().toISOString(),
+                });
+                msgSalao("✅ Comanda impressa!");
+                return;
+              } catch (e) {
+                console.warn("Falha BT, abrindo janela:", e.message);
+                msgSalao("⚠️ Impressora BT falhou, abrindo janela...", "#f59e0b");
+              }
+            }
+
             const win = window.open('','_blank','width=400,height=600');
             win.document.write(`<!DOCTYPE html><html><head><title>Comanda Mesa ${mesa.id}</title><style>
               body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
@@ -3940,10 +3962,33 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               {/* Botão imprimir comanda para conferência */}
               {totalAcumulado>0&&(
-                <button onClick={()=>{
+                <button onClick={async()=>{
                   const nomeGarcom = garcomLogado?.nome||mesa.garcom||"—";
                   const todosItens = (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens])
                     .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+                  const clienteNome = (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ") || "—";
+
+                  // Se a impressora Bluetooth estiver conectada, usa ela direto
+                  if (impressora.isConnected()) {
+                    try {
+                      await impressora.imprimirRecibo({
+                        mesa: mesa.id,
+                        cliente: clienteNome,
+                        garcom: nomeGarcom,
+                        itens: todosItens,
+                        total: totalAcumulado,
+                        pagamento: null,
+                        abertura: mesa.abertura,
+                        fechamento: new Date().toISOString(),
+                      });
+                      msgSalao("✅ Comanda impressa!");
+                      return;
+                    } catch (e) {
+                      console.warn("Falha BT, abrindo janela:", e.message);
+                      msgSalao("⚠️ Impressora BT falhou, abrindo janela...", "#f59e0b");
+                    }
+                  }
+
                   const win = window.open('','_blank','width=400,height=650');
                   const agora = new Date();
                   win.document.write(`<!DOCTYPE html><html>
