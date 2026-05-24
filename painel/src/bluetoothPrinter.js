@@ -47,12 +47,22 @@ const CP850_MAP = {
   "°":0xf8,
 };
 
+// Remove acentos via NFD (mais confiável que CP850 em impressoras chinesas genéricas)
+function removerAcentos(texto) {
+  return texto
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "") // remove diacríticos
+    .replace(/ç/g, "c").replace(/Ç/g, "C")
+    .replace(/ñ/g, "n").replace(/Ñ/g, "N");
+}
+
 function textoParaBytes(texto) {
+  const limpo = removerAcentos(texto);
   const bytes = [];
-  for (const ch of texto) {
+  for (const ch of limpo) {
     const c = ch.charCodeAt(0);
     if (c < 128) bytes.push(c);
-    else bytes.push(CP850_MAP[ch] || 0x3f); // '?' para desconhecido
+    else bytes.push(0x3f); // '?' para desconhecido (raro depois do removerAcentos)
   }
   return new Uint8Array(bytes);
 }

@@ -4193,19 +4193,36 @@ function WhatsAppConexao({ conexao, backendUrl }) {
   }
 
   async function desconectar() {
+    if (!window.confirm("Desconectar o WhatsApp atual? Você precisará escanear o QR Code de novo para reconectar.")) return;
     setDesconectando(true);
     try {
-      await authFetch(backendUrl +"/whatsapp/logout", { method: "POST" });
+      const r = await authFetch(backendUrl +"/whatsapp/logout", { method: "POST" });
+      if (!r.ok) {
+        const erro = await r.json().catch(()=>({erro:"Erro desconhecido"}));
+        alert("Erro ao desconectar: " + (erro.erro || "tente novamente"));
+        setDesconectando(false);
+        return;
+      }
       setQrCode(null);
       setStatus(null);
       setTimeout(carregarStatus, 3000);
-    } catch {}
+    } catch (e) {
+      alert("Erro ao desconectar: " + (e.message || "verifique a conexão"));
+    }
     setDesconectando(false);
   }
 
-  useState(() => { carregarStatus(); }, []);
+  // ⚠️ Era useState (bug) — trocado para useEffect com polling de status a cada 10s
+  useEffect(() => {
+    carregarStatus();
+    const t = setInterval(carregarStatus, 10000);
+    return () => clearInterval(t);
+  }, []);
 
-  const conectado = conexao === "online" || status?.whatsapp === "connected";
+  // Conectado = status real do backend (status.whatsapp === "connected")
+  // Não usa "conexao" (que se refere à conexão com o backend, não com o WhatsApp)
+  const conectado = status?.whatsapp === "connected";
+  const esperandoQR = status?.whatsapp === "qr";
 
   return (
     <div style={{ padding: "20px", maxWidth: 500, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -4219,10 +4236,10 @@ function WhatsAppConexao({ conexao, backendUrl }) {
           </div>
           <div>
             <div style={{ fontWeight: 700, fontSize: 16, color: T.dark }}>
-              {conectado ? "WhatsApp Conectado" : "WhatsApp Desconectado"}
+              {conectado ? "WhatsApp Conectado" : esperandoQR ? "Aguardando pareamento" : "WhatsApp Desconectado"}
             </div>
             <div style={{ fontSize: 13, color: T.gray, marginTop: 3 }}>
-              {conectado ? "Bot respondendo normalmente" : "Escaneie o QR Code para conectar"}
+              {conectado ? "Bot respondendo normalmente" : esperandoQR ? "QR Code disponível — escaneie no WhatsApp" : "Carregando status..."}
             </div>
           </div>
         </div>
