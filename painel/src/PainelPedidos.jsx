@@ -905,6 +905,27 @@ function FiscalConfig() {
 
   const set = (campo, v) => setCfg(p => ({ ...p, [campo]: v }));
   const setEnd = (campo, v) => setCfg(p => ({ ...p, endereco: { ...p.endereco, [campo]: v } }));
+
+  // Busca o codigo IBGE pelo nome do municipio (API oficial, via backend).
+  // Evita tabela fixa no codigo, que e onde nascem os erros de digitacao.
+  const [sugestoesMun, setSugestoesMun] = useState([]);
+  const [erroMun, setErroMun] = useState("");
+  const timerMun = useRef(null);
+  useEffect(() => () => { if (timerMun.current) clearTimeout(timerMun.current); }, []);
+
+  function buscarMunicipio(texto) {
+    setErroMun("");
+    if (timerMun.current) clearTimeout(timerMun.current);
+    if (!texto || texto.trim().length < 2) { setSugestoesMun([]); return; }
+    timerMun.current = setTimeout(async () => {
+      try {
+        const uf = (cfg.endereco?.uf || "PR").toUpperCase();
+        const r = await authFetch(BACKEND_URL + "/fiscal/municipios?uf=" + uf + "&busca=" + encodeURIComponent(texto));
+        if (!r.ok) { const e = await r.json().catch(() => ({})); setErroMun(e.erro || "Falha na busca"); setSugestoesMun([]); return; }
+        setSugestoesMun(await r.json());
+      } catch { setErroMun("Sem conexao para buscar o municipio"); setSugestoesMun([]); }
+    }, 350);
+  }
   const setPad = (campo, v) => setCfg(p => ({ ...p, padroes: { ...p.padroes, [campo]: v } }));
 
   const inp = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
@@ -1011,8 +1032,35 @@ function FiscalConfig() {
         </div>
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
           <div style={{ flex: 1 }}><div style={lbl}>Bairro</div><input value={cfg.endereco?.bairro || ""} onChange={e => setEnd("bairro", e.target.value)} style={inp} /></div>
-          <div style={{ flex: 1 }}><div style={lbl}>Municipio</div><input value={cfg.endereco?.municipio || ""} onChange={e => setEnd("municipio", e.target.value)} style={inp} /></div>
-          <div style={{ flex: 1 }}><div style={lbl}>Cod. IBGE</div><input value={cfg.endereco?.codigoMunicipio || ""} onChange={e => setEnd("codigoMunicipio", e.target.value)} placeholder="4106902" style={inp} /></div>
+          <div style={{ flex: 2, position: "relative" }}>
+            <div style={lbl}>Municipio</div>
+            <input
+              value={cfg.endereco?.municipio || ""}
+              onChange={e => { setEnd("municipio", e.target.value); buscarMunicipio(e.target.value); }}
+              onFocus={() => { if ((cfg.endereco?.municipio || "").length >= 2) buscarMunicipio(cfg.endereco.municipio); }}
+              placeholder="digite para buscar"
+              style={inp}
+            />
+            {sugestoesMun.length > 0 && (
+              <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: 8, marginTop: 2, maxHeight: 190, overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.12)" }}>
+                {sugestoesMun.map(m => (
+                  <div key={m.codigo}
+                    onClick={() => { setEnd("municipio", m.nome); setEnd("codigoMunicipio", m.codigo); setSugestoesMun([]); }}
+                    style={{ padding: "8px 10px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f5f5f5", display: "flex", justifyContent: "space-between" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#faf9f8"}
+                    onMouseLeave={e => e.currentTarget.style.background = "#fff"}>
+                    <span>{m.nome}</span>
+                    <span style={{ color: "#aaa", fontSize: 11 }}>{m.codigo}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {erroMun && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 3 }}>{erroMun}</div>}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={lbl}>Cod. IBGE {cfg.endereco?.codigoMunicipio && <span style={{ color: "#10b981" }}>✓</span>}</div>
+            <input value={cfg.endereco?.codigoMunicipio || ""} onChange={e => setEnd("codigoMunicipio", e.target.value)} placeholder="auto" style={inp} />
+          </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <div style={{ flex: 1 }}><div style={lbl}>UF</div><input value={cfg.endereco?.uf || ""} onChange={e => setEnd("uf", e.target.value.toUpperCase().slice(0, 2))} maxLength={2} style={inp} /></div>

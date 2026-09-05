@@ -1840,6 +1840,76 @@ app.get("/fechamento-dia/:dataStr", authMiddleware(["dono", "caixa"]), async (re
 
 
 
+
+// ── CÓDIGO IBGE DOS MUNICÍPIOS ────────────────────────────────
+// Busca na API pública do IBGE em vez de manter tabela fixa no código.
+// Tabela digitada à mão erra: num projeto anterior, "IBAITI" estava
+// mapeado para 4109609, que é Guaratuba — a SEFAZ rejeitaria a nota.
+
+const cacheMunicipios = new Map();   // uf -> { lista, buscadoEm }
+const CACHE_MUNICIPIOS_MS = 30 * 24 * 60 * 60 * 1000; // 30 dias
+
+// Remove acentos e normaliza para comparar "sao jose" com "São José"
+function normalizarTexto(t) {
+  return String(t || "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+async function listarMunicipiosUF(uf) {
+  const chave = String(uf || "").toUpperCase();
+  if (!/^[A-Z]{2}$/.test(chave)) throw new Error("UF invalida");
+
+  const cached = cacheMunicipios.get(chave);
+  if (cached && Date.now() - cached.buscadoEm < CACHE_MUNICIPIOS_MS) return cached.lista;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  let resp;
+  try {
+    resp = await fetch(
+      `https://servicodados.ibge.gov.br/api/v1/localidades/estados/${chave}/municipios`,
+      { signal: ctrl.signal }
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) throw new Error(`IBGE respondeu ${resp.status}`);
+
+  const dados = await resp.json();
+  if (!Array.isArray(dados)) throw new Error("Resposta inesperada do IBGE");
+
+  const lista = dados.map(m => ({ codigo: String(m.id), nome: m.nome }))
+                     .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  cacheMunicipios.set(chave, { lista, buscadoEm: Date.now() });
+  return lista;
+}
+
+// GET /fiscal/municipios?uf=PR&busca=ibaiti
+app.get("/fiscal/municipios", authMiddleware(["dono"]), async (req, res) => {
+  const { uf = "PR", busca = "" } = req.query;
+  try {
+    const lista = await listarMunicipiosUF(uf);
+    const termo = normalizarTexto(busca);
+    if (!termo) return res.json(lista.slice(0, 50));
+
+    // Prefixo primeiro, depois contém — quem digita "ibai" quer Ibaiti no topo
+    const comecam = [];
+    const contem = [];
+    for (const m of lista) {
+      const n = normalizarTexto(m.nome);
+      if (n.startsWith(termo)) comecam.push(m);
+      else if (n.includes(termo)) contem.push(m);
+    }
+    res.json([...comecam, ...contem].slice(0, 20));
+  } catch (e) {
+    console.error("Erro ao consultar municipios IBGE:", e.message);
+    res.status(502).json({ erro: "Nao foi possivel consultar o IBGE agora. Digite o codigo manualmente." });
+  }
+});
+
 // ══════════════════════════════════════════════════════════════
 // CERTIFICADO DIGITAL A1 — armazenamento cifrado
 // ══════════════════════════════════════════════════════════════
