@@ -23,3 +23,19 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Sessão do WhatsApp (Baileys) — NUNCA subir: dá controle total da conta
+auth_info/
+backend/auth_info/
+
+# Backups e arquivos compactados (podem conter segredos e dumps do banco)
+*.tar.gz
+*.tgz
+*.zip
+*.bak
+*backup*
+env-backup*
+
+# Variantes de .env
+.env.*
+!.env.example
