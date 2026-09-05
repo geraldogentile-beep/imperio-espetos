@@ -801,7 +801,9 @@ async function conectarWhatsApp() {
       qrCodeBase64 = null;
       if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
-        const delay = Math.min(5000 * Math.pow(2, reconnectAttempts - 1), 300000); // max 5min
+        // Teto de 60s: com 5min de espera o QR ficava indisponivel por minutos
+        // seguidos e quem estava tentando parear via a tela vazia.
+        const delay = Math.min(5000 * Math.pow(2, reconnectAttempts - 1), 60000);
         console.log(`🔌 Conexão fechada. Reconectando em ${delay/1000}s (tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
         setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha na reconexao:", e.message)); }, delay);
       } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
@@ -1148,6 +1150,25 @@ app.put("/pedidos/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
 
 // ── WHATSAPP STATUS API ───────────────────────────────────────
 app.get("/whatsapp/status", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json({ status: whatsappStatus }));
+
+// GET /whatsapp/qr — o QR em JSON, para o painel poder ficar consultando
+app.get("/whatsapp/qr", authMiddleware(["dono"]), (req, res) => {
+  res.json({ status: whatsappStatus, qr: whatsappStatus === "qr" ? qrCodeBase64 : null });
+});
+
+// POST /whatsapp/reconectar — zera o contador e abre uma conexao nova.
+// Depois de 10 tentativas sem ninguem escanear, o Baileys desistia e so
+// voltava com restart do servidor. Isso deixa o dono resolver pelo painel.
+app.post("/whatsapp/reconectar", authMiddleware(["dono"]), async (req, res) => {
+  if (whatsappStatus === "connected") {
+    return res.status(409).json({ erro: "WhatsApp ja esta conectado. Desconecte antes de parear outro numero." });
+  }
+  reconnectAttempts = 0;
+  qrCodeBase64 = null;
+  whatsappStatus = "disconnected";
+  conectarWhatsApp().catch(e => console.error("Falha ao reconectar sob demanda:", e.message));
+  res.json({ ok: true, mensagem: "Gerando QR Code novo. Aguarde alguns segundos." });
+});
 
 app.post("/whatsapp/logout", authMiddleware(["dono"]), async (req, res) => {
   try {

@@ -1786,9 +1786,14 @@ function GarcomManager({ garcons, onReload }) {
 
       {/* Lista */}
       {garcons.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "30px 0", color: "#ccc", fontSize: 14 }}>
+        <div style={{ textAlign: "center", padding: "24px 16px", color: "#888", fontSize: 14 }}>
           <div style={{ fontSize: 36, marginBottom: 8 }}>🧑‍🍳</div>
-          Nenhum garçom cadastrado ainda
+          <div style={{ fontWeight: 700, color: "#555" }}>Nenhum garçom cadastrado</div>
+          <div style={{ fontSize: 12, color: "#999", marginTop: 8, lineHeight: 1.6, maxWidth: 300, margin: "8px auto 0" }}>
+            Enquanto não houver garçom cadastrado aqui, <strong>o login de garçom não funciona</strong> —
+            a tela de PIN só aceita os códigos do dono e do caixa. Cadastre cada garçom com um PIN
+            próprio de 4 dígitos.
+          </div>
         </div>
       ) : garcons.map(g => (
         <div key={g._id} style={{ background: "#fff", borderRadius: 14, padding: 14, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", opacity: g.ativo ? 1 : 0.55 }}>
@@ -4359,6 +4364,18 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     return item.preco;
   }
   const perfil = perfilSalao;
+  // Quem pode lancar pedido na comanda. Na espetaria o caixa tambem anota —
+  // deixar isso so para garcom travava a operacao quando ninguem entrava
+  // com login de garcom.
+  const podeLancar = perfil === "garcom" || perfil === "caixa" || isDono;
+
+  // Quando a termica nao entra, o app abria a janela do navegador em silencio
+  // e parecia que "nao da para imprimir na termica". Agora diz o motivo.
+  function avisarSemTermica(erro) {
+    if (erro) msgSalao("Impressora Bluetooth falhou: " + erro, "#f59e0b");
+    else if (!impressora.isSupported()) msgSalao("Este navegador nao tem Bluetooth. Use o Chrome no Android.", "#f59e0b");
+    else msgSalao("Impressora nao pareada neste aparelho. Va em Config -> Impressora", "#f59e0b");
+  }
   const setPerfil = setPerfilSalao;
   const mesas = mesasSalao;
   const setMesas = setMesasSalao;
@@ -4438,8 +4455,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
         return;
       } catch (e) {
         console.warn("Falha ao imprimir BT, abrindo janela:", e.message);
-        msgSalao("⚠️ Impressora BT falhou, abrindo janela...", "#f59e0b");
+        avisarSemTermica(e.message);
       }
+    } else {
+      avisarSemTermica();
     }
 
     // Fallback: janela do navegador
@@ -4748,8 +4767,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 return;
               } catch (e) {
                 console.warn("Falha BT, abrindo janela:", e.message);
-                msgSalao("⚠️ Impressora BT falhou, abrindo janela...", "#f59e0b");
+                avisarSemTermica(e.message);
               }
+            } else {
+              avisarSemTermica();
             }
 
             const win = abrirJanelaImpressao('width=400,height=600');
@@ -4813,7 +4834,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                   }
                 </button>
                 {/* Botão remover comanda — só aparece quando há mais de 1 */}
-                {mesa.subComandas.length>1&&(perfil==="garcom"||isDono)&&(
+                {mesa.subComandas.length>1&&podeLancar&&(
                   <button onClick={()=>{
                     const temItens = s.itens.length>0||(s.rodadas||[]).length>0;
                     if(temItens && !window.confirm(`Remover ${s.label}? Os itens serão perdidos.`)) return;
@@ -4831,7 +4852,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 )}
               </div>
             ))}
-            {(perfil==="garcom"||isDono)&&(
+            {podeLancar&&(
               <button onClick={novaComanda} style={{flexShrink:0,padding:"5px 10px",borderRadius:20,border:"1px dashed rgba(255,255,255,0.5)",background:"transparent",color:"rgba(255,255,255,0.7)",fontSize:12,cursor:"pointer"}}>
                 + Comanda
               </button>
@@ -4889,21 +4910,22 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
         <div style={{padding:"0 14px 16px",display:"flex",flexDirection:"column",gap:8}}>
           <div style={{display:"flex",gap:8}}>
-            {(perfil==="garcom"||isDono)&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
-            {(perfil==="garcom"||isDono)&&sc.itens.length>0&&(
+            {podeLancar&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
+            {podeLancar&&sc.itens.length>0&&(
               <button onClick={()=>{
                 const rodada={hora:new Date().toISOString(),itens:[...sc.itens]};
                 const novasRodadas=[...(sc.rodadas||[]),rodada];
                 upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens:[],rodadas:novasRodadas}:s)});
-                imprimirCozinha(rodada, mesa.id, sc.label);
                 msgSalao(`🔥 ${sc.label} enviada à cozinha!`);
+                imprimirCozinha(rodada, mesa.id, sc.label);
               }} style={{...BP2("linear-gradient(135deg,#1d4ed8,#2563eb)",true)}}>🔥 Cozinha</button>
             )}
           </div>
           {/* Botão enviar TODAS as comandas de uma vez — só aparece com 2+ comandas com itens pendentes */}
-          {(perfil==="garcom"||isDono)&&mesa.subComandas.length>1&&mesa.subComandas.filter(s=>s.itens.length>0).length>1&&(
+          {podeLancar&&mesa.subComandas.length>1&&mesa.subComandas.filter(s=>s.itens.length>0).length>1&&(
             <button onClick={()=>{
               let novasSCs = [...mesa.subComandas];
+              msgSalao(`🔥 Todas as comandas enviadas à cozinha!`);
               mesa.subComandas.forEach((s,i)=>{
                 if(s.itens.length===0) return;
                 const rodada={hora:new Date().toISOString(),itens:[...s.itens]};
@@ -4911,7 +4933,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 imprimirCozinha(rodada, mesa.id, s.label);
               });
               upd({...mesa, subComandas:novasSCs});
-              msgSalao(`🔥 Todas as comandas enviadas à cozinha!`);
             }} style={{...BP2("linear-gradient(135deg,#0e4fa8,#1d4ed8)"),display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
               🔥 Enviar todas à cozinha
             </button>
@@ -4943,8 +4964,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                       return;
                     } catch (e) {
                       console.warn("Falha BT, abrindo janela:", e.message);
-                      msgSalao("⚠️ Impressora BT falhou, abrindo janela...", "#f59e0b");
+                      avisarSemTermica(e.message);
                     }
+                  } else {
+                    avisarSemTermica();
                   }
 
                   const win = abrirJanelaImpressao('width=400,height=650');
@@ -5129,6 +5152,7 @@ function WhatsAppConexao({ conexao, backendUrl }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [desconectando, setDesconectando] = useState(false);
+  const [msgQR, setMsgQR] = useState(null);
 
   async function carregarStatus() {
     try {
@@ -5138,16 +5162,43 @@ function WhatsAppConexao({ conexao, backendUrl }) {
     } catch {}
   }
 
-  async function carregarQR() {
-    setLoading(true);
+  // O backend so guarda o QR enquanto a conexao esta viva. Entre uma tentativa
+  // e outra ele fica nulo — e a tela ficava vazia sem explicar nada.
+  async function buscarQR() {
     try {
-      const r = await authFetch(backendUrl +"/qrcode");
-      const html = await r.text();
-      // Extrai o src da imagem do QR
-      const match = html.match(/src="(data:image\/png;base64,[^"]+)"/);
-      if (match) setQrCode(match[1]);
-      else setQrCode("conectado");
-    } catch { setQrCode(null); }
+      const r = await authFetch(backendUrl + "/whatsapp/qr");
+      if (!r.ok) return null;
+      const d = await r.json();
+      return d.qr || null;
+    } catch { return null; }
+  }
+
+  async function carregarQR() {
+    setLoading(true); setMsgQR(null);
+    const qr = await buscarQR();
+    setLoading(false);
+    if (qr) setQrCode(qr);
+    else await gerarNovoQR();   // nao tinha QR guardado: pede um novo
+  }
+
+  // Forca uma conexao nova. Depois de 10 tentativas sem ninguem escanear, o
+  // Baileys desistia e o QR so voltava reiniciando o servidor.
+  async function gerarNovoQR() {
+    setLoading(true); setQrCode(null); setMsgQR("Gerando QR Code, aguarde...");
+    try {
+      const r = await authFetch(backendUrl + "/whatsapp/reconectar", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsgQR(d.erro || "Nao foi possivel gerar o QR Code."); setLoading(false); return; }
+    } catch {
+      setMsgQR("Erro de conexao com o servidor."); setLoading(false); return;
+    }
+    // O QR leva alguns segundos para nascer — consulta ate aparecer
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 1500));
+      const qr = await buscarQR();
+      if (qr) { setQrCode(qr); setMsgQR(null); setLoading(false); carregarStatus(); return; }
+    }
+    setMsgQR("O QR Code nao apareceu. Tente de novo em alguns segundos.");
     setLoading(false);
   }
 
@@ -5222,14 +5273,17 @@ function WhatsAppConexao({ conexao, backendUrl }) {
                 Abra o WhatsApp → <strong>Aparelhos conectados</strong> → <strong>Conectar aparelho</strong>
               </div>
               <div style={{ fontSize: 11, color: T.amber, marginTop: 6, fontWeight: 600 }}>⏱️ QR Code expira em ~60 segundos</div>
-              <button onClick={carregarQR} style={{ marginTop: 12, background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, borderRadius: T.radiusS, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
-                🔄 Gerar novo QR Code
+              <button onClick={gerarNovoQR} disabled={loading} style={{ marginTop: 12, background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, borderRadius: T.radiusS, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", opacity: loading ? 0.6 : 1 }}>
+                {loading ? "⏳ Gerando..." : "🔄 Gerar novo QR Code"}
               </button>
             </>
           ) : (
-            <button onClick={carregarQR} disabled={loading} style={{ background: `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radius, padding: "14px 28px", fontWeight: 700, fontSize: 15, cursor: "pointer", opacity: loading ? 0.7 : 1 }}>
-              {loading ? "⏳ Carregando..." : "📱 Mostrar QR Code"}
-            </button>
+            <>
+              <button onClick={carregarQR} disabled={loading} style={{ background: `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radius, padding: "14px 28px", fontWeight: 700, fontSize: 15, cursor: "pointer", opacity: loading ? 0.7 : 1 }}>
+                {loading ? "⏳ Gerando QR Code..." : "📱 Mostrar QR Code"}
+              </button>
+              {msgQR && <div style={{ fontSize: 12, color: T.gray, marginTop: 12, lineHeight: 1.5 }}>{msgQR}</div>}
+            </>
           )}
         </div>
       )}
