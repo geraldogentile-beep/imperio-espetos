@@ -2327,10 +2327,16 @@ const REGRAS_FISCAIS = [
     nota: "Cerveja SEM ÁLCOOL tem NCM próprio (2202.91.00), diferente da cerveja comum. CEST de garrafa de vidro descartável.",
   },
   {
+    quando: (n, c) => c === "cervejas" && /(chopp?|chope).*vinho|vinho.*(chopp?|chope)/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22030000", cest: "0302300" },
+    confianca: CONFIANCA.BAIXA,
+    nota: "A casa informou que esse item saiu do cardápio (a confirmar). Se saiu mesmo, desative em Cardápio em vez de classificar. Se voltar e levar vinho de verdade na mistura, sai da classificação de chope.",
+  },
+  {
     quando: (n, c) => c === "cervejas" && /chopp?|chope/.test(n),
     fiscal: { ...REVENDA_ST, ncm: "22030000", cest: "0302300" },
-    confianca: CONFIANCA.MEDIA,
-    nota: "CEST 03.023.00 = chope. Confirmar 'Chopp Vinho': se leva vinho na mistura, a classificação muda.",
+    confianca: CONFIANCA.ALTA,
+    nota: "CEST 03.023.00 = chope.",
   },
   {
     quando: (n, c) => c === "cervejas" && /lata/.test(n),
@@ -2386,15 +2392,15 @@ const REGRAS_FISCAIS = [
     quando: (n, c) => c === "agua" || /^agua /.test(n),
     fiscal: { ...REVENDA_ST, ncm: "22011000", cest: "0300500" },
     confianca: CONFIANCA.MEDIA,
-    nota: "CEST 03.005.00 vale para garrafa plástica de até 500ml. Se for garrafa de VIDRO, o CEST passa a 03.003.00.",
+    nota: "Embalagem plástica confirmada pela casa. 03.005.00 vale até 500ml — se a garrafa for maior, o CEST passa a 03.005.04.",
   },
 
   // ── SUCO (preparado na casa) ──
   {
     quando: (n, c) => c === "suco" || /suco/.test(n),
     fiscal: { ...PROPRIA, ncm: "22029900" },
-    confianca: CONFIANCA.BAIXA,
-    nota: "Assumi suco PREPARADO na casa (produção própria, sem ST). Se for garrafa/lata comprada pronta, vira revenda: CFOP 5405 ou 5102, conforme tenha ou não ST.",
+    confianca: CONFIANCA.ALTA,
+    nota: "Batido na hora (confirmado pela casa): produção própria, sem ST. 2202.99.00 = bebida não alcoólica preparada.",
   },
 
   // ── ESPETOS: o NCM segue a carne ──
