@@ -319,6 +319,22 @@ const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
 const NotaFiscalDB = mongoose.model("NotaFiscal",     NotaFiscalSchema);
 
+// ── FILA DE IMPRESSÃO ─────────────────────────────────────────
+// A termica e Bluetooth e fica pareada num aparelho so (o do caixa).
+// O celular do garcom nao alcanca ela, entao enfileira aqui.
+const ImpressaoSchema = new mongoose.Schema({
+  tipo:         { type: String, required: true, enum: ["cozinha", "recibo", "delivery"] },
+  dados:        { type: Object, required: true },
+  status:       { type: String, default: "pendente", enum: ["pendente", "processando", "impresso", "erro"] },
+  origem:       { type: String, default: "" },   // quem mandou
+  tentativas:   { type: Number, default: 0 },
+  erro:         String,
+  reservadoPor: String,
+  reservadoEm:  Date,
+  impressoEm:   Date,
+}, { timestamps: true });
+const ImpressaoDB = mongoose.model("Impressao", ImpressaoSchema);
+
 async function conectarMongo() {
   try {
     await mongoose.connect(ENV.MONGO_URI);
@@ -347,6 +363,9 @@ async function criarIndices() {
     await NotaFiscalDB.collection.createIndex({ status: 1, dataEmissao: -1 });
     await NotaFiscalDB.collection.createIndex({ vendaId: 1 });
     await VendaSalaoDB.collection.createIndex({ notaFiscalStatus: 1, fechamento: -1 });
+    await ImpressaoDB.collection.createIndex({ status: 1, createdAt: 1 });
+    // Ticket de ontem nao serve para nada: some sozinho depois de 24h
+    await ImpressaoDB.collection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 86400 });
     console.log("📊 Índices criados/verificados!");
   } catch (e) { console.error("Erro ao criar índices:", e.message); }
 }
@@ -2874,6 +2893,119 @@ app.post("/reset/dados-teste", authMiddleware(["dono"]), async (req, res) => {
       },
       mantidos: "cardápio, configurações, garçons, cupons e cadastro do estoque",
     });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+// FILA DE IMPRESSÃO
+// ══════════════════════════════════════════════════════════════
+// A impressora térmica é Bluetooth e aceita UMA conexão por vez — ela fica
+// pareada no aparelho do caixa. O celular do garçom não tem como falar com
+// ela. Então o garçom não imprime: ele enfileira, e o aparelho do caixa
+// (a "estação de impressão") consome a fila e imprime.
+//
+// Quem já tem a impressora na mão imprime direto e nem passa por aqui.
+
+const CLAIM_TIMEOUT_MS = 60 * 1000;   // job travado em "processando" volta para a fila
+const FILA_MAX_TENTATIVAS = 3;
+
+// POST /impressao — garçom (ou qualquer um sem impressora) põe na fila
+app.post("/impressao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  const { tipo, dados } = req.body || {};
+  if (!["cozinha", "recibo", "delivery"].includes(tipo)) {
+    return res.status(400).json({ erro: "tipo deve ser cozinha, recibo ou delivery" });
+  }
+  if (!dados || typeof dados !== "object") return res.status(400).json({ erro: "dados obrigatorios" });
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel — imprima direto no caixa" });
+
+  try {
+    const job = await ImpressaoDB.create({
+      tipo,
+      dados,
+      origem: req.user?.nome || req.user?.role || "",
+    });
+    res.status(201).json({ ok: true, id: job._id });
+  } catch (e) {
+    console.error("Erro ao enfileirar impressao:", e.message);
+    res.status(500).json({ erro: "Erro ao enfileirar" });
+  }
+});
+
+// POST /impressao/reservar — a estação pega os próximos jobs para imprimir.
+// Reserva de forma atômica para dois aparelhos-estação não imprimirem o mesmo.
+app.post("/impressao/reservar", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  if (!mongoPronto()) return res.json({ jobs: [] });
+  const limite = Math.min(parseInt(req.body?.limite) || 5, 20);
+  const estacao = req.user?.nome || req.user?.role || "estacao";
+
+  try {
+    // Devolve para a fila o que alguma estação pegou e não concluiu
+    await ImpressaoDB.updateMany(
+      { status: "processando", reservadoEm: { $lt: new Date(Date.now() - CLAIM_TIMEOUT_MS) } },
+      { $set: { status: "pendente" }, $unset: { reservadoPor: "", reservadoEm: "" } }
+    );
+
+    const jobs = [];
+    for (let i = 0; i < limite; i++) {
+      const job = await ImpressaoDB.findOneAndUpdate(
+        { status: "pendente", tentativas: { $lt: FILA_MAX_TENTATIVAS } },
+        { $set: { status: "processando", reservadoPor: estacao, reservadoEm: new Date() }, $inc: { tentativas: 1 } },
+        { sort: { createdAt: 1 }, new: true }
+      ).lean();
+      if (!job) break;
+      jobs.push({ id: job._id, tipo: job.tipo, dados: job.dados, origem: job.origem, tentativas: job.tentativas });
+    }
+    res.json({ jobs });
+  } catch (e) {
+    console.error("Erro ao reservar jobs de impressao:", e.message);
+    res.status(500).json({ erro: "Erro ao reservar" });
+  }
+});
+
+// POST /impressao/:id/concluir  { ok, erro }
+app.post("/impressao/:id/concluir", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  const { ok, erro } = req.body || {};
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  try {
+    const job = await ImpressaoDB.findById(req.params.id).lean();
+    if (!job) return res.status(404).json({ erro: "Job nao encontrado" });
+
+    if (ok) {
+      await ImpressaoDB.findByIdAndUpdate(req.params.id, {
+        $set: { status: "impresso", impressoEm: new Date() }, $unset: { erro: "" },
+      });
+    } else {
+      // Ainda tem tentativa sobrando? Volta para a fila. Senão desiste.
+      const desistir = (job.tentativas || 0) >= FILA_MAX_TENTATIVAS;
+      await ImpressaoDB.findByIdAndUpdate(req.params.id, {
+        $set: { status: desistir ? "erro" : "pendente", erro: String(erro || "falha na impressao").slice(0, 300) },
+        $unset: { reservadoPor: "", reservadoEm: "" },
+      });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Erro ao concluir job de impressao:", e.message);
+    res.status(500).json({ erro: "Erro ao concluir" });
+  }
+});
+
+// GET /impressao/status — quanto tem esperando (badge no painel)
+app.get("/impressao/status", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  if (!mongoPronto()) return res.json({ pendentes: 0, erros: 0 });
+  try {
+    const [pendentes, erros] = await Promise.all([
+      ImpressaoDB.countDocuments({ status: { $in: ["pendente", "processando"] } }),
+      ImpressaoDB.countDocuments({ status: "erro" }),
+    ]);
+    res.json({ pendentes, erros });
+  } catch { res.json({ pendentes: 0, erros: 0 }); }
+});
+
+// DELETE /impressao/erros — limpa o que falhou de vez
+app.delete("/impressao/erros", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  try {
+    const r = await ImpressaoDB.deleteMany({ status: "erro" });
+    res.json({ ok: true, removidos: r.deletedCount });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 

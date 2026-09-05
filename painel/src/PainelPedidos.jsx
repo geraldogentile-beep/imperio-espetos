@@ -92,6 +92,36 @@ const TAXA_ENTREGA_PADRAO = 5;
 // Antes: window.open devolvia null (iOS/Safari, bloqueador ativo) e o
 // win.document.write seguinte lancava TypeError. Em imprimirCozinha e no
 // fechamento isso acontecia DEPOIS de gravar a venda, travando a UI no meio.
+// ── FILA DE IMPRESSÃO ─────────────────────────────────────────
+// A termica fica pareada num aparelho so (o caixa). Quem nao alcanca ela
+// manda o ticket para o servidor; a estacao imprime.
+const CHAVE_ESTACAO = "imperio_estacao_impressao";
+
+// Ligada por padrao em quem ja pareou a impressora — se depender de alguem
+// lembrar de ativar, os tickets ficam parados na fila.
+function estacaoLigada() {
+  try {
+    const v = localStorage.getItem(CHAVE_ESTACAO);
+    if (v === null) return impressora.temDispositivoSalvo();
+    return v === "1";
+  } catch { return false; }
+}
+function setEstacaoLigada(ligada) {
+  try { localStorage.setItem(CHAVE_ESTACAO, ligada ? "1" : "0"); } catch {}
+}
+
+async function enfileirarImpressao(tipo, dados) {
+  const r = await authFetch(BACKEND_URL + "/impressao", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tipo, dados }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.erro || "Falha ao enviar para a impressora do caixa");
+  }
+  return r.json();
+}
+
 function abrirJanelaImpressao(dimensoes = "width=400,height=600") {
   const win = window.open("", "_blank", dimensoes);
   if (!win) {
@@ -1400,6 +1430,30 @@ function ImpressoraConfig() {
     localStorage.setItem("imperio_auto_imprimir_delivery", v ? "on" : "off");
   }
 
+  // Estacao de impressao: este aparelho imprime o que os garcons mandarem
+  const [estacao, setEstacaoState] = useState(() => estacaoLigada());
+  function setEstacao(v) { setEstacaoState(v); setEstacaoLigada(v); }
+  const [fila, setFila] = useState({ pendentes: 0, erros: 0 });
+  useEffect(() => {
+    let vivo = true;
+    async function ler() {
+      try {
+        const r = await authFetch(BACKEND_URL + "/impressao/status");
+        if (r.ok && vivo) setFila(await r.json());
+      } catch {}
+    }
+    ler();
+    const t = setInterval(ler, 8000);
+    return () => { vivo = false; clearInterval(t); };
+  }, []);
+
+  async function limparErrosFila() {
+    try {
+      await authFetch(BACKEND_URL + "/impressao/erros", { method: "DELETE" });
+      setFila(f => ({ ...f, erros: 0 }));
+    } catch {}
+  }
+
   async function testar() {
     setErro(null); setImprimindo(true);
     try {
@@ -1486,6 +1540,36 @@ function ImpressoraConfig() {
 
           <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
             <Toggle value={autoImprimir} onChange={setAutoImprimir} label="🛵 Imprimir pedidos delivery automaticamente" sub="Quando chegar pedido novo via WhatsApp, imprime imediatamente" />
+          </div>
+
+          {/* Estação de impressão */}
+          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+            <Toggle value={estacao} onChange={setEstacao}
+              label="🖨️ Este aparelho é a estação de impressão"
+              sub="Imprime aqui os tickets que os garçons mandarem dos celulares deles" />
+
+            {estacao && (
+              <div style={{ marginTop: 10, background: fila.erros > 0 ? "#fee2e2" : "#eff6ff", border: `1px solid ${fila.erros > 0 ? "#fca5a5" : "#bfdbfe"}`, borderRadius: 10, padding: "10px 12px", fontSize: 12, color: fila.erros > 0 ? "#991b1b" : "#1d4ed8", lineHeight: 1.6 }}>
+                {status.conectada
+                  ? <><strong>Estação ativa.</strong> Puxando a fila a cada 4 segundos.</>
+                  : <><strong>Impressora desconectada.</strong> A fila só sai quando ela reconectar.</>}
+                <br />
+                Na fila agora: <strong>{fila.pendentes}</strong>
+                {fila.erros > 0 && (
+                  <> · <strong>{fila.erros} com erro</strong>{" "}
+                    <button onClick={limparErrosFila} style={{ background: "none", border: "none", color: "#991b1b", textDecoration: "underline", fontSize: 12, cursor: "pointer", padding: 0 }}>limpar</button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {!estacao && (
+              <div style={{ marginTop: 10, background: "#faf9f8", borderRadius: 10, padding: "10px 12px", fontSize: 11.5, color: "#888", lineHeight: 1.6 }}>
+                A impressora térmica aceita <strong>um aparelho por vez</strong>. Deixe isto ligado só no
+                aparelho do caixa, que fica com a impressora. Os celulares dos garçons mandam o ticket
+                pela rede e ele sai aqui.
+              </div>
+            )}
           </div>
 
           <div style={{ background: "#fef3c7", borderRadius: 10, padding: "12px", fontSize: 12, color: "#92400e", lineHeight: 1.6 }}>
@@ -4441,27 +4525,36 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const agora = new Date();
     const nomeGarcom = garcomLogado?.nome || mesa.garcom || "—";
 
-    // Se a impressora Bluetooth estiver conectada, usa ela
+    const ticket = {
+      mesa: mesaId,
+      label: scLabel,
+      garcom: nomeGarcom,
+      cliente: sc.cliente,
+      itens: rodada.itens,
+      hora: rodada.hora,
+    };
+
+    // 1) Impressora aqui neste aparelho: imprime direto
     if (impressora.isDisponivel()) {
       try {
-        await impressora.imprimirComanda({
-          mesa: mesaId,
-          label: scLabel,
-          garcom: nomeGarcom,
-          cliente: sc.cliente,
-          itens: rodada.itens,
-          hora: rodada.hora,
-        });
+        await impressora.imprimirComanda(ticket);
         return;
       } catch (e) {
-        console.warn("Falha ao imprimir BT, abrindo janela:", e.message);
+        console.warn("Falha ao imprimir BT:", e.message);
         avisarSemTermica(e.message);
       }
     } else {
-      avisarSemTermica();
+      // 2) Celular do garcom: manda para a estacao do caixa imprimir
+      try {
+        await enfileirarImpressao("cozinha", ticket);
+        msgSalao("🖨️ Ticket enviado para a impressora do caixa");
+        return;
+      } catch (e) {
+        avisarSemTermica(e.message);
+      }
     }
 
-    // Fallback: janela do navegador
+    // 3) Fallback: janela do navegador
     const win = abrirJanelaImpressao('width=360,height=520');
     if (!win) return;
     win.document.write(`<!DOCTYPE html><html>
@@ -4751,26 +4844,33 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             const abertura = fecharUma?(sc.abertura||mesa.abertura):mesa.abertura;
 
             // Se a impressora Bluetooth estiver conectada, usa ela direto
+            const recibo = {
+              mesa: mesa.id,
+              cliente: nomeCliente,
+              garcom: nomeGarcom,
+              itens: todosItensFechar,
+              total: totalFechar,
+              pagamento: pagSalao,
+              abertura: abertura,
+              fechamento: new Date().toISOString(),
+            };
             if (impressora.isDisponivel()) {
               try {
-                await impressora.imprimirRecibo({
-                  mesa: mesa.id,
-                  cliente: nomeCliente,
-                  garcom: nomeGarcom,
-                  itens: todosItensFechar,
-                  total: totalFechar,
-                  pagamento: pagSalao,
-                  abertura: abertura,
-                  fechamento: new Date().toISOString(),
-                });
+                await impressora.imprimirRecibo(recibo);
                 msgSalao("✅ Comanda impressa!");
                 return;
               } catch (e) {
-                console.warn("Falha BT, abrindo janela:", e.message);
+                console.warn("Falha BT:", e.message);
                 avisarSemTermica(e.message);
               }
             } else {
-              avisarSemTermica();
+              try {
+                await enfileirarImpressao("recibo", recibo);
+                msgSalao("🖨️ Recibo enviado para a impressora do caixa");
+                return;
+              } catch (e) {
+                avisarSemTermica(e.message);
+              }
             }
 
             const win = abrirJanelaImpressao('width=400,height=600');
@@ -4948,26 +5048,33 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                   const clienteNome = (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ") || "—";
 
                   // Se a impressora Bluetooth estiver conectada, usa ela direto
+                  const conta = {
+                    mesa: mesa.id,
+                    cliente: clienteNome,
+                    garcom: nomeGarcom,
+                    itens: todosItens,
+                    total: totalAcumulado,
+                    pagamento: null,
+                    abertura: mesa.abertura,
+                    fechamento: new Date().toISOString(),
+                  };
                   if (impressora.isDisponivel()) {
                     try {
-                      await impressora.imprimirRecibo({
-                        mesa: mesa.id,
-                        cliente: clienteNome,
-                        garcom: nomeGarcom,
-                        itens: todosItens,
-                        total: totalAcumulado,
-                        pagamento: null,
-                        abertura: mesa.abertura,
-                        fechamento: new Date().toISOString(),
-                      });
+                      await impressora.imprimirRecibo(conta);
                       msgSalao("✅ Comanda impressa!");
                       return;
                     } catch (e) {
-                      console.warn("Falha BT, abrindo janela:", e.message);
+                      console.warn("Falha BT:", e.message);
                       avisarSemTermica(e.message);
                     }
                   } else {
-                    avisarSemTermica();
+                    try {
+                      await enfileirarImpressao("recibo", conta);
+                      msgSalao("🖨️ Conta enviada para a impressora do caixa");
+                      return;
+                    } catch (e) {
+                      avisarSemTermica(e.message);
+                    }
                   }
 
                   const win = abrirJanelaImpressao('width=400,height=650');
@@ -5188,7 +5295,13 @@ function WhatsAppConexao({ conexao, backendUrl }) {
     try {
       const r = await authFetch(backendUrl + "/whatsapp/reconectar", { method: "POST" });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { setMsgQR(d.erro || "Nao foi possivel gerar o QR Code."); setLoading(false); return; }
+      if (!r.ok) {
+        // 404 = servidor ainda sem a rota, ou seja, backend nao atualizado
+        setMsgQR(d.erro || (r.status === 404
+          ? "O servidor ainda esta na versao antiga. Rode o deploy no backend."
+          : "Nao foi possivel gerar o QR Code (erro " + r.status + ")."));
+        setLoading(false); return;
+      }
     } catch {
       setMsgQR("Erro de conexao com o servidor."); setLoading(false); return;
     }
@@ -5479,6 +5592,55 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     const interval = setInterval(tentar, 30000);
 
     return () => { cancelado = true; clearTimeout(t1); clearInterval(interval); };
+  }, []);
+
+  // ── ESTAÇÃO DE IMPRESSÃO ────────────────────────────────────
+  // A térmica é Bluetooth e aceita um aparelho por vez — na prática fica no
+  // caixa. O garçom não alcança ela, então enfileira no servidor e ESTE
+  // aparelho (o que tem a impressora) puxa a fila e imprime.
+  useEffect(() => {
+    let parar = false;
+    let rodando = false;   // impede dois ciclos sobrepostos numa impressão lenta
+
+    async function ciclo() {
+      if (parar || rodando) return;
+      if (!estacaoLigada() || !impressora.isDisponivel()) return;
+      rodando = true;
+      try {
+        const r = await authFetch(BACKEND_URL + "/impressao/reservar", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limite: 5 }),
+        });
+        if (r.ok) {
+          const { jobs = [] } = await r.json();
+          for (const job of jobs) {
+            if (parar) break;
+            let ok = false, erro = null;
+            try {
+              if (job.tipo === "cozinha") await impressora.imprimirComanda(job.dados);
+              else if (job.tipo === "recibo") await impressora.imprimirRecibo(job.dados);
+              else if (job.tipo === "delivery") await impressora.imprimirPedidoDelivery(job.dados);
+              else throw new Error("tipo desconhecido: " + job.tipo);
+              ok = true;
+            } catch (e) {
+              erro = e.message || "falha ao imprimir";
+              console.warn("Estacao: falha no job", job.id, erro);
+            }
+            // Marca o resultado mesmo em erro: o servidor devolve para a fila
+            // enquanto houver tentativa sobrando.
+            await authFetch(BACKEND_URL + "/impressao/" + job.id + "/concluir", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ok, erro }),
+            }).catch(() => {});
+          }
+        }
+      } catch { /* servidor fora: tenta no proximo ciclo */ }
+      rodando = false;
+    }
+
+    const t = setInterval(ciclo, 4000);
+    const t1 = setTimeout(ciclo, 2000);
+    return () => { parar = true; clearInterval(t); clearTimeout(t1); };
   }, []);
 
   // Mantém a tela do celular acesa (Wake Lock API)
