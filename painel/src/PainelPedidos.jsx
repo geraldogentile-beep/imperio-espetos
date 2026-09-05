@@ -1150,6 +1150,210 @@ function ResumoFiscal() {
   );
 }
 
+// ── SUGESTÃO DE CLASSIFICAÇÃO FISCAL ──────────────────────────
+// Pré-preenche NCM/CFOP/CSOSN/CEST do cardápio para o contador conferir.
+// Nada aqui vai para a SEFAZ: é só o cadastro dos itens.
+function SugestoesFiscais() {
+  const [dados, setDados] = useState(null);
+  const [carregando, setCarregando] = useState(false);
+  const [aplicando, setAplicando] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [filtro, setFiltro] = useState("todos");   // todos | revisar
+  const [textoContador, setTextoContador] = useState(null);
+
+  function showMsg(texto, tipo = "ok") { setMsg({ texto, tipo }); setTimeout(() => setMsg(null), 6000); }
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    try {
+      const r = await authFetch(BACKEND_URL + "/fiscal/sugestoes");
+      if (r.ok) setDados(await r.json());
+      else showMsg("Nao foi possivel carregar as sugestoes.", "erro");
+    } catch { showMsg("Erro de conexao.", "erro"); }
+    setCarregando(false);
+  }, []);
+  useEffect(() => { carregar(); }, [carregar]);
+
+  async function aplicar(sobrescrever) {
+    const aviso = sobrescrever
+      ? "Isso substitui a classificacao fiscal de TODOS os itens, inclusive os que ja estavam preenchidos. Confirma?"
+      : "Preencher a classificacao fiscal dos itens que ainda estao vazios?";
+    if (!window.confirm(aviso)) return;
+    setAplicando(true);
+    try {
+      const r = await authFetch(BACKEND_URL + "/fiscal/sugestoes/aplicar", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sobrescrever }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) showMsg(d.erro || "Falha ao aplicar", "erro");
+      else {
+        showMsg(`${d.aplicados} item(ns) classificados${d.ignorados ? `, ${d.ignorados} mantidos como estavam` : ""}.`);
+        await carregar();
+      }
+    } catch { showMsg("Erro de conexao.", "erro"); }
+    setAplicando(false);
+  }
+
+  // Texto puro para mandar no WhatsApp / e-mail do contador
+  function montarTextoContador() {
+    if (!dados) return "";
+    const linhas = [
+      "CLASSIFICACAO FISCAL PROPOSTA - IMPERIO DOS ESPETOS",
+      "Regime: Simples Nacional (CRT 1) | UF: PR | NFC-e modelo 65",
+      "",
+      "Premissa 1: espetos, doces, acompanhamentos e sucos sao PRODUZIDOS na casa",
+      "  -> CFOP 5101 (venda de producao do estabelecimento) + CSOSN 102, sem CEST.",
+      "Premissa 2: cerveja, refrigerante, agua e energetico sao REVENDIDOS e ja vem",
+      "  com ICMS retido por substituicao tributaria (bebidas frias, ST ativa no PR)",
+      "  -> CFOP 5405 (contribuinte substituido) + CSOSN 500 + CEST obrigatorio.",
+      "",
+      "Por favor confirme ou corrija cada linha:",
+      "",
+    ];
+    const pad = (s, n) => String(s || "").padEnd(n).slice(0, n);
+    linhas.push(pad("ITEM", 26) + pad("NCM", 12) + pad("CFOP", 6) + pad("CSOSN", 7) + pad("CEST", 12) + "CONFIANCA");
+    linhas.push("-".repeat(74));
+    for (const i of dados.itens) {
+      linhas.push(
+        pad(i.nome, 26) + pad(i.sugeridoLegivel.ncm, 12) + pad(i.sugerido.cfop, 6) +
+        pad(i.sugerido.csosn, 7) + pad(i.sugeridoLegivel.cest || "-", 12) + i.confianca
+      );
+    }
+    const duvidas = dados.itens.filter(i => i.confianca !== "alta");
+    if (duvidas.length) {
+      linhas.push("", "PONTOS QUE PRECISAM DE CONFIRMACAO:", "");
+      const vistos = new Set();
+      for (const i of duvidas) {
+        if (vistos.has(i.nota)) continue;
+        vistos.add(i.nota);
+        linhas.push("- " + i.nota);
+      }
+    }
+    return linhas.join("\n");
+  }
+
+  async function copiarParaContador() {
+    const txt = montarTextoContador();
+    try {
+      await navigator.clipboard.writeText(txt);
+      showMsg("Tabela copiada! E so colar no WhatsApp do contador.");
+    } catch {
+      setTextoContador(txt);   // clipboard bloqueado: mostra para copiar na mao
+    }
+  }
+
+  if (!dados) {
+    return (
+      <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", textAlign: "center", color: "#888", fontSize: 13 }}>
+        {carregando ? "Carregando sugestoes..." : "Sem dados"}
+      </div>
+    );
+  }
+
+  const coresConf = {
+    alta:  { bg: "#d1fae5", fg: "#065f46", rotulo: "OK" },
+    media: { bg: "#fef3c7", fg: "#92400e", rotulo: "conferir" },
+    baixa: { bg: "#fee2e2", fg: "#991b1b", rotulo: "confirmar" },
+  };
+  const visiveis = filtro === "revisar" ? dados.itens.filter(i => i.confianca !== "alta") : dados.itens;
+  const btn = (ativo) => ({
+    flex: 1, padding: "6px 0", borderRadius: 8, border: "none", fontSize: 12, cursor: "pointer",
+    background: ativo ? "#7b1a0a" : "#f0f0f0", color: ativo ? "#fff" : "#666", fontWeight: ativo ? 700 : 500,
+  });
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🏷️ Classificacao fiscal do cardapio</div>
+        <button onClick={carregar} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, cursor: "pointer", color: "#555" }}>↻</button>
+      </div>
+
+      <div style={{ background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 10, padding: "10px 12px", fontSize: 11.5, color: "#92400e", lineHeight: 1.6 }}>
+        ⚠️ <strong>Isto e uma sugestao, nao um parecer.</strong> Os codigos vieram da legislacao geral
+        (Simples Nacional + bebidas frias com ST no PR). <strong>O contador precisa validar</strong> antes
+        de emitir nota em producao — classificacao errada gera rejeicao na SEFAZ ou imposto incorreto.
+      </div>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        {[["Itens", dados.resumo.total], ["Ja preenchidos", dados.resumo.preenchidos], ["A conferir", dados.resumo.revisar]].map(([r, v]) => (
+          <div key={r} style={{ flex: 1, background: "#faf9f8", borderRadius: 10, padding: "8px 6px", textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "#7b1a0a" }}>{v}</div>
+            <div style={{ fontSize: 10, color: "#888" }}>{r}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 6 }}>
+        <button onClick={() => setFiltro("todos")} style={btn(filtro === "todos")}>Todos</button>
+        <button onClick={() => setFiltro("revisar")} style={btn(filtro === "revisar")}>Só a conferir</button>
+      </div>
+
+      <div style={{ maxHeight: 340, overflowY: "auto", border: "1px solid #f0f0f0", borderRadius: 10 }}>
+        {visiveis.map(i => {
+          const c = coresConf[i.confianca] || coresConf.baixa;
+          return (
+            <div key={i.id} style={{ padding: "8px 10px", borderBottom: "1px solid #f7f7f7", display: "flex", flexDirection: "column", gap: 3 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: "#333" }}>
+                  {i.nome}
+                  {i.jaPreenchido && <span style={{ fontSize: 10, color: "#10b981", marginLeft: 6 }}>✓ cadastrado</span>}
+                </span>
+                <span style={{ fontSize: 9.5, fontWeight: 700, background: c.bg, color: c.fg, borderRadius: 20, padding: "2px 7px", whiteSpace: "nowrap" }}>{c.rotulo}</span>
+              </div>
+              <div style={{ fontSize: 11, color: "#666", fontFamily: "monospace" }}>
+                NCM {i.sugeridoLegivel.ncm} · CFOP {i.sugerido.cfop} · CSOSN {i.sugerido.csosn}
+                {i.sugeridoLegivel.cest && " · CEST " + i.sugeridoLegivel.cest}
+              </div>
+              {i.confianca !== "alta" && (
+                <div style={{ fontSize: 10.5, color: "#92400e", lineHeight: 1.45 }}>→ {i.nota}</div>
+              )}
+            </div>
+          );
+        })}
+        {!visiveis.length && <div style={{ padding: 16, textAlign: "center", color: "#aaa", fontSize: 12 }}>Nada aqui.</div>}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <button onClick={() => aplicar(false)} disabled={aplicando}
+          style={{ background: aplicando ? "#ccc" : "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 14, cursor: aplicando ? "not-allowed" : "pointer" }}>
+          {aplicando ? "Aplicando..." : "✅ Preencher os itens vazios"}
+        </button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={copiarParaContador}
+            style={{ flex: 1, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: 8, padding: "9px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            📋 Copiar para o contador
+          </button>
+          <button onClick={() => aplicar(true)} disabled={aplicando}
+            style={{ background: "#fff7ed", color: "#c2410c", border: "1px solid #fed7aa", borderRadius: 8, padding: "9px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            Refazer todos
+          </button>
+        </div>
+      </div>
+
+      {textoContador && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 11, color: "#888" }}>Nao consegui copiar sozinho. Selecione e copie:</div>
+          <textarea readOnly value={textoContador} onFocus={e => e.target.select()}
+            style={{ width: "100%", height: 180, fontFamily: "monospace", fontSize: 10, padding: 8, border: "1.5px solid #e0e0e0", borderRadius: 8, boxSizing: "border-box" }} />
+          <button onClick={() => setTextoContador(null)} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer", color: "#555" }}>Fechar</button>
+        </div>
+      )}
+
+      {msg && (
+        <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 12, fontWeight: 600, lineHeight: 1.5 }}>
+          {msg.texto}
+        </div>
+      )}
+
+      <div style={{ background: "#faf9f8", borderRadius: 10, padding: "10px 12px", fontSize: 11, color: "#888", lineHeight: 1.6 }}>
+        Depois de aplicar, da para ajustar item por item em <strong>Cardapio → editar item → dados fiscais</strong>.
+        O que ficar vazio no item usa o padrao definido aqui embaixo, na configuracao fiscal.
+      </div>
+    </div>
+  );
+}
+
 // ── CONFIGURAÇÃO DE IMPRESSORA BLUETOOTH ──────────────────────
 function ImpressoraConfig() {
   const [status, setStatus] = useState({ conectada: impressora.isConnected(), nome: null, reconectando: false });
@@ -2639,6 +2843,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
       {subAba === "fiscal" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <CertificadoConfig />
+          <SugestoesFiscais />
           <FiscalConfig />
           <ResumoFiscal />
         </div>

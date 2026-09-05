@@ -997,8 +997,16 @@ app.get("/qrcode", authMiddleware(["dono"]), (req, res) => {
 
 // ── AUTH API ─────────────────────────────────────────────────
 // Le os PINs de dono/caixa (env vars como base, ConfigDB sobrescreve)
+// Mongoose enfileira comandos quando o banco esta fora e so desiste depois de
+// 10s. Numa tela de login isso vira "erro de conexao" para quem esta no caixa.
+// Perguntar o estado da conexao antes evita a espera.
+function mongoPronto() {
+  return mongoose.connection.readyState === 1;
+}
+
 async function getPinsAdmin() {
   let pins = { dono: process.env.PIN_DONO || "9999", caixa: process.env.PIN_CAIXA || "5678" };
+  if (!mongoPronto()) return pins;   // banco fora: usa os PINs do .env na hora
   try {
     const cfg = await ConfigDB.findOne({ chave: "pins" });
     if (cfg?.valor) pins = { ...pins, ...cfg.valor };
@@ -1023,6 +1031,7 @@ app.post("/auth/login", loginLimiter, async (req, res) => {
   }
 
   // Verifica garçom no banco
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco de dados indisponível. Entre com o PIN do dono ou do caixa." });
   try {
     const garcom = await GarcomDB.findOne({ pin, ativo: true }).lean();
     if (garcom) {
@@ -2273,9 +2282,284 @@ function validarItensFiscais(itensFiscais) {
     if (!it.ncm)   erros.push(it.nome + ": sem NCM");
     if (!it.cfop)  erros.push(it.nome + ": sem CFOP");
     if (!it.csosn) erros.push(it.nome + ": sem CSOSN");
+    // CSOSN 500/60x = ICMS ja retido por ST. A SEFAZ rejeita esses itens sem CEST.
+    if (/^(500|60\d)$/.test(it.csosn) && !it.cest) erros.push(it.nome + ": CSOSN " + it.csosn + " (substituicao tributaria) exige CEST");
   }
   return erros;
 }
+
+// ── SUGESTÃO DE CLASSIFICAÇÃO FISCAL ─────────────────────────
+// Pré-preenche NCM/CFOP/CSOSN/CEST do cardápio para o contador REVISAR.
+// A regra de fundo é simples e vale para bar/espetaria no Simples:
+//
+//   • O que a casa PRODUZ (espetos, doces, acompanhamentos, suco batido)
+//     → CFOP 5101 (venda de produção do estabelecimento) + CSOSN 102, sem CEST.
+//   • O que a casa REVENDE e já veio com ICMS retido por substituição
+//     tributária (cerveja, refrigerante, água, energético — "bebidas frias",
+//     ST ativa no PR) → CFOP 5405 + CSOSN 500, e aí o CEST é obrigatório.
+//
+// Fontes: Protocolo ICMS 11/91 (bebidas frias), tabela CEST segmento 03 com a
+// redação vigente desde 01/06/2021, TIPI/NCM capítulos 16, 19, 22.
+// Isso é uma SUGESTÃO. Quem assina a responsabilidade é o contador.
+
+const CONFIANCA = { ALTA: "alta", MEDIA: "media", BAIXA: "baixa" };
+
+// Produção própria: nada de ST, nada de CEST.
+const PROPRIA = { cfop: "5101", csosn: "102", cest: "", origem: "0", unidade: "UN" };
+// Revenda de bebida fria com ICMS já retido lá atrás.
+const REVENDA_ST = { cfop: "5405", csosn: "500", origem: "0", unidade: "UN" };
+
+// A primeira regra que casar vence — ordem importa.
+// "Heineken Zero" precisa vir antes de "Heineken", "lata" antes do genérico.
+const REGRAS_FISCAIS = [
+  // ── CERVEJAS E CHOPP (revenda com ST) ──
+  {
+    quando: (n, c) => c === "cervejas" && /(zero|sem alcool)/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22029100", cest: "0302201" },
+    confianca: CONFIANCA.ALTA,
+    nota: "Cerveja SEM ÁLCOOL tem NCM próprio (2202.91.00), diferente da cerveja comum. CEST de garrafa de vidro descartável.",
+  },
+  {
+    quando: (n, c) => c === "cervejas" && /chopp?|chope/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22030000", cest: "0302300" },
+    confianca: CONFIANCA.MEDIA,
+    nota: "CEST 03.023.00 = chope. Confirmar 'Chopp Vinho': se leva vinho na mistura, a classificação muda.",
+  },
+  {
+    quando: (n, c) => c === "cervejas" && /lata/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22030000", cest: "0302103" },
+    confianca: CONFIANCA.ALTA,
+    nota: "CEST 03.021.03 = cerveja em lata (redação vigente desde 01/06/2021).",
+  },
+  {
+    quando: (n, c) => c === "cervejas",
+    fiscal: { ...REVENDA_ST, ncm: "22030000", cest: "0302101" },
+    confianca: CONFIANCA.ALTA,
+    nota: "CEST 03.021.01 = cerveja em garrafa de vidro descartável (long neck).",
+  },
+
+  // ── REFRIGERANTES (revenda com ST) ──
+  // Zero/diet nao levam acucar adicionado, entao mudam de NCM (2202.99.00).
+  // O CEST e o mesmo: a tabela do segmento 03 aceita os dois NCMs.
+  {
+    quando: (n, c) => c === "refrigerantes" && /zero|diet|light|sem acucar/.test(n) && /lata/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22029900", cest: "0301002" },
+    confianca: CONFIANCA.ALTA,
+    nota: "Refrigerante zero em lata: NCM 2202.99.00 (sem acucar adicionado), CEST 03.010.02.",
+  },
+  {
+    quando: (n, c) => c === "refrigerantes" && /lata/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22021000", cest: "0301002" },
+    confianca: CONFIANCA.ALTA,
+    nota: "CEST 03.010.02 = refrigerante em lata.",
+  },
+  {
+    quando: (n, c) => c === "refrigerantes" && /zero|diet|light|sem acucar/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22029900", cest: "0301001" },
+    confianca: CONFIANCA.ALTA,
+    nota: "Refrigerante zero em PET: NCM 2202.99.00 (sem acucar adicionado), CEST 03.010.01.",
+  },
+  {
+    quando: (n, c) => c === "refrigerantes",
+    fiscal: { ...REVENDA_ST, ncm: "22021000", cest: "0301001" },
+    confianca: CONFIANCA.ALTA,
+    nota: "CEST 03.010.01 = refrigerante em embalagem PET (garrafa de 1L e 2L).",
+  },
+
+  // ── ENERGÉTICO (revenda com ST) ──
+  {
+    quando: (n, c) => c === "energetico" || /monster|red bull|energetic/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22029900", cest: "0301300" },
+    confianca: CONFIANCA.ALTA,
+    nota: "CEST 03.013.00 = bebida energética em lata.",
+  },
+
+  // ── ÁGUA (revenda com ST) ──
+  {
+    quando: (n, c) => c === "agua" || /^agua /.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22011000", cest: "0300500" },
+    confianca: CONFIANCA.MEDIA,
+    nota: "CEST 03.005.00 vale para garrafa plástica de até 500ml. Se for garrafa de VIDRO, o CEST passa a 03.003.00.",
+  },
+
+  // ── SUCO (preparado na casa) ──
+  {
+    quando: (n, c) => c === "suco" || /suco/.test(n),
+    fiscal: { ...PROPRIA, ncm: "22029900" },
+    confianca: CONFIANCA.BAIXA,
+    nota: "Assumi suco PREPARADO na casa (produção própria, sem ST). Se for garrafa/lata comprada pronta, vira revenda: CFOP 5405 ou 5102, conforme tenha ou não ST.",
+  },
+
+  // ── ESPETOS: o NCM segue a carne ──
+  {
+    quando: (n) => /alcatra|picanha|mignon|maminha|contra ?file|fraldinha/.test(n),
+    fiscal: { ...PROPRIA, ncm: "16025000" },
+    confianca: CONFIANCA.ALTA,
+    nota: "1602.50.00 = preparações de carne bovina.",
+  },
+  {
+    quando: (n) => /frango|tulipa|coracao|coracaozinho|galinha/.test(n),
+    fiscal: { ...PROPRIA, ncm: "16023290" },
+    confianca: CONFIANCA.ALTA,
+    nota: "1602.32.90 = preparações de galos/galinhas, cozidas. (1602.32.10 é só para carne crua.)",
+  },
+  {
+    quando: (n) => /linguica|calabresa|salsicha/.test(n),
+    fiscal: { ...PROPRIA, ncm: "16010000" },
+    confianca: CONFIANCA.ALTA,
+    nota: "1601.00.00 = enchidos (linguiças).",
+  },
+  {
+    quando: (n) => /panceta|suin|porco|bacon|pernil|lombo/.test(n),
+    fiscal: { ...PROPRIA, ncm: "16024900" },
+    confianca: CONFIANCA.ALTA,
+    nota: "1602.49.00 = preparações de carne suína.",
+  },
+  {
+    quando: (n) => /cordeiro|carneiro|ovino/.test(n),
+    fiscal: { ...PROPRIA, ncm: "16029000" },
+    confianca: CONFIANCA.MEDIA,
+    nota: "1602.90.00 = outras preparações de carne (ovinos entram aqui).",
+  },
+  {
+    quando: (n) => /kafta|kibe|churrasco grego/.test(n),
+    fiscal: { ...PROPRIA, ncm: "16025000" },
+    confianca: CONFIANCA.BAIXA,
+    nota: "Assumi base bovina. Se for mistura de carnes (bovina + suína, por exemplo), o contador pode preferir 1602.90.00.",
+  },
+  {
+    quando: (n) => /queijo/.test(n) && !/romeu/.test(n),
+    fiscal: { ...PROPRIA, ncm: "04061010" },
+    confianca: CONFIANCA.MEDIA,
+    nota: "0406.10.10 = queijo fresco (coalho).",
+  },
+  {
+    quando: (n) => /pao de alho|pao/.test(n),
+    fiscal: { ...PROPRIA, ncm: "19059090" },
+    confianca: CONFIANCA.ALTA,
+    nota: "1905.90.90 = outros produtos de padaria.",
+  },
+  {
+    quando: (n) => /chocolate/.test(n),
+    fiscal: { ...PROPRIA, ncm: "18069000" },
+    confianca: CONFIANCA.MEDIA,
+    nota: "1806.90.00 = preparações com chocolate.",
+  },
+
+  // ── COBERTURA POR CATEGORIA (doces, acompanhamentos, o que sobrar) ──
+  {
+    quando: (n, c) => ["doces", "acompanhamentos", "tradicionais", "especiais", "churrasco grego"].includes(c),
+    fiscal: { ...PROPRIA, ncm: "21069090" },
+    confianca: CONFIANCA.BAIXA,
+    nota: "2106.90.90 = preparações alimentícias não especificadas. É o 'guarda-chuva' de item preparado na casa que não se encaixa em código específico.",
+  },
+];
+
+// Fallback: qualquer coisa nova cai como produção própria genérica.
+const SUGESTAO_PADRAO = {
+  fiscal: { ...PROPRIA, ncm: "21069090" },
+  confianca: CONFIANCA.BAIXA,
+  nota: "Sem regra específica — tratei como item preparado na casa.",
+};
+
+// Padrões da config: valem para item de cardápio sem fiscal próprio.
+const SUGESTAO_PADROES_CONFIG = { ncm: "21069090", cfop: "5101", csosn: "102", origem: "0", unidade: "UN" };
+
+function sugerirFiscal(item) {
+  const nome = normalizarTexto(item?.nome);
+  const categoria = normalizarTexto(item?.categoria);
+  for (const r of REGRAS_FISCAIS) {
+    if (r.quando(nome, categoria)) return { fiscal: { ...r.fiscal }, confianca: r.confianca, nota: r.nota };
+  }
+  return { fiscal: { ...SUGESTAO_PADRAO.fiscal }, confianca: SUGESTAO_PADRAO.confianca, nota: SUGESTAO_PADRAO.nota };
+}
+
+// Formata só para leitura humana (o XML da NFC-e vai sem pontos)
+function pontuarNCM(v) { return /^\d{8}$/.test(v) ? v.slice(0, 4) + "." + v.slice(4, 6) + "." + v.slice(6) : v || ""; }
+function pontuarCEST(v) { return /^\d{7}$/.test(v) ? v.slice(0, 2) + "." + v.slice(2, 5) + "." + v.slice(5) : v || ""; }
+
+function temFiscalPreenchido(f) {
+  return !!(f && f.ncm && f.cfop && f.csosn);
+}
+
+// GET /fiscal/sugestoes — tabela para conferir antes de aplicar
+app.get("/fiscal/sugestoes", authMiddleware(["dono"]), async (req, res) => {
+  const itens = CARDAPIO.map(item => {
+    const s = sugerirFiscal(item);
+    const atual = item.fiscal || {};
+    return {
+      id: item.id,
+      nome: item.nome,
+      categoria: item.categoria,
+      ativo: item.ativo !== false,
+      jaPreenchido: temFiscalPreenchido(atual),
+      atual: {
+        ncm: atual.ncm || "", cfop: atual.cfop || "", csosn: atual.csosn || "",
+        cest: atual.cest || "", origem: atual.origem || "0", unidade: atual.unidade || "UN",
+      },
+      sugerido: s.fiscal,
+      sugeridoLegivel: { ncm: pontuarNCM(s.fiscal.ncm), cest: pontuarCEST(s.fiscal.cest) },
+      confianca: s.confianca,
+      nota: s.nota,
+    };
+  });
+
+  res.json({
+    itens,
+    padroesSugeridos: SUGESTAO_PADROES_CONFIG,
+    resumo: {
+      total: itens.length,
+      preenchidos: itens.filter(i => i.jaPreenchido).length,
+      revisar: itens.filter(i => i.confianca !== CONFIANCA.ALTA).length,
+    },
+    aviso: "Sugestao automatica baseada na legislacao geral (Simples Nacional, bebidas frias com ST no PR). O contador precisa validar antes de emitir em producao.",
+  });
+});
+
+// POST /fiscal/sugestoes/aplicar { sobrescrever?, ids?, aplicarPadroes? }
+app.post("/fiscal/sugestoes/aplicar", authMiddleware(["dono"]), async (req, res) => {
+  const { sobrescrever = false, ids = null, aplicarPadroes = true } = req.body || {};
+  const filtroIds = Array.isArray(ids) && ids.length ? new Set(ids.map(Number)) : null;
+
+  const aplicados = [];
+  const ignorados = [];
+  const operacoes = [];
+
+  for (const item of CARDAPIO) {
+    if (filtroIds && !filtroIds.has(item.id)) continue;
+    if (!sobrescrever && temFiscalPreenchido(item.fiscal)) { ignorados.push(item.nome); continue; }
+
+    const { fiscal } = sugerirFiscal(item);
+    item.fiscal = { ...fiscal };
+    operacoes.push({ updateOne: { filter: { id: item.id }, update: { $set: { fiscal } } } });
+    aplicados.push(item.nome);
+  }
+
+  // Uma ida so ao banco: 47 updateOne em sequencia travam por minutos se o Mongo cai
+  if (operacoes.length) {
+    try {
+      await CardapioDB.bulkWrite(operacoes, { ordered: false });
+    } catch (e) {
+      console.error("Erro ao gravar sugestoes fiscais no banco:", e.message);
+      return res.status(500).json({ erro: "Classificacao aplicada em memoria, mas nao foi salva no banco: " + e.message });
+    }
+  }
+
+  // Preenche tambem os padroes da config, se ainda estiverem vazios
+  let padroesAplicados = false;
+  if (aplicarPadroes) {
+    try {
+      const cfg = await getConfigFiscal();
+      if (sobrescrever || !cfg.padroes?.ncm || !cfg.padroes?.cfop || !cfg.padroes?.csosn) {
+        const novo = { ...cfg, padroes: { ...SUGESTAO_PADROES_CONFIG } };
+        await ConfigDB.updateOne({ chave: "fiscal" }, { valor: novo }, { upsert: true });
+        padroesAplicados = true;
+      }
+    } catch (e) { console.error("Erro ao aplicar padroes fiscais:", e.message); }
+  }
+
+  res.json({ ok: true, aplicados: aplicados.length, ignorados: ignorados.length, nomes: aplicados, padroesAplicados });
+});
 
 // ── EMISSÃO ──────────────────────────────────────────────────
 // A comunicação com a SEFAZ é feita por um provedor (API fiscal), que cuida
