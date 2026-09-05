@@ -20,6 +20,13 @@ import rateLimit from "express-rate-limit";
 
 const app = express();
 
+// O Node fica atras do Nginx, entao todo request chega de 127.0.0.1. Sem isso
+// o express-rate-limit conta o predio inteiro como um usuario so e derruba o
+// caixa com "muitas tentativas". O valor 1 = confia em UM salto de proxy
+// (o Nginx); "true" confiaria na cadeia inteira e deixaria qualquer um forjar
+// o X-Forwarded-For para escapar do limite.
+app.set("trust proxy", 1);
+
 // ── SEGURANÇA ────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
