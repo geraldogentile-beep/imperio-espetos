@@ -2598,44 +2598,34 @@ async function cancelarNoProvedor(cfg, nota, motivo) {
   throw new Error("Cancelamento ainda nao implementado — depende do provedor escolhido.");
 }
 
-// POST /notas/emitir  { vendaId } ou { pedidoId }, cpfCliente opcional
-app.post("/notas/emitir", authMiddleware(["dono", "caixa"]), async (req, res) => {
-  const { vendaId, pedidoId, cpfCliente } = req.body || {};
-  if (!vendaId && !pedidoId) return res.status(400).json({ erro: "Informe vendaId ou pedidoId" });
-
-  const cfg = await getConfigFiscal();
-  if (!cfg.ativo) return res.status(400).json({ erro: "Emissao de NFC-e desativada nas configuracoes" });
-  const faltando = pendenciasFiscais(cfg);
-  if (faltando.length) return res.status(400).json({ erro: "Configuracao fiscal incompleta", faltando });
-
+// Emite UMA nota. Devolve { http, corpo } em vez de escrever na resposta,
+// porque a rota de lote precisa chamar isso N vezes e juntar os resultados.
+async function emitirUmaNota({ vendaId, pedidoId, cpfCliente, cfg, usuario }) {
   let origem, itens, valorTotal, nomeCliente = "";
   try {
     if (vendaId) {
       origem = await VendaSalaoDB.findById(vendaId).lean();
-      if (!origem) return res.status(404).json({ erro: "Venda nao encontrada" });
-      if (origem.notaFiscalStatus === "autorizada") return res.status(409).json({ erro: "Essa venda ja tem nota autorizada" });
+      if (!origem) return { http: 404, corpo: { erro: "Venda nao encontrada" } };
+      if (origem.notaFiscalStatus === "autorizada") return { http: 409, corpo: { erro: "Essa venda ja tem nota autorizada" } };
       itens = origem.itens; valorTotal = origem.total; nomeCliente = origem.cliente || "";
     } else {
       origem = await PedidoDB.findOne({ id: String(pedidoId) }).lean();
-      if (!origem) return res.status(404).json({ erro: "Pedido nao encontrado" });
+      if (!origem) return { http: 404, corpo: { erro: "Pedido nao encontrado" } };
       itens = origem.itens; valorTotal = origem.total; nomeCliente = origem.cliente || "";
     }
   } catch (e) {
     console.error("Erro ao carregar origem da nota:", e.message);
-    return res.status(500).json({ erro: "Erro ao carregar a venda" });
+    return { http: 500, corpo: { erro: "Erro ao carregar a venda" } };
   }
 
   const itensFiscais = montarItensFiscais(itens, cfg);
   const errosItens = validarItensFiscais(itensFiscais);
   if (errosItens.length) {
-    return res.status(400).json({
-      erro: "Itens sem dados fiscais. Preencha no cardapio ou defina um padrao.",
-      detalhes: errosItens,
-    });
+    return { http: 400, corpo: { erro: "Itens sem dados fiscais. Preencha no cardapio ou defina um padrao.", detalhes: errosItens } };
   }
 
   const cpfLimpo = String(cpfCliente || "").replace(/\D/g, "");
-  if (cpfLimpo && cpfLimpo.length !== 11) return res.status(400).json({ erro: "CPF invalido" });
+  if (cpfLimpo && cpfLimpo.length !== 11) return { http: 400, corpo: { erro: "CPF invalido" } };
 
   // Registra a nota como "processando" ANTES de chamar o provedor.
   // Se a chamada cair no meio, fica o rastro em vez de sumir.
@@ -2651,14 +2641,14 @@ app.post("/notas/emitir", authMiddleware(["dono", "caixa"]), async (req, res) =>
       nomeCliente,
       itens: itensFiscais,
       refExterna: (vendaId || pedidoId) + "-" + Date.now(),
-      emitidoPor: req.user?.nome || req.user?.role || "",
+      emitidoPor: usuario || "",
     });
     if (vendaId) {
       await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalId: nota._id, notaFiscalStatus: "processando" });
     }
   } catch (e) {
     console.error("Erro ao registrar nota:", e.message);
-    return res.status(500).json({ erro: "Erro ao registrar a nota" });
+    return { http: 500, corpo: { erro: "Erro ao registrar a nota" } };
   }
 
   try {
@@ -2670,13 +2660,83 @@ app.post("/notas/emitir", authMiddleware(["dono", "caixa"]), async (req, res) =>
       dataAutorizacao: new Date(),
     });
     if (vendaId) await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalStatus: "autorizada" });
-    res.json({ ok: true, notaId: nota._id, ...r });
+    return { http: 200, corpo: { ok: true, notaId: nota._id, ...r } };
   } catch (e) {
     console.error("Falha na emissao da NFC-e:", e.message);
     await NotaFiscalDB.findByIdAndUpdate(nota._id, { status: "erro", mensagemErro: e.message });
     if (vendaId) await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalStatus: "erro" });
-    res.status(502).json({ erro: e.message, notaId: nota._id });
+    return { http: 502, corpo: { erro: e.message, notaId: nota._id } };
   }
+}
+
+// POST /notas/emitir  { vendaId } ou { pedidoId }, cpfCliente opcional
+app.post("/notas/emitir", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  const { vendaId, pedidoId, cpfCliente } = req.body || {};
+  if (!vendaId && !pedidoId) return res.status(400).json({ erro: "Informe vendaId ou pedidoId" });
+
+  const cfg = await getConfigFiscal();
+  if (!cfg.ativo) return res.status(400).json({ erro: "Emissao de NFC-e desativada nas configuracoes" });
+  const faltando = pendenciasFiscais(cfg);
+  if (faltando.length) return res.status(400).json({ erro: "Configuracao fiscal incompleta", faltando });
+
+  const r = await emitirUmaNota({
+    vendaId, pedidoId, cpfCliente, cfg,
+    usuario: req.user?.nome || req.user?.role || "",
+  });
+  res.status(r.http).json(r.corpo);
+});
+
+// POST /notas/emitir-lote  { vendaIds: [...] }
+// Emite varias comandas de uma vez. Sem CPF: uma nota com CPF do cliente e
+// pedido na hora, entao vai pelo botao individual. Aqui e "consumidor nao
+// identificado", que e o caso de quem so quer regularizar o movimento do dia.
+const LOTE_MAX = 100;
+
+app.post("/notas/emitir-lote", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  const { vendaIds } = req.body || {};
+  if (!Array.isArray(vendaIds) || !vendaIds.length) {
+    return res.status(400).json({ erro: "Informe vendaIds (lista de comandas)" });
+  }
+  if (vendaIds.length > LOTE_MAX) {
+    return res.status(400).json({ erro: "Maximo de " + LOTE_MAX + " comandas por lote. Divida em partes." });
+  }
+
+  // Configuracao se confere UMA vez, nao a cada comanda
+  const cfg = await getConfigFiscal();
+  if (!cfg.ativo) return res.status(400).json({ erro: "Emissao de NFC-e desativada nas configuracoes" });
+  const faltando = pendenciasFiscais(cfg);
+  if (faltando.length) return res.status(400).json({ erro: "Configuracao fiscal incompleta", faltando });
+
+  const usuario = req.user?.nome || req.user?.role || "";
+  const unicos = [...new Set(vendaIds.map(String))];
+  const resultados = [];
+
+  // Em sequencia, de proposito: a numeracao da NFC-e e sequencial e o
+  // provedor tem limite de requisicoes. Disparar tudo junto embaralha as duas coisas.
+  for (const vendaId of unicos) {
+    try {
+      const r = await emitirUmaNota({ vendaId, cpfCliente: "", cfg, usuario });
+      resultados.push({
+        vendaId,
+        ok: r.http === 200,
+        erro: r.http === 200 ? null : (r.corpo.erro || "falha"),
+        detalhes: r.corpo.detalhes || null,
+        notaId: r.corpo.notaId || null,
+        numero: r.corpo.numero || null,
+      });
+    } catch (e) {
+      console.error("Erro inesperado no lote, venda " + vendaId + ":", e.message);
+      resultados.push({ vendaId, ok: false, erro: e.message, detalhes: null, notaId: null, numero: null });
+    }
+  }
+
+  const autorizadas = resultados.filter(r => r.ok).length;
+  res.json({
+    total: resultados.length,
+    autorizadas,
+    falhas: resultados.length - autorizadas,
+    resultados,
+  });
 });
 
 // GET /notas — listagem com filtros

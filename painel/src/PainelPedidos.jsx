@@ -3338,6 +3338,54 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const [loadingGarcons, setLoadingGarcons] = useState(false);
   const [relLucro, setRelLucro] = useState(null);
   const [loadingLucro, setLoadingLucro] = useState(false);
+  // Emissao de NFC-e em lote: escolher varias comandas e mandar de uma vez
+  const [modoLote, setModoLote] = useState(false);
+  const [selecionadas, setSelecionadas] = useState([]);
+  const [emitindoLote, setEmitindoLote] = useState(false);
+  const [resultadoLote, setResultadoLote] = useState(null);
+
+  // So entra no lote comanda que ja foi salva no servidor e ainda nao tem nota
+  const elegiveisLote = historicoSalao.filter(v => v._id && v.notaFiscalStatus !== "autorizada");
+  const totalSelecionado = historicoSalao
+    .filter(v => selecionadas.includes(v._id))
+    .reduce((soma, v) => soma + (Number(v.total) || 0), 0);
+
+  function alternarSelecao(id) {
+    setSelecionadas(atual => atual.includes(id) ? atual.filter(x => x !== id) : [...atual, id]);
+  }
+  function sairDoLote() {
+    setModoLote(false); setSelecionadas([]); setResultadoLote(null);
+  }
+
+  async function emitirLote() {
+    if (!selecionadas.length) return;
+    const msg = [
+      `Emitir ${selecionadas.length} nota(s) fiscal(is), somando R$ ${totalSelecionado.toFixed(2)}?`,
+      "",
+      "As notas vao para a SEFAZ como consumidor nao identificado.",
+      "Se algum cliente pediu nota com CPF, emita essa pelo botao individual.",
+    ].join("\n");
+    if (!window.confirm(msg)) return;
+    setEmitindoLote(true); setResultadoLote(null);
+    try {
+      const r = await authFetch(BACKEND_URL + "/notas/emitir-lote", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendaIds: selecionadas }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setResultadoLote({ erroGeral: (d.erro || "Falha ao emitir") + (d.faltando?.length ? " Falta: " + d.faltando.join(", ") : "") });
+      } else {
+        setResultadoLote(d);
+        const ok = new Set(d.resultados.filter(x => x.ok).map(x => x.vendaId));
+        if (setHistoricoSalao) {
+          setHistoricoSalao(h => h.map(v => ok.has(String(v._id)) ? { ...v, notaFiscalStatus: "autorizada" } : v));
+        }
+        setSelecionadas(atual => atual.filter(id => !ok.has(String(id))));
+      }
+    } catch { setResultadoLote({ erroGeral: "Erro de conexao ao emitir o lote." }); }
+    setEmitindoLote(false);
+  }
 
   async function carregarRelGarcons() {
     setLoadingGarcons(true);
@@ -3512,6 +3560,77 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
 
 
 
+          {/* Emissão de NFC-e em lote */}
+          {elegiveisLote.length > 0 && (
+            <div style={{ background: "#fff", borderRadius: 14, padding: "12px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+              {!modoLote ? (
+                <button onClick={() => setModoLote(true)}
+                  style={{ width: "100%", background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                  🧾 Emitir notas em lote ({elegiveisLote.length} sem nota)
+                </button>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>
+                      {selecionadas.length} selecionada{selecionadas.length !== 1 ? "s" : ""}
+                      {selecionadas.length > 0 && <span style={{ color: "#7b1a0a" }}> · R$ {totalSelecionado.toFixed(2)}</span>}
+                    </div>
+                    <button onClick={sairDoLote} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: "#555" }}>Sair</button>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => setSelecionadas(elegiveisLote.map(v => v._id))}
+                      style={{ flex: 1, background: "#f5f5f5", border: "none", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer", color: "#555", fontWeight: 600 }}>
+                      Marcar todas ({elegiveisLote.length})
+                    </button>
+                    <button onClick={() => setSelecionadas([])}
+                      style={{ flex: 1, background: "#f5f5f5", border: "none", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer", color: "#555", fontWeight: 600 }}>
+                      Limpar
+                    </button>
+                  </div>
+
+                  <button onClick={emitirLote} disabled={emitindoLote || !selecionadas.length}
+                    style={{
+                      background: (emitindoLote || !selecionadas.length) ? "#ccc" : "linear-gradient(135deg,#7b1a0a,#c0392b)",
+                      color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 14,
+                      cursor: (emitindoLote || !selecionadas.length) ? "not-allowed" : "pointer",
+                    }}>
+                    {emitindoLote ? "Emitindo... nao feche a tela" : `🧾 Emitir ${selecionadas.length} nota${selecionadas.length !== 1 ? "s" : ""}`}
+                  </button>
+
+                  <div style={{ fontSize: 11, color: "#888", lineHeight: 1.5 }}>
+                    Vao como <strong>consumidor nao identificado</strong>. Se algum cliente pediu nota com CPF,
+                    emita essa pelo botao dentro da comanda.
+                  </div>
+
+                  {resultadoLote?.erroGeral && (
+                    <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 8, padding: "9px 12px", fontSize: 12, fontWeight: 600, lineHeight: 1.5 }}>
+                      {resultadoLote.erroGeral}
+                    </div>
+                  )}
+
+                  {resultadoLote?.total !== undefined && (
+                    <div style={{ background: "#faf9f8", borderRadius: 10, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#333" }}>
+                        {resultadoLote.autorizadas} autorizada{resultadoLote.autorizadas !== 1 ? "s" : ""}
+                        {resultadoLote.falhas > 0 && <span style={{ color: "#991b1b" }}> · {resultadoLote.falhas} com erro</span>}
+                      </div>
+                      {resultadoLote.resultados.filter(x => !x.ok).map(x => {
+                        const v = historicoSalao.find(h => String(h._id) === String(x.vendaId));
+                        return (
+                          <div key={x.vendaId} style={{ fontSize: 11, color: "#991b1b", lineHeight: 1.45 }}>
+                            <strong>{v ? `Mesa ${v.mesa}` : x.vendaId}</strong>: {x.erro}
+                            {x.detalhes?.length ? " — " + x.detalhes.slice(0, 3).join("; ") : ""}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Lista de vendas */}
           {historicoSalao.length === 0 ? (
             <div style={{ textAlign: "center", padding: "40px 20px", color: "#ccc" }}>
@@ -3522,13 +3641,26 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[...historicoSalao].reverse().map(v => (
                 <div key={v.id} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: vendaAberta === v.id ? "2px solid #7b1a0a" : "2px solid transparent" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setVendaAberta(vendaAberta === v.id ? null : v.id)}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+                    onClick={() => {
+                      // No modo lote, tocar na comanda marca/desmarca em vez de abrir
+                      if (modoLote && v._id && v.notaFiscalStatus !== "autorizada") return alternarSelecao(v._id);
+                      setVendaAberta(vendaAberta === v.id ? null : v.id);
+                    }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {modoLote && (
+                        <input type="checkbox" readOnly
+                          checked={selecionadas.includes(v._id)}
+                          disabled={!v._id || v.notaFiscalStatus === "autorizada"}
+                          style={{ width: 20, height: 20, accentColor: "#7b1a0a", flexShrink: 0, cursor: "pointer" }} />
+                      )}
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 14 }}>Mesa {v.mesa} {v.cliente !== "—" ? `— ${v.cliente}` : ""}</div>
                       <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
                         👤 {v.garcom} · {new Date(v.fechamento).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
                         {v.abertura && ` · ⏱️ ${Math.round((new Date(v.fechamento)-new Date(v.abertura))/60000)}min`}
                       </div>
+                    </div>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>R$ {v.total.toFixed(2)}</div>
