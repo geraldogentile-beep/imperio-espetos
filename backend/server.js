@@ -118,7 +118,7 @@ const ENV = {
   ANTHROPIC_KEY: process.env.NODE_ENV === "production" ? requiredEnv("ANTHROPIC_KEY") : (process.env.ANTHROPIC_KEY || ""),
   MONGO_URI:     process.env.NODE_ENV === "production" ? requiredEnv("MONGO_URI")     : (process.env.MONGO_URI || ""),
   PORT:          process.env.PORT || 3000,
-  JWT_SECRET:    process.env.JWT_SECRET || "imperio-dev-secret-trocar-em-prod",
+  JWT_SECRET:    process.env.NODE_ENV === "production" ? requiredEnv("JWT_SECRET")   : (process.env.JWT_SECRET || "imperio-dev-secret-trocar-em-prod"),
   FRONTEND_URL:  process.env.FRONTEND_URL || "http://localhost:5173",
 };
 
@@ -415,9 +415,22 @@ let cupons = [
 
 // ── FIDELIDADE ────────────────────────────────────────────────
 const fidelidadeClientes = new Map();
+// Cache em memoria; a fonte da verdade e o FidelidadeDB (sobrevive a restart)
 function getFidelidade(tel) {
   if (!fidelidadeClientes.has(tel)) fidelidadeClientes.set(tel, { pedidosEntregues: 0, brindesGanhos: 0 });
   return fidelidadeClientes.get(tel);
+}
+// Le do banco e popula o cache. Usar antes de qualquer leitura que precise ser correta.
+async function carregarFidelidade(tel) {
+  try {
+    const doc = await FidelidadeDB.findOne({ telefone: tel }).lean();
+    if (doc) {
+      const dados = { pedidosEntregues: doc.pedidosEntregues || 0, brindesGanhos: doc.brindesGanhos || 0 };
+      fidelidadeClientes.set(tel, dados);
+      return dados;
+    }
+  } catch (e) { console.error("Erro ao carregar fidelidade:", e.message); }
+  return getFidelidade(tel);
 }
 async function salvarFidelidade(tel, dados) {
   try { await FidelidadeDB.updateOne({ telefone: tel }, { $set: dados }, { upsert: true }); } catch (e) { console.error("Erro ao salvar fidelidade:", e.message); }
@@ -468,8 +481,11 @@ function estaAberto() {
   const [hFe, mFe] = h.fechamento.split(":").map(Number);
   const now = agora.getHours() * 60 + agora.getMinutes();
   const ab = hAb * 60 + mAb;
-  const fe = hFe === 0 && mFe === 0 ? 1440 : hFe * 60 + mFe;
-  return now >= ab && now < fe;
+  let fe = hFe * 60 + mFe;
+  // Fechamento apos meia-noite (ex.: 17:00 -> 01:00): a janela cruza o dia
+  if (fe <= ab) fe += 1440;
+  const nowAjustado = now < ab ? now + 1440 : now; // madrugada ainda pertence a janela do dia anterior
+  return nowAjustado >= ab && nowAjustado < fe;
 }
 
 function proximaAbertura() {
@@ -619,11 +635,27 @@ function agendarAvaliacao(pedido) {
 
 async function checarFidelidade(pedido) {
   if (!CONFIG.fidelidade.ativo) return;
-  const f = getFidelidade(pedido.telefone);
-  f.pedidosEntregues += 1;
-  const meta = CONFIG.fidelidade.pedidosParaGanhar;
+  const meta = Math.max(1, Number(CONFIG.fidelidade.pedidosParaGanhar) || 1); // evita divisao por zero
+  // Incremento atomico no banco — evita perder contagem em concorrencia e sobrevive a restart
+  let f;
+  try {
+    const doc = await FidelidadeDB.findOneAndUpdate(
+      { telefone: pedido.telefone },
+      { $inc: { pedidosEntregues: 1 } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).lean();
+    f = { pedidosEntregues: doc.pedidosEntregues || 1, brindesGanhos: doc.brindesGanhos || 0 };
+  } catch (e) {
+    console.error("Erro ao incrementar fidelidade no DB, usando memoria:", e.message);
+    f = getFidelidade(pedido.telefone);
+    f.pedidosEntregues += 1;
+  }
+  fidelidadeClientes.set(pedido.telefone, f);
+
   if (f.pedidosEntregues % meta === 0) {
     f.brindesGanhos += 1;
+    try { await FidelidadeDB.updateOne({ telefone: pedido.telefone }, { $inc: { brindesGanhos: 1 } }); }
+    catch (e) { console.error("Erro ao registrar brinde:", e.message); }
     const msg = CONFIG.fidelidade.mensagemGanhou
       .replace(/{cliente}/g, pedido.cliente)
       .replace(/{total}/g, f.pedidosEntregues)
@@ -745,8 +777,9 @@ async function conectarWhatsApp() {
           await enviarMsg(tel, resposta);
           await enviarMsg(tel, `⏱️ Tempo estimado: *${tempoPreparo} minutos*`);
           if (CONFIG.fidelidade.ativo) {
-            const f = getFidelidade(tel);
-            const faltam = CONFIG.fidelidade.pedidosParaGanhar - (f.pedidosEntregues % CONFIG.fidelidade.pedidosParaGanhar);
+            const f = await carregarFidelidade(tel); // le do banco, nao da memoria volatil
+            const meta = Math.max(1, Number(CONFIG.fidelidade.pedidosParaGanhar) || 1);
+            const faltam = meta - (f.pedidosEntregues % meta);
             await enviarMsg(tel, `🏆 Fidelidade: ${f.pedidosEntregues} pedido${f.pedidosEntregues !== 1 ? "s" : ""} entregue${f.pedidosEntregues !== 1 ? "s" : ""}. Faltam *${faltam}* para ganhar ${CONFIG.fidelidade.brinde}!`);
           }
           continue;
@@ -760,7 +793,7 @@ async function conectarWhatsApp() {
 }
 
 // ── PÁGINA DO QR CODE ─────────────────────────────────────────
-app.get("/qrcode", (req, res) => {
+app.get("/qrcode", authMiddleware(["dono"]), (req, res) => {
   if (whatsappStatus === "connected") {
     return res.send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:50px;background:#f5f5f5">
       <h1 style="color:#075e54">✅ WhatsApp Conectado!</h1>
@@ -789,16 +822,22 @@ app.get("/qrcode", (req, res) => {
 });
 
 // ── AUTH API ─────────────────────────────────────────────────
-app.post("/auth/login", loginLimiter, async (req, res) => {
-  const { pin } = req.body;
-  if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter 4 dígitos" });
-
-  // Verifica PINs de dono/caixa primeiro (funciona mesmo sem MongoDB)
+// Le os PINs de dono/caixa (env vars como base, ConfigDB sobrescreve)
+async function getPinsAdmin() {
   let pins = { dono: process.env.PIN_DONO || "9999", caixa: process.env.PIN_CAIXA || "5678" };
   try {
     const cfg = await ConfigDB.findOne({ chave: "pins" });
     if (cfg?.valor) pins = { ...pins, ...cfg.valor };
   } catch (e) { console.error("Erro ao buscar pins do DB (usando env vars):", e.message); }
+  return pins;
+}
+
+app.post("/auth/login", loginLimiter, async (req, res) => {
+  const { pin } = req.body;
+  if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter 4 dígitos" });
+
+  // Verifica PINs de dono/caixa primeiro (funciona mesmo sem MongoDB)
+  const pins = await getPinsAdmin();
 
   if (pin === pins.dono) {
     const token = gerarToken({ role: "dono" });
@@ -912,7 +951,7 @@ app.put("/pedidos/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
 });
 
 // ── WHATSAPP STATUS API ───────────────────────────────────────
-app.get("/whatsapp/status", (req, res) => res.json({ status: whatsappStatus }));
+app.get("/whatsapp/status", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json({ status: whatsappStatus }));
 
 app.post("/whatsapp/logout", authMiddleware(["dono"]), async (req, res) => {
   try {
@@ -955,9 +994,12 @@ app.delete("/cupons/:codigo", authMiddleware(["dono"]), async (req, res) => {
   const removido = idx !== -1 ? cupons.splice(idx, 1)[0] : { codigo };
   res.json({ ok: true, removido });
 });
-app.post("/cupons/validar", (req, res) => {
-  const resultado = aplicarCupom(req.body.subtotal || 0, req.body.codigo);
-  res.json(resultado);
+app.post("/cupons/validar", authMiddleware(["dono"]), (req, res) => {
+  const { codigo, subtotal } = req.body;
+  if (typeof codigo !== "string" || !codigo.trim()) return res.status(400).json({ erro: "codigo invalido" });
+  const sub = Number(subtotal);
+  if (!Number.isFinite(sub) || sub < 0) return res.status(400).json({ erro: "subtotal invalido" });
+  res.json(aplicarCupom(sub, codigo));
 });
 
 // ── AVALIAÇÕES API ────────────────────────────────────────────
@@ -1044,11 +1086,76 @@ app.delete("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
 // ── CONFIG API ────────────────────────────────────────────────
 app.get("/config", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json(CONFIG));
 async function salvarConfig() { try { await ConfigDB.updateOne({ chave: "config" }, { valor: CONFIG }, { upsert: true }); } catch (e) { console.error("Erro ao salvar config:", e.message); } }
+// ── Validadores de config ────────────────────────────────────
+function numOr(valor, atual, { min = 0, max = Infinity } = {}) {
+  const n = Number(valor);
+  if (!Number.isFinite(n) || n < min || n > max) return atual; // mantem o valor antigo se invalido
+  return n;
+}
+
+const HORA_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+function sanearHorario(entrada, atual) {
+  const out = { ...atual };
+  for (const [dia, h] of Object.entries(entrada || {})) {
+    if (!/^[0-6]$/.test(String(dia)) || !h || typeof h !== "object") continue;
+    const base = atual?.[dia] || { aberto: false, abertura: "18:00", fechamento: "23:00" };
+    out[dia] = {
+      aberto: h.aberto === true || h.aberto === "true",
+      abertura:   HORA_RE.test(h.abertura)   ? h.abertura   : base.abertura,
+      fechamento: HORA_RE.test(h.fechamento) ? h.fechamento : base.fechamento,
+    };
+  }
+  return out;
+}
+
 app.put("/config", authMiddleware(["dono"]), async (req, res) => {
-  const allowed = ["nomeEstabelecimento", "nomeAgente", "taxaEntrega", "tempoEntregaMin", "tempoEntregaMax", "entregaCEP"];
-  const update = {};
-  for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
-  CONFIG = { ...CONFIG, ...update };
+  const b = req.body || {};
+  const novo = { ...CONFIG };
+
+  // Campos simples
+  if (typeof b.nomeEstabelecimento === "string") novo.nomeEstabelecimento = b.nomeEstabelecimento.slice(0, 120);
+  if (typeof b.nomeAgente === "string")          novo.nomeAgente          = b.nomeAgente.slice(0, 60);
+
+  // Numericos — invalido mantem o valor anterior (evita NaN quebrando o bot)
+  if (b.taxaEntrega      !== undefined) novo.taxaEntrega      = numOr(b.taxaEntrega,      CONFIG.taxaEntrega,      { max: 999 });
+  if (b.tempoEntregaMin  !== undefined) novo.tempoEntregaMin  = numOr(b.tempoEntregaMin,  CONFIG.tempoEntregaMin,  { min: 1, max: 600 });
+  if (b.tempoEntregaMax  !== undefined) novo.tempoEntregaMax  = numOr(b.tempoEntregaMax,  CONFIG.tempoEntregaMax,  { min: 1, max: 600 });
+
+  if (b.entregaCEP && typeof b.entregaCEP === "object") {
+    novo.entregaCEP = { ...CONFIG.entregaCEP, ...b.entregaCEP };
+  }
+
+  // Blocos que antes eram DESCARTADOS silenciosamente
+  if (b.horarioFuncionamento && typeof b.horarioFuncionamento === "object") {
+    novo.horarioFuncionamento = sanearHorario(b.horarioFuncionamento, CONFIG.horarioFuncionamento);
+  }
+
+  if (b.mensagensAutomaticas && typeof b.mensagensAutomaticas === "object") {
+    novo.mensagensAutomaticas = { ...CONFIG.mensagensAutomaticas, ...b.mensagensAutomaticas };
+    novo.mensagensAutomaticas.ativo = b.mensagensAutomaticas.ativo !== false;
+  }
+
+  if (b.fidelidade && typeof b.fidelidade === "object") {
+    novo.fidelidade = { ...CONFIG.fidelidade, ...b.fidelidade };
+    novo.fidelidade.ativo = b.fidelidade.ativo !== false;
+    // min 1: zero causava divisao por zero -> "Faltam NaN para ganhar"
+    novo.fidelidade.pedidosParaGanhar = numOr(b.fidelidade.pedidosParaGanhar, CONFIG.fidelidade.pedidosParaGanhar, { min: 1, max: 999 });
+  }
+
+  if (b.avaliacao && typeof b.avaliacao === "object") {
+    novo.avaliacao = { ...CONFIG.avaliacao, ...b.avaliacao };
+    novo.avaliacao.ativo = b.avaliacao.ativo !== false;
+    // max 1440 (24h): acima de ~24.8 dias estoura o int32 do setTimeout e dispara na hora
+    novo.avaliacao.delayMinutos = numOr(b.avaliacao.delayMinutos, CONFIG.avaliacao.delayMinutos, { min: 1, max: 1440 });
+  }
+
+  if (b.modoEvento && typeof b.modoEvento === "object") {
+    novo.modoEvento = { ...CONFIG.modoEvento, ...b.modoEvento };
+    novo.modoEvento.ativo    = b.modoEvento.ativo === true    || b.modoEvento.ativo === "true";
+    novo.modoEvento.agendado = b.modoEvento.agendado === true || b.modoEvento.agendado === "true";
+  }
+
+  CONFIG = novo;
   await salvarConfig();
   res.json(CONFIG);
 });
@@ -1387,6 +1494,11 @@ app.post("/garcons", authMiddleware(["dono"]), async (req, res) => {
   if (!nome || !pin) return res.status(400).json({ erro: "nome e pin são obrigatórios" });
   if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter exatamente 4 dígitos" });
   try {
+    // Impede escalacao de privilegio: garcom com PIN de dono/caixa logaria como admin
+    const pinsAdmin = await getPinsAdmin();
+    if (pin === pinsAdmin.dono || pin === pinsAdmin.caixa) {
+      return res.status(400).json({ erro: "Esse PIN esta reservado para dono/caixa. Escolha outro." });
+    }
     const existe = await GarcomDB.findOne({ pin });
     if (existe) return res.status(400).json({ erro: "Esse PIN já está em uso por outro garçom" });
     const garcom = await GarcomDB.create({ nome: nome.trim(), pin, ativo: true });
@@ -1399,14 +1511,20 @@ app.put("/garcons/:id", authMiddleware(["dono"]), async (req, res) => {
   const { nome, pin, ativo } = req.body;
   const update = {};
   if (nome) update.nome = nome.trim();
-  if (ativo !== undefined) update.ativo = ativo;
-  if (pin) {
-    if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN inválido" });
-    const existe = await GarcomDB.findOne({ pin, _id: { $ne: req.params.id } });
-    if (existe) return res.status(400).json({ erro: "PIN já em uso" });
-    update.pin = pin;
-  }
+  // Coerce explicito: a string "false" vinda do JSON gravava true no boolean
+  if (ativo !== undefined) update.ativo = (ativo === true || ativo === "true");
   try {
+    if (pin) {
+      if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN inválido" });
+      // Impede escalacao de privilegio via troca de PIN
+      const pinsAdmin = await getPinsAdmin();
+      if (pin === pinsAdmin.dono || pin === pinsAdmin.caixa) {
+        return res.status(400).json({ erro: "Esse PIN esta reservado para dono/caixa. Escolha outro." });
+      }
+      const existe = await GarcomDB.findOne({ pin, _id: { $ne: req.params.id } });
+      if (existe) return res.status(400).json({ erro: "PIN já em uso" });
+      update.pin = pin;
+    }
     const g = await GarcomDB.findByIdAndUpdate(req.params.id, update, { new: true }).lean();
     if (!g) return res.status(404).json({ erro: "Garçom não encontrado" });
     const obj = { ...g }; delete obj.pin;
