@@ -16,36 +16,17 @@ const ESC = 0x1b, GS = 0x1d, LF = 0x0a;
 const cmd = (...bytes) => new Uint8Array(bytes);
 
 const INIT          = cmd(ESC, 0x40);
-const CODEPAGE_850  = cmd(ESC, 0x74, 0x02); // Latin Português
 const ALIGN_LEFT    = cmd(ESC, 0x61, 0x00);
 const ALIGN_CENTER  = cmd(ESC, 0x61, 0x01);
 const ALIGN_RIGHT   = cmd(ESC, 0x61, 0x02);
 const BOLD_ON       = cmd(ESC, 0x45, 0x01);
 const BOLD_OFF      = cmd(ESC, 0x45, 0x00);
 const SIZE_NORMAL   = cmd(GS, 0x21, 0x00);
-const SIZE_DOUBLE_W = cmd(GS, 0x21, 0x10);
 const SIZE_DOUBLE_H = cmd(GS, 0x21, 0x01);
-const SIZE_DOUBLE   = cmd(GS, 0x21, 0x11);
 const NL            = cmd(LF);
 const FEED          = (n = 3) => cmd(ESC, 0x64, n);
 const CUT           = cmd(GS, 0x56, 0x42, 0x00);
 
-// ── Conversão de texto pra CP850 (suporta acentos PT-BR) ──
-const CP850_MAP = {
-  "á":0xa0, "à":0x85, "â":0x83, "ã":0xc6, "ä":0x84,
-  "Á":0xb5, "À":0xb7, "Â":0xb6, "Ã":0xc7, "Ä":0x8e,
-  "é":0x82, "è":0x8a, "ê":0x88, "ë":0x89,
-  "É":0x90, "È":0xd4, "Ê":0xd2, "Ë":0xd3,
-  "í":0xa1, "ì":0x8d, "î":0x8c, "ï":0x8b,
-  "Í":0xd6, "Ì":0xde, "Î":0xd7, "Ï":0xd8,
-  "ó":0xa2, "ò":0x95, "ô":0x93, "õ":0xe4, "ö":0x94,
-  "Ó":0xe0, "Ò":0xe3, "Ô":0xe2, "Õ":0xe5, "Ö":0x99,
-  "ú":0xa3, "ù":0x97, "û":0x96, "ü":0x81,
-  "Ú":0xe9, "Ù":0xeb, "Û":0xea, "Ü":0x9a,
-  "ç":0x87, "Ç":0x80,
-  "ñ":0xa4, "Ñ":0xa5,
-  "°":0xf8,
-};
 
 // Remove acentos via NFD (mais confiável que CP850 em impressoras chinesas genéricas)
 function removerAcentos(texto) {
@@ -77,6 +58,7 @@ class ImpressoraBT {
     this.listeners = new Set();
     this.tentandoReconectar = false;
     this.wakeLock = null;
+    this._onDisconnect = null; // referencia do handler p/ poder remover depois
     this._setupVisibilityListener();
   }
 
@@ -147,12 +129,20 @@ class ImpressoraBT {
     this.characteristic = chars.find(c => c.properties.writeWithoutResponse) || chars.find(c => c.properties.write);
     if (!this.characteristic) throw new Error("Característica de escrita não encontrada");
 
-    this.device.addEventListener("gattserverdisconnected", () => {
+    // _setupConexao roda tanto em conectar() quanto em reconectarAuto(), e o
+    // reconectarAuto recupera o MESMO objeto BluetoothDevice via getDevices().
+    // Sem remover o handler anterior, os listeners acumulavam: apos N
+    // reconexoes, uma unica queda disparava N callbacks -> N reconexoes
+    // concorrentes travando o GATT.
+    if (this._onDisconnect) {
+      try { this.device.removeEventListener("gattserverdisconnected", this._onDisconnect); } catch {}
+    }
+    this._onDisconnect = () => {
       this.characteristic = null;
       this._notify();
-      // Tenta reconectar automaticamente após desconexão
       setTimeout(() => this.reconectarAuto().catch(() => {}), 2000);
-    });
+    };
+    this.device.addEventListener("gattserverdisconnected", this._onDisconnect);
   }
 
   async conectar() {

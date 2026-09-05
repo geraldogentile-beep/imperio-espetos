@@ -11,12 +11,10 @@ import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
 import fs from "fs";
-import path from "path";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import crypto from "crypto";
 
 const app = express();
 

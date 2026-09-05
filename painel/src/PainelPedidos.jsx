@@ -42,8 +42,6 @@ const STATUS_CONFIG = {
   cancelado:  { label: "Cancelado",  color: "#ef4444", bg: "#fee2e2", icon: "❌" },
 };
 
-const hoje = new Date();
-function diasAtras(n) { const d = new Date(hoje); d.setDate(d.getDate() - n); return d.toISOString(); }
 function isMesmosDias(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
 
 const MOCK_PEDIDOS    = [];
@@ -90,6 +88,19 @@ const DEFAULT_CONFIG = {
 
 // ── HELPERS ───────────────────────────────────────────────────
 const TAXA_ENTREGA_PADRAO = 5;
+// Abre janela de impressao verificando bloqueio de popup.
+// Antes: window.open devolvia null (iOS/Safari, bloqueador ativo) e o
+// win.document.write seguinte lancava TypeError. Em imprimirCozinha e no
+// fechamento isso acontecia DEPOIS de gravar a venda, travando a UI no meio.
+function abrirJanelaImpressao(dimensoes = "width=400,height=600") {
+  const win = window.open("", "_blank", dimensoes);
+  if (!win) {
+    alert("Nao foi possivel abrir a janela de impressao. Libere os pop-ups para este site nas configuracoes do navegador.");
+    return null;
+  }
+  return win;
+}
+
 function calcTotal(itens = [], desconto = 0, taxa = TAXA_ENTREGA_PADRAO) {
   return itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0) + (Number(taxa) || 0) - (desconto || 0);
 }
@@ -115,7 +126,6 @@ function corAvatar(nome) {
   let h = 0; for (const x of nome) h = x.charCodeAt(0) + ((h << 5) - h);
   return cores[Math.abs(h) % cores.length];
 }
-function estrelas(nota) { return "⭐".repeat(nota) + "☆".repeat(5 - nota); }
 
 // ── COMPONENTES BASE ──────────────────────────────────────────
 function Badge({ status }) {
@@ -2215,7 +2225,8 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   }
 
   function imprimirFechamento(f) {
-    const win = window.open("","_blank","width=480,height=700");
+    const win = abrirJanelaImpressao("width=480,height=700");
+    if (!win) return;
     const dataFmt = new Date(f.data).toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric"});
     const horaFmt = new Date(f.data).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
     win.document.write(`<!DOCTYPE html><html>
@@ -2393,7 +2404,6 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 }
 
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
-function totMesaRel(m) { return totMesaCompleta(m); }
 
 // ── DASHBOARD COM GRÁFICOS ────────────────────────────────────
 function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
@@ -2702,7 +2712,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           {/* Resumo */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Metrica icon="🧾" label="Vendas hoje" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "mesas fechadas"} cor="#7b1a0a" />
-            <Metrica icon="💰" label="Total salão" valor={"R$ " + (faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaRel(m),0)).toFixed(2)} cor="#10b981" />
+            <Metrica icon="💰" label="Total salão" valor={"R$ " + (faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0)).toFixed(2)} cor="#10b981" />
             <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(historicoSalao.map(v=>v.garcom).filter(g=>g!=="—"))].length || "—"} cor="#3b82f6" />
           </div>
 
@@ -2780,7 +2790,8 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                       <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.grayL}`, display:"flex", gap:8 }}>
                         <button onClick={(e)=>{
                           e.stopPropagation();
-                          const win = window.open('','_blank','width=400,height=600');
+                          const win = abrirJanelaImpressao('width=400,height=600');
+                          if (!win) return;
                           win.document.write(`<!DOCTYPE html><html><head><title>Venda Mesa ${v.mesa}</title><style>
                             body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
                             h2{text-align:center;font-size:16px;margin-bottom:4px}
@@ -3328,8 +3339,6 @@ const CARDAPIO_SALAO = [
   { id:36, cat:"Energético",      nome:"Monster",                 preco:12.00 },
 ];
 
-const PIN_GARCOM = "1234";
-const PIN_CAIXA  = "5678";
 
 const STATUS_MESA = {
   livre:    { c:"#10b981", bg:"#d1fae5", e:"🍽️", l:"Livre"    },
@@ -3368,55 +3377,6 @@ function tempoAberto(abertura) {
   if(!abertura) return null;
   const m = Math.floor((Date.now()-new Date(abertura))/60000);
   if(m<60) return m+"min"; return Math.floor(m/60)+"h"+(m%60>0?(m%60)+"min":"");
-}
-
-// ── PIN LOGIN ─────────────────────────────────────────────────
-function PinLogin({ onLogin }) {
-  const [pin, setPin] = useState("");
-  const [erro, setErro] = useState(false);
-
-  function digitar(n) {
-    if(pin.length>=4) return;
-    const novo = pin+n;
-    setPin(novo);
-    setErro(false);
-    if(novo.length===4) {
-      setTimeout(()=>{
-        if(novo===PIN_GARCOM) onLogin("garcom");
-        else if(novo===PIN_CAIXA) onLogin("caixa");
-        else { setErro(true); setPin(""); }
-      }, 200);
-    }
-  }
-
-  return (
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 20px",minHeight:400}}>
-      <div style={{fontSize:48,marginBottom:8}}>🍽️</div>
-      <div style={{fontWeight:800,fontSize:20,color:"#1a1a1a",marginBottom:4}}>Acesso ao Salão</div>
-      <div style={{fontSize:13,color:"#888",marginBottom:24}}>Digite o PIN para continuar</div>
-      <div style={{display:"flex",gap:12,marginBottom:8}}>
-        {[0,1,2,3].map(i=>(
-          <div key={i} style={{width:16,height:16,borderRadius:"50%",background:i<pin.length?"#7b1a0a":"#e0e0e0",transition:"background 0.15s"}}/>
-        ))}
-      </div>
-      {erro && <div style={{color:"#ef4444",fontSize:12,fontWeight:600,marginBottom:8}}>❌ PIN incorreto</div>}
-      {!erro && <div style={{fontSize:12,color:"#bbb",marginBottom:16,height:20}}>{pin.length>0?"•".repeat(pin.length)+" "+"○".repeat(4-pin.length):""}</div>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,width:220,marginBottom:16}}>
-        {[1,2,3,4,5,6,7,8,9].map(n=>(
-          <button key={n} onClick={()=>digitar(String(n))} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:22,fontWeight:700,color:"#1a1a1a",cursor:"pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}}>
-            {n}
-          </button>
-        ))}
-        <div/>
-        <button onClick={()=>digitar("0")} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:22,fontWeight:700,color:"#1a1a1a",cursor:"pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}}>0</button>
-        <button onClick={()=>setPin(p=>p.slice(0,-1))} style={{height:56,borderRadius:12,border:"1.5px solid #e0e0e0",background:"#f8f8f8",fontSize:18,color:"#888",cursor:"pointer"}}>⌫</button>
-      </div>
-      <div style={{display:"flex",gap:10}}>
-        <div style={{background:"#f5f5f5",borderRadius:10,padding:"5px 12px",fontSize:11,color:"#888"}}>🧑‍🍳 Garçom: 1234</div>
-        <div style={{background:"#f5f5f5",borderRadius:10,padding:"5px 12px",fontSize:11,color:"#888"}}>💁‍♀️ Caixa: 5678</div>
-      </div>
-    </div>
-  );
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
@@ -3522,6 +3482,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const [pagSalao, setPagSalao] = useState("pix");
   const [divSalao, setDivSalao] = useState(1);
   const [selSC, setSelSC] = useState(0); // índice da sub-comanda ativa
+  const fechandoRef = useRef(false); // trava contra duplo clique em fechar mesa/comanda
   const [toastSalao, setToastSalao] = useState(null);
 
   const cardapio = (cardapioExterno && cardapioExterno.length > 0)
@@ -3538,11 +3499,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const sc = mesa?.subComandas?.[scIdx] || initSubComanda(1);
 
   // Atualiza apenas a sub-comanda ativa
-  function updSC(novoSC) {
-    const scs = [...(mesa.subComandas||[initSubComanda(1)])];
-    scs[scIdx] = novoSC;
-    upd({...mesa, subComandas: scs});
-  }
 
   function addItem(item){
     const precoAgora = precoItem(item);
@@ -3597,7 +3553,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     }
 
     // Fallback: janela do navegador
-    const win = window.open('','_blank','width=360,height=520');
+    const win = abrirJanelaImpressao('width=360,height=520');
+    if (!win) return;
     win.document.write(`<!DOCTYPE html><html>
 <head><title>Cozinha — Mesa ${mesaId}</title>
 <style>
@@ -3634,6 +3591,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   }
 
   async function fecharComanda(idxSC, pagamento){
+    // Duplo clique no botao criava DUAS vendas no banco
+    if (fechandoRef.current) return;
+    fechandoRef.current = true;
     const scFechando = mesa.subComandas[idxSC];
     const todosItens = [...(scFechando.rodadas||[]).flatMap(r=>r.itens), ...scFechando.itens].reduce((acc,it)=>{
       const ex=acc.find(i=>i.id===it.id); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
@@ -3652,10 +3612,24 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       abertura: scFechando.abertura||mesa.abertura,
       fechamento: new Date().toISOString(),
     };
+    // Antes: erro no POST era só console.warn e a mesa era liberada mesmo assim.
+    // A venda existia no painel e NAO no banco -> divergia do fechamento do dia.
     try {
       const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
-      if(res.ok){const salvo=await res.json();registro._id=salvo._id;}
-    } catch(e){console.warn("Falha ao salvar venda:",e);}
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({}));
+        msgSalao(`❌ Nao foi possivel registrar a venda: ${err.erro || res.status}`, "#ef4444");
+        fechandoRef.current = false;
+        return;
+      }
+      const salvo = await res.json();
+      registro._id = salvo._id;
+    } catch(e){
+      console.error("Falha ao salvar venda:", e);
+      msgSalao("❌ Sem conexao com o servidor. A mesa NAO foi fechada.", "#ef4444");
+      fechandoRef.current = false;
+      return;
+    }
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
     setFaturado(f=>f+totalSC);
 
@@ -3678,10 +3652,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       setTelaSalao("comanda");
     }
     msgSalao(`✅ ${scFechando.label} fechada! ${fmtR(totalSC)}`);
+    fechandoRef.current = false;
     setDivSalao(1);
   }
 
   async function fecharMesa(){
+    if (fechandoRef.current) return; // evita venda duplicada por duplo clique
+    fechandoRef.current = true;
     // Fecha todas as comandas de uma vez
     const todosItens = (mesa.subComandas||[]).flatMap(sc=>[...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens])
       .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
@@ -3693,7 +3670,22 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       itens:todosItens, total:totalMesa, pagamento:pagSalao,
       abertura:mesa.abertura, fechamento:new Date().toISOString(),
     };
-    try{const res=await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});if(res.ok){const salvo=await res.json();registro._id=salvo._id;}}catch(e){console.warn(e);}
+    try {
+      const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({}));
+        msgSalao(`❌ Nao foi possivel registrar a venda: ${err.erro || res.status}`, "#ef4444");
+        fechandoRef.current = false;
+        return;
+      }
+      const salvo = await res.json();
+      registro._id = salvo._id;
+    } catch(e) {
+      console.error("Falha ao salvar venda:", e);
+      msgSalao("❌ Sem conexao com o servidor. A mesa NAO foi fechada.", "#ef4444");
+      fechandoRef.current = false;
+      return;
+    }
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
     setFaturado(f=>f+totalMesa);
 
@@ -3706,6 +3698,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
     upd(initMesa(mesa.id-1));
     setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
+    fechandoRef.current = false;
   }
 
   const totalAcumulado = totMesaCompleta(mesa||{subComandas:[]});
@@ -3722,7 +3715,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const BP2 = (bg,flex=false)=>({background:bg,color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:800,fontSize:14,cursor:"pointer",...(flex?{flex:1}:{width:"100%"})});
   const card2 = {background:"#fff",borderRadius:14,padding:"14px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:10};
 
-  if(!perfil) return <PinLogin onLogin={setPerfil} />;
 
   // TELA ADICIONAR
   if(telaSalao==="adicionar") {
@@ -3870,7 +3862,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               }
             }
 
-            const win = window.open('','_blank','width=400,height=600');
+            const win = abrirJanelaImpressao('width=400,height=600');
+            if (!win) return;
             win.document.write(`<!DOCTYPE html><html><head><title>Comanda Mesa ${mesa.id}</title><style>
               body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
               h2{text-align:center;font-size:16px;margin-bottom:4px}
@@ -4064,7 +4057,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                     }
                   }
 
-                  const win = window.open('','_blank','width=400,height=650');
+                  const win = abrirJanelaImpressao('width=400,height=650');
+                  if (!win) return;
                   const agora = new Date();
                   win.document.write(`<!DOCTYPE html><html>
 <head><title>Comanda Mesa ${mesa.id}</title>
