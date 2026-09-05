@@ -720,6 +720,153 @@ function BotaoEmitirNota({ venda, onEmitido }) {
   );
 }
 
+// ── CERTIFICADO DIGITAL A1 ────────────────────────────────────
+function CertificadoConfig() {
+  const [status, setStatus] = useState(null);
+  const [arquivo, setArquivo] = useState(null);
+  const [senha, setSenha] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  function showMsg(texto, tipo = "ok") { setMsg({ texto, tipo }); setTimeout(() => setMsg(null), 6000); }
+
+  async function carregar() {
+    try {
+      const r = await authFetch(BACKEND_URL + "/fiscal/certificado");
+      if (r.ok) setStatus(await r.json());
+    } catch {}
+  }
+  useEffect(() => { carregar(); }, []);
+
+  async function enviar() {
+    if (!arquivo) return showMsg("Selecione o arquivo .pfx ou .p12", "erro");
+    if (!senha) return showMsg("Informe a senha do certificado", "erro");
+    setEnviando(true);
+    try {
+      // Converte o arquivo para base64 sem estourar a pilha em arquivos maiores
+      const buf = await arquivo.arrayBuffer();
+      let bin = "";
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i += 8192) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      }
+      const base64 = btoa(bin);
+
+      const r = await authFetch(BACKEND_URL + "/fiscal/certificado", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ certBase64: base64, senha }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { showMsg(d.erro || "Falha ao enviar o certificado", "erro"); }
+      else {
+        showMsg(`Certificado de ${d.titular} instalado! Valido ate ${new Date(d.validoAte).toLocaleDateString("pt-BR")}.`);
+        setArquivo(null); setSenha("");
+        await carregar();
+      }
+    } catch (e) {
+      showMsg("Erro ao processar o arquivo: " + e.message, "erro");
+    }
+    setEnviando(false);
+  }
+
+  async function testar() {
+    try {
+      const r = await authFetch(BACKEND_URL + "/fiscal/certificado/testar", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) showMsg(`OK — ${d.titular} (CNPJ ${d.cnpj || "n/d"})`);
+      else showMsg(d.erro || "Falha no teste", "erro");
+    } catch { showMsg("Erro de conexao", "erro"); }
+  }
+
+  async function remover() {
+    if (!window.confirm("Remover o certificado? Sera necessario enviar o arquivo de novo para emitir notas.")) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/fiscal/certificado", { method: "DELETE" });
+      if (r.ok) { showMsg("Certificado removido."); await carregar(); }
+    } catch { showMsg("Erro ao remover", "erro"); }
+  }
+
+  const inp = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🔐 Certificado Digital A1</div>
+
+      {/* Alerta se a chave de cifra nao estiver no servidor */}
+      {status && status.chaveCifraOk === false && (
+        <div style={{ background: "#fee2e2", border: "1px solid #ef4444", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#991b1b", lineHeight: 1.6 }}>
+          ⚠️ <strong>CERT_ENCRYPTION_KEY nao configurada no servidor.</strong><br />
+          Sem ela o certificado nao pode ser guardado com seguranca. Adicione a variavel no .env do backend e reinicie.
+        </div>
+      )}
+
+      {/* Status atual */}
+      {status?.configurado ? (
+        <div style={{
+          padding: 12, borderRadius: 10,
+          background: status.vencido ? "#fee2e2" : status.vencendo ? "#fef3c7" : "#d1fae5",
+          border: "1.5px solid " + (status.vencido ? "#ef4444" : status.vencendo ? "#f59e0b" : "#10b981"),
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: status.vencido ? "#991b1b" : status.vencendo ? "#92400e" : "#065f46" }}>
+            {status.vencido ? "❌ Certificado VENCIDO" : status.vencendo ? "⚠️ Vencendo em breve" : "✅ Certificado instalado"}
+          </div>
+          <div style={{ fontSize: 12, color: "#555", marginTop: 6, lineHeight: 1.7 }}>
+            <strong>{status.titular}</strong><br />
+            {status.cnpj && <>CNPJ: {status.cnpj}<br /></>}
+            Valido ate: <strong>{status.validoAte ? new Date(status.validoAte).toLocaleDateString("pt-BR") : "—"}</strong>
+            {status.diasRestantes !== null && !status.vencido && ` (${status.diasRestantes} dias)`}
+            {status.emissor && <><br />Emissor: {status.emissor}</>}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+            <button onClick={testar} style={{ flex: 1, background: "#eff6ff", color: "#1d4ed8", border: "1px solid #bfdbfe", borderRadius: 8, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              Testar leitura
+            </button>
+            <button onClick={remover} style={{ background: "#fee2e2", color: "#ef4444", border: "1px solid #fca5a5", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              Remover
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding: 12, borderRadius: 10, background: "#f5f5f5", border: "1.5px solid #e0e0e0", fontSize: 13, color: "#666" }}>
+          Nenhum certificado instalado.
+        </div>
+      )}
+
+      {/* Upload */}
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>
+          {status?.configurado ? "Substituir certificado" : "Enviar certificado"}
+        </div>
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Arquivo .pfx ou .p12</div>
+        <input type="file" accept=".pfx,.p12" onChange={e => setArquivo(e.target.files?.[0] || null)}
+          style={{ ...inp, padding: "7px", fontSize: 12 }} />
+        <div style={{ fontSize: 11, color: "#888", margin: "8px 0 3px" }}>Senha do certificado</div>
+        <input type="password" value={senha} onChange={e => setSenha(e.target.value)} placeholder="senha do arquivo" style={inp} />
+        <button onClick={enviar} disabled={enviando || !arquivo || !senha}
+          style={{
+            width: "100%", marginTop: 10, background: (enviando || !arquivo || !senha) ? "#ccc" : "linear-gradient(135deg,#7b1a0a,#c0392b)",
+            color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 14,
+            cursor: (enviando || !arquivo || !senha) ? "not-allowed" : "pointer",
+          }}>
+          {enviando ? "Validando e enviando..." : "🔐 Instalar certificado"}
+        </button>
+      </div>
+
+      {msg && (
+        <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 12, fontWeight: 600, lineHeight: 1.5 }}>
+          {msg.texto}
+        </div>
+      )}
+
+      <div style={{ background: "#faf9f8", borderRadius: 10, padding: "10px 12px", fontSize: 11, color: "#888", lineHeight: 1.6 }}>
+        🔒 O arquivo e a senha sao <strong>cifrados (AES-256-GCM)</strong> antes de ir para o banco. A chave de cifra
+        fica so no servidor, numa variavel de ambiente — um backup do banco, sozinho, nao permite assinar nada.<br /><br />
+        A senha e validada de verdade na hora do envio: se estiver errada, o arquivo nem abre e o envio e recusado.
+      </div>
+    </div>
+  );
+}
+
 // ── CONFIGURAÇÃO FISCAL (NFC-e) ───────────────────────────────
 function FiscalConfig() {
   const [cfg, setCfg] = useState(null);
@@ -2443,6 +2590,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
 
       {subAba === "fiscal" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <CertificadoConfig />
           <FiscalConfig />
           <ResumoFiscal />
         </div>

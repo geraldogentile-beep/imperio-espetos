@@ -13,6 +13,8 @@ import qrcode from "qrcode";
 import fs from "fs";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
+import forge from "node-forge";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 
@@ -1836,6 +1838,219 @@ app.get("/fechamento-dia/:dataStr", authMiddleware(["dono", "caixa"]), async (re
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
+
+
+// ══════════════════════════════════════════════════════════════
+// CERTIFICADO DIGITAL A1 — armazenamento cifrado
+// ══════════════════════════════════════════════════════════════
+// O .pfx e a senha ficam cifrados no MongoDB com AES-256-GCM.
+// A chave de cifra vive SÓ na env var CERT_ENCRYPTION_KEY, nunca no banco.
+// Assim um dump do Mongo, sozinho, não permite assinar nada em nome da empresa.
+
+function getChaveCifra() {
+  const hex = process.env.CERT_ENCRYPTION_KEY || "";
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(
+      "CERT_ENCRYPTION_KEY ausente ou invalida. " +
+      "Gere com: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\" " +
+      "e coloque no .env do backend."
+    );
+  }
+  return Buffer.from(hex, "hex");
+}
+
+// AES-256-GCM: além de cifrar, autentica — se o dado for adulterado no banco,
+// o decifrar falha em vez de devolver lixo.
+function cifrar(textoOuBuffer) {
+  const chave = getChaveCifra();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", chave, iv);
+  const dados = Buffer.isBuffer(textoOuBuffer) ? textoOuBuffer : Buffer.from(String(textoOuBuffer), "utf8");
+  const cifrado = Buffer.concat([cipher.update(dados), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return { iv: iv.toString("base64"), tag: tag.toString("base64"), dados: cifrado.toString("base64") };
+}
+
+function decifrar(pacote, comoBuffer = false) {
+  const chave = getChaveCifra();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", chave, Buffer.from(pacote.iv, "base64"));
+  decipher.setAuthTag(Buffer.from(pacote.tag, "base64"));
+  const aberto = Buffer.concat([decipher.update(Buffer.from(pacote.dados, "base64")), decipher.final()]);
+  return comoBuffer ? aberto : aberto.toString("utf8");
+}
+
+// ── Leitura do PKCS#12 ────────────────────────────────────────
+// Abre o .pfx de verdade. Se a senha estiver errada, o forge lança —
+// é assim que validamos de fato (em vez de só aceitar e quebrar depois).
+function lerCertificadoA1(pfxBuffer, senha) {
+  const p12Der = forge.util.createBuffer(pfxBuffer.toString("binary"));
+  const p12Asn1 = forge.asn1.fromDer(p12Der);
+  let p12;
+  try {
+    p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, senha);
+  } catch (e) {
+    throw new Error("Senha do certificado incorreta ou arquivo invalido.");
+  }
+
+  // Certificado X.509
+  const certBags = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag] || [];
+  if (!certBags.length) throw new Error("Nenhum certificado encontrado no arquivo.");
+  const cert = certBags[0].cert;
+
+  // Chave privada
+  const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag]
+              || p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag]
+              || [];
+  if (!keyBags.length) throw new Error("Chave privada nao encontrada no certificado.");
+  const chavePrivada = keyBags[0].key;
+
+  // O CNPJ costuma vir no CN no formato "RAZAO SOCIAL:00000000000000"
+  const cn = cert.subject.getField("CN")?.value || "";
+  const cnpjMatch = cn.match(/:(\d{14})$/);
+
+  return {
+    cert,
+    chavePrivada,
+    pemCertificado: forge.pki.certificateToPem(cert),
+    pemChave: forge.pki.privateKeyToPem(chavePrivada),
+    titular: cn.split(":")[0] || cn,
+    cnpj: cnpjMatch ? cnpjMatch[1] : "",
+    validoDe: cert.validity.notBefore,
+    validoAte: cert.validity.notAfter,
+    emissor: cert.issuer.getField("CN")?.value || "",
+  };
+}
+
+// Carrega o certificado do banco já decifrado e pronto para assinar.
+// Usado na hora de emitir a nota.
+async function carregarCertificado() {
+  const doc = await ConfigDB.findOne({ chave: "certificado" }).lean();
+  if (!doc?.valor?.pfx) throw new Error("Certificado A1 nao configurado.");
+  const pfxBuffer = decifrar(doc.valor.pfx, true);
+  const senha = decifrar(doc.valor.senha);
+  return lerCertificadoA1(pfxBuffer, senha);
+}
+
+// ── ROTAS ─────────────────────────────────────────────────────
+
+// POST /fiscal/certificado — upload do .pfx em base64 + senha
+app.post("/fiscal/certificado", authMiddleware(["dono"]), async (req, res) => {
+  const { certBase64, senha } = req.body || {};
+  if (!certBase64 || typeof certBase64 !== "string") return res.status(400).json({ erro: "Envie o arquivo do certificado (base64)" });
+  if (!senha || typeof senha !== "string") return res.status(400).json({ erro: "Informe a senha do certificado" });
+
+  let pfxBuffer;
+  try {
+    pfxBuffer = Buffer.from(certBase64, "base64");
+  } catch {
+    return res.status(400).json({ erro: "Arquivo invalido" });
+  }
+  if (!pfxBuffer.length) return res.status(400).json({ erro: "Arquivo vazio" });
+  if (pfxBuffer.length > 512 * 1024) return res.status(400).json({ erro: "Arquivo muito grande para um certificado A1" });
+
+  // Valida de verdade: abre o PKCS#12 com a senha informada
+  let info;
+  try {
+    info = lerCertificadoA1(pfxBuffer, senha);
+  } catch (e) {
+    return res.status(400).json({ erro: e.message });
+  }
+
+  const agora = new Date();
+  if (info.validoAte < agora) {
+    return res.status(400).json({ erro: `Certificado vencido em ${info.validoAte.toLocaleDateString("pt-BR")}` });
+  }
+
+  try {
+    await ConfigDB.updateOne(
+      { chave: "certificado" },
+      {
+        valor: {
+          pfx: cifrar(pfxBuffer),
+          senha: cifrar(senha),
+          // Metadados em claro: não são segredo e evitam decifrar só para exibir
+          titular: info.titular,
+          cnpj: info.cnpj,
+          emissor: info.emissor,
+          validoDe: info.validoDe,
+          validoAte: info.validoAte,
+          atualizadoEm: agora,
+        },
+      },
+      { upsert: true }
+    );
+  } catch (e) {
+    // Falha típica aqui é CERT_ENCRYPTION_KEY ausente
+    console.error("Erro ao salvar certificado:", e.message);
+    return res.status(500).json({ erro: e.message });
+  }
+
+  const diasRestantes = Math.floor((info.validoAte - agora) / 86400000);
+  res.json({
+    ok: true,
+    titular: info.titular,
+    cnpj: info.cnpj,
+    emissor: info.emissor,
+    validoAte: info.validoAte,
+    diasRestantes,
+  });
+});
+
+// GET /fiscal/certificado — status (nunca devolve o .pfx nem a senha)
+app.get("/fiscal/certificado", authMiddleware(["dono"]), async (req, res) => {
+  try {
+    const doc = await ConfigDB.findOne({ chave: "certificado" }).lean();
+    if (!doc?.valor?.pfx) return res.json({ configurado: false });
+
+    const v = doc.valor;
+    const validoAte = v.validoAte ? new Date(v.validoAte) : null;
+    const diasRestantes = validoAte ? Math.floor((validoAte - new Date()) / 86400000) : null;
+
+    res.json({
+      configurado: true,
+      titular: v.titular || "",
+      cnpj: v.cnpj || "",
+      emissor: v.emissor || "",
+      validoDe: v.validoDe || null,
+      validoAte: v.validoAte || null,
+      diasRestantes,
+      vencido: diasRestantes !== null && diasRestantes < 0,
+      vencendo: diasRestantes !== null && diasRestantes >= 0 && diasRestantes <= 30,
+      atualizadoEm: v.atualizadoEm || null,
+      chaveCifraOk: /^[0-9a-fA-F]{64}$/.test(process.env.CERT_ENCRYPTION_KEY || ""),
+    });
+  } catch (e) {
+    console.error("Erro ao ler status do certificado:", e.message);
+    res.status(500).json({ erro: "Erro ao consultar certificado" });
+  }
+});
+
+// POST /fiscal/certificado/testar — confirma que dá para decifrar e abrir
+app.post("/fiscal/certificado/testar", authMiddleware(["dono"]), async (req, res) => {
+  try {
+    const info = await carregarCertificado();
+    res.json({
+      ok: true,
+      titular: info.titular,
+      cnpj: info.cnpj,
+      validoAte: info.validoAte,
+      mensagem: "Certificado decifrado e aberto com sucesso.",
+    });
+  } catch (e) {
+    res.status(400).json({ erro: e.message });
+  }
+});
+
+// DELETE /fiscal/certificado
+app.delete("/fiscal/certificado", authMiddleware(["dono"]), async (req, res) => {
+  try {
+    await ConfigDB.deleteOne({ chave: "certificado" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Erro ao remover certificado:", e.message);
+    res.status(500).json({ erro: "Erro ao remover certificado" });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════
 // NFC-e — CONFIGURAÇÃO E EMISSÃO
