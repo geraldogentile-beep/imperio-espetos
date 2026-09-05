@@ -585,11 +585,19 @@ Responda SEMPRE em português brasileiro.`;
 
 // ── CLAUDE API ────────────────────────────────────────────────
 async function chamarClaude(historico, tel) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": ENV.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: buildSystemPrompt(tel), messages: historico }),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45000); // 45s: evita request pendurada
+  let res;
+  try {
+    res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ENV.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: buildSystemPrompt(tel), messages: historico }),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     if (res.status === 429) throw new Error("Claude API: rate limit atingido. Tente novamente em instantes.");
     if (res.status === 401) throw new Error("Claude API: chave inválida. Verifique ANTHROPIC_KEY.");
@@ -597,6 +605,24 @@ async function chamarClaude(historico, tel) {
   }
   const data = await res.json();
   return data.content?.[0]?.text || "Desculpe, tive um probleminha. Pode repetir?";
+}
+
+// Valida o JSON que a IA emitiu antes de virar pedido no banco.
+// Sem isso, campo faltando ou valor absurdo gerava ValidationError e o
+// pedido era perdido em silencio DEPOIS do cliente ja ter sido confirmado.
+function validarPedidoIA(d) {
+  const erros = [];
+  if (!d || typeof d !== "object") return ["payload nao e objeto"];
+  if (!Array.isArray(d.itens) || d.itens.length === 0) erros.push("sem itens");
+  if (Array.isArray(d.itens) && d.itens.length > 50) erros.push("itens demais");
+  if (!d.cliente || typeof d.cliente !== "string" || !d.cliente.trim()) erros.push("sem cliente");
+  if (!d.endereco || typeof d.endereco !== "string" || !d.endereco.trim()) erros.push("sem endereco");
+  for (const it of (Array.isArray(d.itens) ? d.itens : [])) {
+    if (!it || typeof it.nome !== "string" || !it.nome.trim()) { erros.push("item sem nome"); break; }
+    const q = Number(it.qty);
+    if (it.qty !== undefined && (!Number.isFinite(q) || q <= 0)) { erros.push("qty invalida em " + it.nome); break; }
+  }
+  return erros;
 }
 
 function extrairPedido(texto) {
@@ -665,21 +691,39 @@ async function checarFidelidade(pedido) {
 }
 
 // ── BAILEYS — CONECTAR WHATSAPP ───────────────────────────────
-async function conectarWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
-  const { version } = await fetchLatestBaileysVersion();
+let conectandoWhatsApp = false;
 
-  sock = makeWASocket({
+async function conectarWhatsApp() {
+  // Guarda contra sockets duplicados: reconexao concorrente (close emitido 2x,
+  // ou logout + auto-reconnect) criava dois sockets vivos. Os dois handlers
+  // processavam a MESMA mensagem do cliente -> duas chamadas a IA -> dois pedidos.
+  if (conectandoWhatsApp) {
+    console.warn("Conexao WhatsApp ja em andamento, ignorando chamada duplicada");
+    return;
+  }
+  conectandoWhatsApp = true;
+  try {
+    // Encerra o socket anterior antes de abrir outro
+    if (sock) {
+      try { sock.ev.removeAllListeners(); } catch {}
+      try { sock.end(undefined); } catch {}
+      sock = null;
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const { version } = await fetchLatestBaileysVersion();
+
+    sock = makeWASocket({
     version,
     auth: state,
     printQRInTerminal: false,
     logger: pino({ level: "silent" }),
     browser: ["Imperio Espetos", "Chrome", "1.0.0"],
-  });
+    });
 
-  sock.ev.on("creds.update", saveCreds);
+    sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+    sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       console.log("📱 QR Code gerado — acesse /qrcode para escanear");
       qrCodeBase64 = await qrcode.toDataURL(qr);
@@ -696,7 +740,7 @@ async function conectarWhatsApp() {
         reconnectAttempts++;
         const delay = Math.min(5000 * Math.pow(2, reconnectAttempts - 1), 300000); // max 5min
         console.log(`🔌 Conexão fechada. Reconectando em ${delay/1000}s (tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-        setTimeout(conectarWhatsApp, delay);
+        setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha na reconexao:", e.message)); }, delay);
       } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
         console.error("❌ Máximo de tentativas de reconexão atingido. Reinicie o servidor.");
       }
@@ -708,10 +752,10 @@ async function conectarWhatsApp() {
       qrCodeBase64 = null;
       reconnectAttempts = 0; // reset no sucesso
     }
-  });
+    });
 
-  // Recebe mensagens
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    // Recebe mensagens
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
     for (const msg of messages) {
       if (msg.key.fromMe) continue;
@@ -746,38 +790,102 @@ async function conectarWhatsApp() {
 
         const dadosPedido = extrairPedido(resposta);
         if (dadosPedido) {
-          // Reforça preços do cardápio (promocional se em modo evento)
-          if (dadosPedido.itens?.length) {
-            dadosPedido.itens = dadosPedido.itens.map(it => {
-              const cardapioItem = CARDAPIO.find(c => c.nome.toLowerCase() === it.nome?.toLowerCase());
-              if (cardapioItem) return { ...it, preco: precoAtual(cardapioItem) };
-              return it;
-            });
-            const novoSubtotal = dadosPedido.itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0);
-            dadosPedido.subtotal = parseFloat(novoSubtotal.toFixed(2));
-            dadosPedido.total = parseFloat((novoSubtotal + CONFIG.taxaEntrega - (dadosPedido.desconto || 0)).toFixed(2));
+          // ── Validação do JSON gerado pela IA ──
+          // Antes: qualquer coisa que o modelo emitisse ia direto pro banco.
+          const erros = validarPedidoIA(dadosPedido);
+          if (erros.length) {
+            console.error(`Pedido invalido de ${tel}:`, erros.join(" | "));
+            await enviarMsg(tel, "😅 Tive um probleminha para registrar seu pedido. Pode confirmar os itens novamente, por favor?");
+            continue;
           }
+
+          // Reforça preços do cardápio (promocional se em modo evento).
+          // Item fora do cardápio é rejeitado: antes mantinha o preço inventado pela IA.
+          const itensValidados = [];
+          for (const it of dadosPedido.itens) {
+            const cardapioItem = CARDAPIO.find(c => c.nome.toLowerCase() === String(it.nome).toLowerCase());
+            if (!cardapioItem) {
+              console.error(`Item fora do cardapio recusado: "${it.nome}" (tel ${tel})`);
+              await enviarMsg(tel, `😕 Não encontrei *${it.nome}* no cardápio. Pode conferir o pedido?`);
+              itensValidados.length = 0;
+              break;
+            }
+            itensValidados.push({
+              nome: cardapioItem.nome,
+              qty: Math.min(99, Math.max(1, Math.floor(Number(it.qty) || 1))),
+              preco: precoAtual(cardapioItem),
+              obs: typeof it.obs === "string" ? it.obs.slice(0, 120) : undefined,
+            });
+          }
+          if (!itensValidados.length) continue;
+
+          const subtotal = itensValidados.reduce((s, i) => s + i.qty * i.preco, 0);
+
+          // Desconto só existe via cupom validado. Antes, o valor vinha direto da IA.
+          let desconto = 0;
+          let cupomAplicado = "";
           if (dadosPedido.cupom) {
-            const subtotal = dadosPedido.itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0);
-            const { desconto, cupom: cupomObj } = aplicarCupom(subtotal, dadosPedido.cupom);
-            dadosPedido.desconto = desconto;
-            dadosPedido.total = subtotal + CONFIG.taxaEntrega - desconto;
-            if (cupomObj) {
-              cupomObj.usoAtual += 1;
-              // Atualização atômica no DB para evitar race condition
-              try { await CupomDB.updateOne({ codigo: cupomObj.codigo }, { $inc: { usoAtual: 1 } }); } catch (e) { console.error("Erro ao incrementar uso do cupom:", e.message); }
+            const r = aplicarCupom(subtotal, String(dadosPedido.cupom));
+            if (r.erro) {
+              await enviarMsg(tel, `😕 O cupom *${dadosPedido.cupom}* não pôde ser aplicado: ${r.erro}`);
+            } else if (r.cupom) {
+              desconto = Math.min(r.desconto || 0, subtotal); // nunca maior que o subtotal
+              cupomAplicado = r.cupom.codigo;
             }
           }
-          const tempoPreparo = calcularTempoPreparo(dadosPedido.itens);
-          const pedidoId = String(counter++).padStart(5, "0");
-          const pedido = { id: pedidoId, ...dadosPedido, telefone: tel, tempoPreparo, status: "novo", horario: new Date().toISOString() };
+
+          const taxa = Number(CONFIG.taxaEntrega) || 0;
+          const total = Math.max(0, subtotal + taxa - desconto);
+          const tempoPreparo = calcularTempoPreparo(itensValidados);
+
+          // `id` DEPOIS do spread: antes, o JSON da IA podia sobrescrever o id
+          // gerado pelo counter (colisão de chave única = pedido perdido).
+          const pedido = {
+            cliente:  String(dadosPedido.cliente).slice(0, 120),
+            endereco: String(dadosPedido.endereco).slice(0, 250),
+            obs:      typeof dadosPedido.obs === "string" ? dadosPedido.obs.slice(0, 250) : "",
+            itens:    itensValidados,
+            subtotal: parseFloat(subtotal.toFixed(2)),
+            desconto: parseFloat(desconto.toFixed(2)),
+            cupom:    cupomAplicado,
+            total:    parseFloat(total.toFixed(2)),
+            id:       String(counter++).padStart(5, "0"),
+            telefone: tel,
+            tempoPreparo,
+            status:   "novo",
+            horario:  new Date().toISOString(),
+          };
+
+          // Só confirma ao cliente DEPOIS de persistir. Antes, o cliente recebia
+          // "pedido confirmado" e a cozinha nunca via o pedido se o create falhasse.
+          const mongoOk = mongoose.connection.readyState === 1;
+          if (mongoOk) {
+            try {
+              await PedidoDB.create(pedido);
+            } catch (e) {
+              console.error("FALHA AO SALVAR PEDIDO:", e.message, JSON.stringify(pedido));
+              await enviarMsg(tel, "😔 Não consegui registrar seu pedido agora. Pode tentar de novo em instantes?");
+              counter--; // devolve o numero para nao criar buraco na sequencia
+              continue;
+            }
+          } else {
+            console.warn("MongoDB offline — pedido salvo apenas em memoria:", pedido.id);
+          }
           pedidos.push(pedido);
-          try { await PedidoDB.create(pedido); } catch (e) { console.error("Erro ao salvar pedido no DB:", e.message); }
+
+          // Incrementa o uso do cupom só depois do pedido existir de fato
+          if (cupomAplicado) {
+            const cupomMem = cupons.find(c => c.codigo === cupomAplicado);
+            if (cupomMem) cupomMem.usoAtual = (cupomMem.usoAtual || 0) + 1;
+            try { await CupomDB.updateOne({ codigo: cupomAplicado }, { $inc: { usoAtual: 1 } }); }
+            catch (e) { console.error("Erro ao incrementar uso do cupom:", e.message); }
+          }
+
           console.log(`📦 Pedido #${pedido.id} — ${pedido.cliente}`);
           await enviarMsg(tel, resposta);
           await enviarMsg(tel, `⏱️ Tempo estimado: *${tempoPreparo} minutos*`);
           if (CONFIG.fidelidade.ativo) {
-            const f = await carregarFidelidade(tel); // le do banco, nao da memoria volatil
+            const f = await carregarFidelidade(tel);
             const meta = Math.max(1, Number(CONFIG.fidelidade.pedidosParaGanhar) || 1);
             const faltam = meta - (f.pedidosEntregues % meta);
             await enviarMsg(tel, `🏆 Fidelidade: ${f.pedidosEntregues} pedido${f.pedidosEntregues !== 1 ? "s" : ""} entregue${f.pedidosEntregues !== 1 ? "s" : ""}. Faltam *${faltam}* para ganhar ${CONFIG.fidelidade.brinde}!`);
@@ -787,9 +895,19 @@ async function conectarWhatsApp() {
         await enviarMsg(tel, resposta);
       } catch (err) {
         console.error("Erro ao processar mensagem:", err.message);
+        // Antes o cliente ficava sem NENHUMA resposta (mensagem entregue e silencio).
+        // Se a ANTHROPIC_KEY expirasse, o bot ficava mudo sem ninguem perceber.
+        try {
+          await enviarMsg(tel, "😅 Tive uma instabilidade aqui. Pode mandar sua mensagem de novo, por favor?");
+        } catch (e2) { console.error("Falha ao avisar cliente sobre o erro:", e2.message); }
+        // Remove a ultima mensagem do historico para nao envenenar o contexto
+        try { const h = getHist(tel); if (h.length && h[h.length - 1].role === "user") h.pop(); } catch {}
       }
     }
-  });
+    });
+  } finally {
+    conectandoWhatsApp = false;
+  }
 }
 
 // ── PÁGINA DO QR CODE ─────────────────────────────────────────
@@ -898,8 +1016,14 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono", "caixa", "garcom"]), as
   } catch (e) { console.error("Erro ao atualizar pedido:", e.message); }
   if (!pedido) return res.status(404).json({ erro: "Pedido não encontrado" });
   pedido.status = status;
-  await enviarMsgStatus(pedido, status);
-  if (status === "entregue") { await checarFidelidade(pedido); agendarAvaliacao(pedido); }
+  // Efeitos colaterais isolados: uma falha de WhatsApp nao pode derrubar o
+  // processo nem impedir a resposta HTTP (o status ja foi gravado no banco).
+  try { await enviarMsgStatus(pedido, status); }
+  catch (e) { console.error("Falha ao enviar msg de status:", e.message); }
+  if (status === "entregue") {
+    try { await checarFidelidade(pedido); } catch (e) { console.error("Falha na fidelidade:", e.message); }
+    try { agendarAvaliacao(pedido); } catch (e) { console.error("Falha ao agendar avaliacao:", e.message); }
+  }
   if (status === "cancelado" && timersAvaliacao.has(id)) { clearTimeout(timersAvaliacao.get(id)); timersAvaliacao.delete(id); }
   res.json(pedido);
 });
@@ -959,7 +1083,7 @@ app.post("/whatsapp/logout", authMiddleware(["dono"]), async (req, res) => {
     if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true });
     whatsappStatus = "disconnected";
     qrCodeBase64 = null;
-    setTimeout(conectarWhatsApp, 2000);
+    setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reconectar apos logout:", e.message)); }, 2000);
     res.json({ ok: true, message: "Desconectado. Novo QR Code será gerado." });
   } catch (err) {
     res.status(500).json({ erro: err.message });
@@ -1700,6 +1824,25 @@ app.listen(ENV.PORT, async () => {
   ║   GET /health    → status geral                  ║
   ╚══════════════════════════════════════════════════╝
   `);
-  await conectarMongo();
-  await conectarWhatsApp();
+  await conectarMongo().catch(e => console.error("Falha ao conectar Mongo:", e.message));
+  // Nao derruba o servidor se o WhatsApp nao subir: a API precisa responder
+  await conectarWhatsApp().catch(e => console.error("Falha ao iniciar WhatsApp:", e.message));
+});
+
+// ── REDE DE SEGURANCA ────────────────────────────────────────
+// Handler de erro do Express: sem ele, erro sincrono devolvia stack trace HTML
+app.use((err, req, res, next) => {
+  console.error("Erro nao tratado na rota", req.method, req.path, "-", err?.message);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ erro: "Erro interno do servidor" });
+});
+
+// Sem isso, qualquer promise rejeitada fora de try/catch encerra o processo no Node 18+
+process.on("unhandledRejection", (motivo) => {
+  console.error("[unhandledRejection]", motivo?.message || motivo);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err?.message || err);
+  // Nao chama process.exit: PM2 reinicia se o processo realmente morrer,
+  // mas erros isolados nao devem derrubar o atendimento inteiro.
 });
