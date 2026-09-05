@@ -176,6 +176,16 @@ const CardapioSchema = new mongoose.Schema({
   tempoPreparo: { type: Number, default: 10, min: 0 },
   ativo: { type: Boolean, default: true },
   obs: String,
+  // ── Dados fiscais (NFC-e) ──
+  // Quem define esses valores e o CONTADOR. Vazio = usa o padrao da config fiscal.
+  fiscal: {
+    ncm:     { type: String, default: "" },  // Nomenclatura Comum do Mercosul
+    cfop:    { type: String, default: "" },  // Natureza da operacao (producao propria != revenda)
+    csosn:   { type: String, default: "" },  // Simples Nacional usa CSOSN (nao CST)
+    cest:    { type: String, default: "" },  // So quando ha ICMS-ST
+    origem:  { type: String, default: "0" }, // 0 = nacional
+    unidade: { type: String, default: "UN" },
+  },
 });
 
 const VendaSalaoSchema = new mongoose.Schema({
@@ -188,6 +198,47 @@ const VendaSalaoSchema = new mongoose.Schema({
   pagamento: { type: String, required: true, enum: ["pix", "cartao", "dinheiro"] },
   abertura: Date,
   fechamento: { type: Date, default: Date.now },
+  // ── NFC-e ──
+  // Cache denormalizado para a listagem nao precisar de lookup por venda.
+  // A fonte da verdade e a colecao NotaFiscal.
+  notaFiscalId:     { type: mongoose.Schema.Types.ObjectId, ref: "NotaFiscal", default: null },
+  notaFiscalStatus: { type: String, default: "sem_nota", enum: ["sem_nota", "processando", "autorizada", "rejeitada", "cancelada", "erro"] },
+}, { timestamps: true });
+
+// ── NOTA FISCAL (NFC-e modelo 65) ────────────────────────────
+const NotaFiscalSchema = new mongoose.Schema({
+  // Origem: venda de salao ou pedido de delivery
+  vendaId:   { type: mongoose.Schema.Types.ObjectId, ref: "VendaSalao", default: null },
+  pedidoId:  { type: String, default: null },
+
+  ambiente:  { type: String, required: true, enum: ["homologacao", "producao"] },
+  status:    { type: String, required: true, default: "processando",
+               enum: ["processando", "autorizada", "rejeitada", "cancelada", "erro"] },
+
+  // Identificacao (preenchida apos autorizacao)
+  numero:    { type: Number, default: null },
+  serie:     { type: Number, default: null },
+  chave:     { type: String, default: null },   // 44 digitos
+  protocolo: { type: String, default: null },
+
+  valorTotal:   { type: Number, required: true, min: 0 },
+  cpfCliente:   { type: String, default: "" },  // opcional: "CPF na nota"
+  nomeCliente:  { type: String, default: "" },
+  itens:        { type: Array, default: [] },   // snapshot fiscal do que foi enviado
+
+  // Retorno do provedor
+  refExterna:   { type: String, default: null },  // id usado na API fiscal (idempotencia)
+  xmlUrl:       { type: String, default: null },
+  danfeUrl:     { type: String, default: null },
+  qrCode:       { type: String, default: null },
+  mensagemErro: { type: String, default: "" },
+
+  dataEmissao:     { type: Date, default: Date.now },
+  dataAutorizacao: { type: Date, default: null },
+  dataCancelamento:{ type: Date, default: null },
+  motivoCancelamento: { type: String, default: "" },
+
+  emitidoPor: { type: String, default: "" },  // role/nome de quem clicou
 }, { timestamps: true });
 
 const GarcomSchema = new mongoose.Schema({
@@ -257,6 +308,7 @@ const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
 const EstoqueDB    = mongoose.model("Estoque",        EstoqueSchema);
 const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
+const NotaFiscalDB = mongoose.model("NotaFiscal",     NotaFiscalSchema);
 
 async function conectarMongo() {
   try {
@@ -282,6 +334,10 @@ async function criarIndices() {
     await AvaliacaoDB.collection.createIndex({ horario: -1 });
     await FechamentoDB.collection.createIndex({ dataStr: 1 }, { unique: true });
     await EstoqueDB.collection.createIndex({ ativo: 1, nome: 1 });
+    await NotaFiscalDB.collection.createIndex({ dataEmissao: -1 });
+    await NotaFiscalDB.collection.createIndex({ status: 1, dataEmissao: -1 });
+    await NotaFiscalDB.collection.createIndex({ vendaId: 1 });
+    await VendaSalaoDB.collection.createIndex({ notaFiscalStatus: 1, fechamento: -1 });
     console.log("📊 Índices criados/verificados!");
   } catch (e) { console.error("Erro ao criar índices:", e.message); }
 }
@@ -1178,12 +1234,23 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   // Apenas campos permitidos
-  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs"];
+  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs", "fiscal"];
   const update = {};
   for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
   if (update.preco !== undefined) update.preco = parseFloat(update.preco);
   if (update.precoPromocional !== undefined && update.precoPromocional !== null) update.precoPromocional = parseFloat(update.precoPromocional);
   if (update.tempoPreparo !== undefined) update.tempoPreparo = parseInt(update.tempoPreparo);
+  if (update.fiscal !== undefined) {
+    const f = update.fiscal && typeof update.fiscal === "object" ? update.fiscal : {};
+    update.fiscal = {
+      ncm:     typeof f.ncm     === "string" ? f.ncm.trim()     : "",
+      cfop:    typeof f.cfop    === "string" ? f.cfop.trim()    : "",
+      csosn:   typeof f.csosn   === "string" ? f.csosn.trim()   : "",
+      cest:    typeof f.cest    === "string" ? f.cest.trim()    : "",
+      origem:  typeof f.origem  === "string" ? f.origem.trim()  : "0",
+      unidade: typeof f.unidade === "string" ? f.unidade.trim() : "UN",
+    };
+  }
   CARDAPIO[idx] = { ...CARDAPIO[idx], ...update, id };
   try { await CardapioDB.updateOne({ id }, { $set: update }); } catch (e) { console.error("Erro ao atualizar cardápio:", e.message); }
   res.json(CARDAPIO[idx]);
@@ -1767,6 +1834,354 @@ app.get("/fechamento-dia/:dataStr", authMiddleware(["dono", "caixa"]), async (re
     if (!f) return res.status(404).json({ erro: "Fechamento não encontrado" });
     res.json(f);
   } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+
+// ══════════════════════════════════════════════════════════════
+// NFC-e — CONFIGURAÇÃO E EMISSÃO
+// ══════════════════════════════════════════════════════════════
+// A emissão é SOB DEMANDA: nada é enviado à SEFAZ sem alguém clicar.
+// Os valores fiscais (NCM/CFOP/CSOSN) são definidos pelo contador.
+
+const CONFIG_FISCAL_PADRAO = {
+  ativo: false,
+  ambiente: "homologacao",        // homologacao | producao
+  provedor: "",                   // focusnfe | plugnotas | webmania | nfeio
+  apiToken: "",                   // SEGREDO — nunca sai completo da API
+  csc: "",                        // SEGREDO — Código de Segurança do Contribuinte
+  cscId: "",                      // ID do CSC (ex.: "000001")
+  serie: 1,
+  cnpj: "", ie: "", razaoSocial: "", nomeFantasia: "",
+  crt: "1",                       // 1 = Simples Nacional
+  endereco: {
+    logradouro: "", numero: "", complemento: "", bairro: "",
+    municipio: "", codigoMunicipio: "", uf: "PR", cep: "",
+  },
+  // Aplicados a itens do cardápio sem configuração fiscal própria
+  padroes: { ncm: "", cfop: "", csosn: "", origem: "0", unidade: "UN" },
+};
+
+async function getConfigFiscal() {
+  try {
+    const doc = await ConfigDB.findOne({ chave: "fiscal" }).lean();
+    if (doc?.valor) return { ...CONFIG_FISCAL_PADRAO, ...doc.valor };
+  } catch (e) { console.error("Erro ao ler config fiscal:", e.message); }
+  return { ...CONFIG_FISCAL_PADRAO };
+}
+
+// Remove segredos antes de mandar para o painel. Mostra só os últimos 4
+// caracteres para o usuário conferir que está preenchido.
+function mascararSegredo(v) {
+  if (!v) return "";
+  return v.length <= 4 ? "****" : "****" + String(v).slice(-4);
+}
+function configFiscalSegura(cfg) {
+  return {
+    ...cfg,
+    apiToken: mascararSegredo(cfg.apiToken),
+    csc: mascararSegredo(cfg.csc),
+    apiTokenPreenchido: !!cfg.apiToken,
+    cscPreenchido: !!cfg.csc,
+  };
+}
+
+app.get("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
+  res.json(configFiscalSegura(await getConfigFiscal()));
+});
+
+app.put("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
+  const atual = await getConfigFiscal();
+  const b = req.body || {};
+  const novo = { ...atual };
+
+  const strFields = ["ambiente", "provedor", "cscId", "cnpj", "ie", "razaoSocial", "nomeFantasia", "crt"];
+  for (const k of strFields) if (typeof b[k] === "string") novo[k] = b[k].trim();
+
+  if (b.ativo !== undefined) novo.ativo = b.ativo === true || b.ativo === "true";
+  if (b.serie !== undefined) { const n = parseInt(b.serie); if (Number.isFinite(n) && n > 0) novo.serie = n; }
+  if (!["homologacao", "producao"].includes(novo.ambiente)) novo.ambiente = "homologacao";
+
+  // Segredos: só sobrescreve se veio valor novo de verdade (o painel reenvia
+  // o formulário com o valor mascarado — isso evita apagar sem querer)
+  if (typeof b.apiToken === "string" && b.apiToken && !b.apiToken.startsWith("****")) novo.apiToken = b.apiToken.trim();
+  if (typeof b.csc === "string" && b.csc && !b.csc.startsWith("****")) novo.csc = b.csc.trim();
+
+  if (b.endereco && typeof b.endereco === "object") {
+    novo.endereco = { ...atual.endereco };
+    for (const k of Object.keys(CONFIG_FISCAL_PADRAO.endereco)) {
+      if (typeof b.endereco[k] === "string") novo.endereco[k] = b.endereco[k].trim();
+    }
+  }
+  if (b.padroes && typeof b.padroes === "object") {
+    novo.padroes = { ...atual.padroes };
+    for (const k of Object.keys(CONFIG_FISCAL_PADRAO.padroes)) {
+      if (typeof b.padroes[k] === "string") novo.padroes[k] = b.padroes[k].trim();
+    }
+  }
+
+  try {
+    await ConfigDB.updateOne({ chave: "fiscal" }, { valor: novo }, { upsert: true });
+    res.json(configFiscalSegura(novo));
+  } catch (e) {
+    console.error("Erro ao salvar config fiscal:", e.message);
+    res.status(500).json({ erro: "Erro ao salvar configuracao fiscal" });
+  }
+});
+
+// Diz o que ainda falta configurar antes de conseguir emitir
+function pendenciasFiscais(cfg) {
+  const faltando = [];
+  if (!cfg.provedor) faltando.push("provedor da API fiscal");
+  if (!cfg.apiToken) faltando.push("token da API");
+  if (!cfg.csc) faltando.push("CSC");
+  if (!cfg.cscId) faltando.push("ID do CSC");
+  if (!cfg.cnpj) faltando.push("CNPJ");
+  if (!cfg.ie) faltando.push("Inscricao Estadual");
+  if (!cfg.razaoSocial) faltando.push("razao social");
+  if (!cfg.endereco?.codigoMunicipio) faltando.push("codigo IBGE do municipio");
+  if (!cfg.padroes?.ncm) faltando.push("NCM padrao");
+  if (!cfg.padroes?.cfop) faltando.push("CFOP padrao");
+  if (!cfg.padroes?.csosn) faltando.push("CSOSN padrao");
+  return faltando;
+}
+
+app.get("/config/fiscal/status", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  const cfg = await getConfigFiscal();
+  const faltando = pendenciasFiscais(cfg);
+  res.json({
+    ativo: cfg.ativo,
+    ambiente: cfg.ambiente,
+    provedor: cfg.provedor,
+    pronto: cfg.ativo && faltando.length === 0,
+    faltando,
+  });
+});
+
+// Monta os itens com os dados fiscais.
+// Item sem configuração própria herda o padrão da config fiscal.
+function montarItensFiscais(itens, cfg) {
+  return (itens || []).map((it, idx) => {
+    const doCardapio = CARDAPIO.find(c => c.nome?.toLowerCase() === String(it.nome).toLowerCase());
+    const f = doCardapio?.fiscal || {};
+    const qtd = Number(it.qty) || 1;
+    const preco = Number(it.preco) || 0;
+    return {
+      numero: idx + 1,
+      nome: it.nome,
+      quantidade: qtd,
+      valorUnitario: parseFloat(preco.toFixed(2)),
+      valorTotal: parseFloat((qtd * preco).toFixed(2)),
+      ncm:     f.ncm     || cfg.padroes.ncm,
+      cfop:    f.cfop    || cfg.padroes.cfop,
+      csosn:   f.csosn   || cfg.padroes.csosn,
+      cest:    f.cest    || "",
+      origem:  f.origem  || cfg.padroes.origem,
+      unidade: f.unidade || cfg.padroes.unidade,
+    };
+  });
+}
+
+// Confere se todo item tem o mínimo fiscal antes de tentar emitir
+function validarItensFiscais(itensFiscais) {
+  const erros = [];
+  for (const it of itensFiscais) {
+    if (!it.ncm)   erros.push(it.nome + ": sem NCM");
+    if (!it.cfop)  erros.push(it.nome + ": sem CFOP");
+    if (!it.csosn) erros.push(it.nome + ": sem CSOSN");
+  }
+  return erros;
+}
+
+// ── EMISSÃO ──────────────────────────────────────────────────
+// A comunicação com a SEFAZ é feita por um provedor (API fiscal), que cuida
+// de XML, assinatura, transmissão e contingência.
+// O adaptador concreto é implementado quando o provedor for escolhido —
+// endpoint, headers e formato do payload saem da documentação de cada um.
+async function emitirNoProvedor(cfg, payload) {
+  switch (cfg.provedor) {
+    case "focusnfe":
+    case "plugnotas":
+    case "webmania":
+    case "nfeio":
+      throw new Error(
+        "Provedor \"" + cfg.provedor + "\" ainda nao implementado. " +
+        "Falta plugar a chamada HTTP da API (endpoint, headers e formato do payload)."
+      );
+    default:
+      throw new Error("Nenhum provedor de NFC-e configurado.");
+  }
+}
+
+async function cancelarNoProvedor(cfg, nota, motivo) {
+  throw new Error("Cancelamento ainda nao implementado — depende do provedor escolhido.");
+}
+
+// POST /notas/emitir  { vendaId } ou { pedidoId }, cpfCliente opcional
+app.post("/notas/emitir", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  const { vendaId, pedidoId, cpfCliente } = req.body || {};
+  if (!vendaId && !pedidoId) return res.status(400).json({ erro: "Informe vendaId ou pedidoId" });
+
+  const cfg = await getConfigFiscal();
+  if (!cfg.ativo) return res.status(400).json({ erro: "Emissao de NFC-e desativada nas configuracoes" });
+  const faltando = pendenciasFiscais(cfg);
+  if (faltando.length) return res.status(400).json({ erro: "Configuracao fiscal incompleta", faltando });
+
+  let origem, itens, valorTotal, nomeCliente = "";
+  try {
+    if (vendaId) {
+      origem = await VendaSalaoDB.findById(vendaId).lean();
+      if (!origem) return res.status(404).json({ erro: "Venda nao encontrada" });
+      if (origem.notaFiscalStatus === "autorizada") return res.status(409).json({ erro: "Essa venda ja tem nota autorizada" });
+      itens = origem.itens; valorTotal = origem.total; nomeCliente = origem.cliente || "";
+    } else {
+      origem = await PedidoDB.findOne({ id: String(pedidoId) }).lean();
+      if (!origem) return res.status(404).json({ erro: "Pedido nao encontrado" });
+      itens = origem.itens; valorTotal = origem.total; nomeCliente = origem.cliente || "";
+    }
+  } catch (e) {
+    console.error("Erro ao carregar origem da nota:", e.message);
+    return res.status(500).json({ erro: "Erro ao carregar a venda" });
+  }
+
+  const itensFiscais = montarItensFiscais(itens, cfg);
+  const errosItens = validarItensFiscais(itensFiscais);
+  if (errosItens.length) {
+    return res.status(400).json({
+      erro: "Itens sem dados fiscais. Preencha no cardapio ou defina um padrao.",
+      detalhes: errosItens,
+    });
+  }
+
+  const cpfLimpo = String(cpfCliente || "").replace(/\D/g, "");
+  if (cpfLimpo && cpfLimpo.length !== 11) return res.status(400).json({ erro: "CPF invalido" });
+
+  // Registra a nota como "processando" ANTES de chamar o provedor.
+  // Se a chamada cair no meio, fica o rastro em vez de sumir.
+  let nota;
+  try {
+    nota = await NotaFiscalDB.create({
+      vendaId: vendaId || null,
+      pedidoId: pedidoId ? String(pedidoId) : null,
+      ambiente: cfg.ambiente,
+      status: "processando",
+      valorTotal,
+      cpfCliente: cpfLimpo,
+      nomeCliente,
+      itens: itensFiscais,
+      refExterna: (vendaId || pedidoId) + "-" + Date.now(),
+      emitidoPor: req.user?.nome || req.user?.role || "",
+    });
+    if (vendaId) {
+      await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalId: nota._id, notaFiscalStatus: "processando" });
+    }
+  } catch (e) {
+    console.error("Erro ao registrar nota:", e.message);
+    return res.status(500).json({ erro: "Erro ao registrar a nota" });
+  }
+
+  try {
+    const r = await emitirNoProvedor(cfg, { nota, itens: itensFiscais, cfg });
+    await NotaFiscalDB.findByIdAndUpdate(nota._id, {
+      status: "autorizada",
+      numero: r.numero, serie: r.serie, chave: r.chave, protocolo: r.protocolo,
+      xmlUrl: r.xmlUrl, danfeUrl: r.danfeUrl, qrCode: r.qrCode,
+      dataAutorizacao: new Date(),
+    });
+    if (vendaId) await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalStatus: "autorizada" });
+    res.json({ ok: true, notaId: nota._id, ...r });
+  } catch (e) {
+    console.error("Falha na emissao da NFC-e:", e.message);
+    await NotaFiscalDB.findByIdAndUpdate(nota._id, { status: "erro", mensagemErro: e.message });
+    if (vendaId) await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalStatus: "erro" });
+    res.status(502).json({ erro: e.message, notaId: nota._id });
+  }
+});
+
+// GET /notas — listagem com filtros
+app.get("/notas", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  try {
+    const { status, de, ate, page = 1, limit = 100 } = req.query;
+    const filtro = {};
+    if (status) filtro.status = status;
+    if (de || ate) {
+      filtro.dataEmissao = {};
+      if (de)  { const d = new Date(de);  if (!isNaN(d)) filtro.dataEmissao.$gte = d; }
+      if (ate) { const d = new Date(ate); if (!isNaN(d)) filtro.dataEmissao.$lte = d; }
+      if (!Object.keys(filtro.dataEmissao).length) delete filtro.dataEmissao;
+    }
+    const lim = Math.min(500, Math.max(1, parseInt(limit) || 100));
+    const skip = (Math.max(1, parseInt(page) || 1) - 1) * lim;
+    const lista = await NotaFiscalDB.find(filtro).sort({ dataEmissao: -1 }).skip(skip).limit(lim).lean();
+    res.json(lista);
+  } catch (e) {
+    console.error("Erro ao listar notas:", e.message);
+    res.status(500).json({ erro: "Erro ao listar notas" });
+  }
+});
+
+// GET /notas/resumo — faturamento total vs total com nota emitida.
+// Os dois números ficam lado a lado de propósito: no Simples Nacional o
+// imposto incide sobre a receita bruta total, não sobre a soma das notas.
+app.get("/notas/resumo", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const ini = de ? new Date(de) : new Date(new Date().setHours(0, 0, 0, 0));
+    const fim = ate ? new Date(ate) : new Date();
+
+    const vendas = await VendaSalaoDB.find({ fechamento: { $gte: ini, $lte: fim } }).lean();
+    const pedidos = await PedidoDB.find({ status: "entregue", horario: { $gte: ini, $lte: fim } }).lean();
+
+    const totalSalao = vendas.reduce((s, v) => s + (v.total || 0), 0);
+    const totalDelivery = pedidos.reduce((s, p) => s + (p.total || 0), 0);
+
+    const comNota = vendas.filter(v => v.notaFiscalStatus === "autorizada");
+    const totalComNota = comNota.reduce((s, v) => s + (v.total || 0), 0);
+
+    res.json({
+      periodo: { de: ini, ate: fim },
+      faturamentoTotal: parseFloat((totalSalao + totalDelivery).toFixed(2)),
+      totalSalao: parseFloat(totalSalao.toFixed(2)),
+      totalDelivery: parseFloat(totalDelivery.toFixed(2)),
+      comNotaEmitida: parseFloat(totalComNota.toFixed(2)),
+      semNotaEmitida: parseFloat((totalSalao - totalComNota).toFixed(2)),
+      qtdVendas: vendas.length,
+      qtdComNota: comNota.length,
+      observacao: "No Simples Nacional o imposto incide sobre a receita bruta total, independente de nota emitida. Confirme a apuracao com o contador.",
+    });
+  } catch (e) {
+    console.error("Erro no resumo fiscal:", e.message);
+    res.status(500).json({ erro: "Erro ao gerar resumo" });
+  }
+});
+
+// POST /notas/:id/cancelar — prazo legal da NFC-e é de 30 minutos
+app.post("/notas/:id/cancelar", authMiddleware(["dono"]), async (req, res) => {
+  const { motivo } = req.body || {};
+  if (!motivo || String(motivo).trim().length < 15) {
+    return res.status(400).json({ erro: "Motivo do cancelamento deve ter ao menos 15 caracteres (exigencia da SEFAZ)" });
+  }
+  try {
+    const nota = await NotaFiscalDB.findById(req.params.id);
+    if (!nota) return res.status(404).json({ erro: "Nota nao encontrada" });
+    if (nota.status !== "autorizada") return res.status(400).json({ erro: "So e possivel cancelar nota autorizada" });
+
+    const minutos = (Date.now() - new Date(nota.dataAutorizacao).getTime()) / 60000;
+    if (minutos > 30) {
+      return res.status(400).json({ erro: "Prazo de cancelamento da NFC-e (30 min) expirado. Fale com o contador." });
+    }
+
+    const cfg = await getConfigFiscal();
+    await cancelarNoProvedor(cfg, nota, String(motivo).trim());
+
+    await NotaFiscalDB.findByIdAndUpdate(nota._id, {
+      status: "cancelada", dataCancelamento: new Date(), motivoCancelamento: String(motivo).trim(),
+    });
+    if (nota.vendaId) await VendaSalaoDB.findByIdAndUpdate(nota.vendaId, { notaFiscalStatus: "cancelada" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Erro ao cancelar nota:", e.message);
+    res.status(502).json({ erro: e.message });
+  }
 });
 
 // ── RESET (apagar dados de teste) ────────────────────────────

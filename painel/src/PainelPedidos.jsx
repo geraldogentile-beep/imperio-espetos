@@ -576,6 +576,35 @@ function Cardapio({ cardapio, onReload }) {
                   <input type="number" step="0.50" value={editando.precoPromocional || ""} onChange={e => setEditando(p => ({ ...p, precoPromocional: e.target.value === "" ? null : parseFloat(e.target.value) }))} placeholder="Deixe vazio para não entrar no evento" style={inputStyle} />
                 </div>
               </div>
+
+              {/* Dados fiscais — quem define e o contador. Vazio = usa o padrao da config fiscal */}
+              <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#666", marginBottom: 2 }}>🧾 Dados fiscais (NFC-e)</div>
+                <div style={{ fontSize: 10, color: "#aaa", marginBottom: 6 }}>Deixe vazio para usar o padrao definido em Config → Fiscal. Peca os valores ao contador.</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>NCM</div>
+                    <input value={editando.fiscal?.ncm || ""} onChange={e => setEditando(p => ({ ...p, fiscal: { ...(p.fiscal||{}), ncm: e.target.value } }))} placeholder="padrao" style={{ ...inputStyle, fontSize: 12 }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>CFOP</div>
+                    <input value={editando.fiscal?.cfop || ""} onChange={e => setEditando(p => ({ ...p, fiscal: { ...(p.fiscal||{}), cfop: e.target.value } }))} placeholder="padrao" style={{ ...inputStyle, fontSize: 12 }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>CSOSN</div>
+                    <input value={editando.fiscal?.csosn || ""} onChange={e => setEditando(p => ({ ...p, fiscal: { ...(p.fiscal||{}), csosn: e.target.value } }))} placeholder="padrao" style={{ ...inputStyle, fontSize: 12 }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>CEST</div>
+                    <input value={editando.fiscal?.cest || ""} onChange={e => setEditando(p => ({ ...p, fiscal: { ...(p.fiscal||{}), cest: e.target.value } }))} placeholder="se ST" style={{ ...inputStyle, fontSize: 12 }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>Unid.</div>
+                    <input value={editando.fiscal?.unidade || ""} onChange={e => setEditando(p => ({ ...p, fiscal: { ...(p.fiscal||{}), unidade: e.target.value } }))} placeholder="UN" style={{ ...inputStyle, fontSize: 12 }} />
+                  </div>
+                </div>
+              </div>
+
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => salvarEdicao(editando)} disabled={saving} style={{ flex: 1, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{saving ? "Salvando..." : "💾 Salvar"}</button>
                 <button onClick={() => setEditando(null)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
@@ -603,6 +632,325 @@ function Cardapio({ cardapio, onReload }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── NFC-e NA LISTA DE VENDAS ──────────────────────────────────
+function BadgeNota({ status }) {
+  if (!status || status === "sem_nota") return null;
+  const cfg = {
+    autorizada:  { txt: "🧾 Com nota", bg: "#d1fae5", cor: "#065f46" },
+    processando: { txt: "⏳ Emitindo",  bg: "#fef3c7", cor: "#92400e" },
+    rejeitada:   { txt: "❌ Rejeitada", bg: "#fee2e2", cor: "#991b1b" },
+    erro:        { txt: "⚠️ Erro",      bg: "#fee2e2", cor: "#991b1b" },
+    cancelada:   { txt: "🚫 Cancelada", bg: "#f0f0f0", cor: "#666" },
+  }[status];
+  if (!cfg) return null;
+  return (
+    <div style={{ display: "inline-block", background: cfg.bg, color: cfg.cor, borderRadius: 8, padding: "2px 8px", fontSize: 10, fontWeight: 700, marginTop: 3 }}>
+      {cfg.txt}
+    </div>
+  );
+}
+
+function BotaoEmitirNota({ venda, onEmitido }) {
+  const [emitindo, setEmitindo] = useState(false);
+  const [erro, setErro] = useState(null);
+  const [cpf, setCpf] = useState("");
+  const [pedindoCpf, setPedindoCpf] = useState(false);
+
+  const jaTem = venda.notaFiscalStatus === "autorizada";
+
+  async function emitir() {
+    setEmitindo(true); setErro(null);
+    try {
+      const r = await authFetch(BACKEND_URL + "/notas/emitir", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendaId: venda._id, cpfCliente: cpf.replace(/\D/g, "") }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const det = d.faltando?.length ? " Falta: " + d.faltando.join(", ")
+                  : d.detalhes?.length ? " " + d.detalhes.join("; ") : "";
+        setErro((d.erro || "Falha ao emitir") + det);
+      } else {
+        setPedindoCpf(false);
+        if (onEmitido) onEmitido();
+      }
+    } catch { setErro("Erro de conexao ao emitir a nota."); }
+    setEmitindo(false);
+  }
+
+  if (jaTem) {
+    return (
+      <div style={{ marginTop: 10, padding: "8px 10px", background: "#d1fae5", borderRadius: 8, fontSize: 12, color: "#065f46", fontWeight: 600 }}>
+        🧾 Nota fiscal emitida para esta venda
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      {!pedindoCpf ? (
+        <button onClick={() => setPedindoCpf(true)} style={{ width: "100%", background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 8, padding: "8px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+          🧾 Emitir NFC-e
+        </button>
+      ) : (
+        <div style={{ background: "#faf9f8", borderRadius: 10, padding: 10 }}>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>CPF na nota (opcional)</div>
+          <input value={cpf} onChange={e => setCpf(e.target.value)} placeholder="somente numeros"
+            style={{ width: "100%", padding: "7px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 8 }} />
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={emitir} disabled={emitindo} style={{ flex: 2, background: "linear-gradient(135deg,#065f46,#10b981)", color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: emitindo ? "not-allowed" : "pointer", opacity: emitindo ? 0.7 : 1 }}>
+              {emitindo ? "Emitindo..." : "Confirmar emissao"}
+            </button>
+            <button onClick={() => { setPedindoCpf(false); setErro(null); }} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+      {erro && (
+        <div style={{ marginTop: 8, padding: "8px 10px", background: "#fee2e2", border: "1px solid #ef4444", borderRadius: 8, fontSize: 11, color: "#991b1b", lineHeight: 1.5 }}>
+          {erro}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── CONFIGURAÇÃO FISCAL (NFC-e) ───────────────────────────────
+function FiscalConfig() {
+  const [cfg, setCfg] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [carregando, setCarregando] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  function showMsg(texto, tipo = "ok") { setMsg({ texto, tipo }); setTimeout(() => setMsg(null), 4000); }
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const [rc, rs] = await Promise.all([
+        authFetch(BACKEND_URL + "/config/fiscal"),
+        authFetch(BACKEND_URL + "/config/fiscal/status"),
+      ]);
+      if (rc.ok) setCfg(await rc.json());
+      if (rs.ok) setStatus(await rs.json());
+    } catch { showMsg("Erro ao carregar configuracao fiscal.", "erro"); }
+    setCarregando(false);
+  }
+  useEffect(() => { carregar(); }, []);
+
+  async function salvar() {
+    setSalvando(true);
+    try {
+      const r = await authFetch(BACKEND_URL + "/config/fiscal", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); showMsg(e.erro || "Erro ao salvar.", "erro"); }
+      else { setCfg(await r.json()); showMsg("Configuracao fiscal salva!"); await carregar(); }
+    } catch { showMsg("Erro de conexao.", "erro"); }
+    setSalvando(false);
+  }
+
+  const set = (campo, v) => setCfg(p => ({ ...p, [campo]: v }));
+  const setEnd = (campo, v) => setCfg(p => ({ ...p, endereco: { ...p.endereco, [campo]: v } }));
+  const setPad = (campo, v) => setCfg(p => ({ ...p, padroes: { ...p.padroes, [campo]: v } }));
+
+  const inp = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
+  const lbl = { fontSize: 11, color: "#888", marginBottom: 3 };
+
+  if (carregando) return <div style={{ background: "#fff", borderRadius: 14, padding: 20, textAlign: "center", color: "#888" }}>Carregando...</div>;
+  if (!cfg) return <div style={{ background: "#fff", borderRadius: 14, padding: 20, textAlign: "center", color: "#ef4444" }}>Nao foi possivel carregar.</div>;
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🧾 Nota Fiscal (NFC-e)</div>
+
+      <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e", lineHeight: 1.6 }}>
+        ⚠️ <strong>Os valores fiscais (NCM, CFOP, CSOSN) devem vir do seu contador.</strong> Preencher errado gera multa.<br /><br />
+        A emissao e <strong>sob demanda</strong>: nenhuma nota vai para a SEFAZ sem alguem clicar em "Emitir".
+      </div>
+
+      {/* Status */}
+      {status && (
+        <div style={{ padding: 12, borderRadius: 10, background: status.pronto ? "#d1fae5" : "#f5f5f5", border: "1.5px solid " + (status.pronto ? "#10b981" : "#e0e0e0") }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: status.pronto ? "#065f46" : "#555" }}>
+            {status.pronto ? "✅ Pronto para emitir" : "⚙️ Configuracao incompleta"}
+            {cfg.ambiente === "homologacao" && <span style={{ marginLeft: 8, background: "#fef3c7", color: "#92400e", borderRadius: 8, padding: "2px 8px", fontSize: 11 }}>HOMOLOGACAO (teste)</span>}
+          </div>
+          {status.faltando?.length > 0 && (
+            <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>Falta: {status.faltando.join(", ")}</div>
+          )}
+        </div>
+      )}
+
+      <Toggle value={cfg.ativo} onChange={v => set("ativo", v)} label="Habilitar emissao de NFC-e" sub="Libera o botao de emitir nas vendas" />
+
+      {/* Ambiente */}
+      <div>
+        <div style={lbl}>Ambiente</div>
+        <select value={cfg.ambiente} onChange={e => set("ambiente", e.target.value)} style={inp}>
+          <option value="homologacao">Homologacao (teste — notas sem valor fiscal)</option>
+          <option value="producao">Producao (notas reais)</option>
+        </select>
+        <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Teste tudo em homologacao antes de virar para producao.</div>
+      </div>
+
+      {/* Provedor */}
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>API fiscal</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <div style={lbl}>Provedor</div>
+            <select value={cfg.provedor} onChange={e => set("provedor", e.target.value)} style={inp}>
+              <option value="">— escolher —</option>
+              <option value="focusnfe">Focus NFe</option>
+              <option value="plugnotas">PlugNotas</option>
+              <option value="webmania">WebmaniaBR</option>
+              <option value="nfeio">NFe.io</option>
+            </select>
+          </div>
+          <div style={{ flex: 2 }}>
+            <div style={lbl}>Token da API {cfg.apiTokenPreenchido && <span style={{ color: "#10b981" }}>✓ salvo</span>}</div>
+            <input type="password" value={cfg.apiToken || ""} onChange={e => set("apiToken", e.target.value)} placeholder="cole o token" style={inp} />
+          </div>
+        </div>
+      </div>
+
+      {/* CSC */}
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>CSC (gerado no portal da SEFAZ)</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 2 }}>
+            <div style={lbl}>CSC {cfg.cscPreenchido && <span style={{ color: "#10b981" }}>✓ salvo</span>}</div>
+            <input type="password" value={cfg.csc || ""} onChange={e => set("csc", e.target.value)} placeholder="codigo de seguranca" style={inp} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={lbl}>ID do CSC</div>
+            <input value={cfg.cscId || ""} onChange={e => set("cscId", e.target.value)} placeholder="000001" style={inp} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={lbl}>Serie</div>
+            <input type="number" value={cfg.serie || 1} onChange={e => set("serie", e.target.value)} style={inp} />
+          </div>
+        </div>
+      </div>
+
+      {/* Emitente */}
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>Dados da empresa</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1 }}><div style={lbl}>CNPJ</div><input value={cfg.cnpj || ""} onChange={e => set("cnpj", e.target.value)} placeholder="00.000.000/0001-00" style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Inscricao Estadual</div><input value={cfg.ie || ""} onChange={e => set("ie", e.target.value)} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>CRT</div>
+            <select value={cfg.crt || "1"} onChange={e => set("crt", e.target.value)} style={inp}>
+              <option value="1">1 - Simples Nacional</option>
+              <option value="2">2 - Simples Nacional (excesso)</option>
+              <option value="3">3 - Regime Normal</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1 }}><div style={lbl}>Razao social</div><input value={cfg.razaoSocial || ""} onChange={e => set("razaoSocial", e.target.value)} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Nome fantasia</div><input value={cfg.nomeFantasia || ""} onChange={e => set("nomeFantasia", e.target.value)} style={inp} /></div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 3 }}><div style={lbl}>Logradouro</div><input value={cfg.endereco?.logradouro || ""} onChange={e => setEnd("logradouro", e.target.value)} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Numero</div><input value={cfg.endereco?.numero || ""} onChange={e => setEnd("numero", e.target.value)} style={inp} /></div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1 }}><div style={lbl}>Bairro</div><input value={cfg.endereco?.bairro || ""} onChange={e => setEnd("bairro", e.target.value)} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Municipio</div><input value={cfg.endereco?.municipio || ""} onChange={e => setEnd("municipio", e.target.value)} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Cod. IBGE</div><input value={cfg.endereco?.codigoMunicipio || ""} onChange={e => setEnd("codigoMunicipio", e.target.value)} placeholder="4106902" style={inp} /></div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><div style={lbl}>UF</div><input value={cfg.endereco?.uf || ""} onChange={e => setEnd("uf", e.target.value.toUpperCase().slice(0, 2))} maxLength={2} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>CEP</div><input value={cfg.endereco?.cep || ""} onChange={e => setEnd("cep", e.target.value)} style={inp} /></div>
+        </div>
+      </div>
+
+      {/* Padrões fiscais */}
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 4 }}>Padroes fiscais</div>
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>
+          Usados nos itens do cardapio que nao tiverem configuracao propria. Peca ao contador.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><div style={lbl}>NCM</div><input value={cfg.padroes?.ncm || ""} onChange={e => setPad("ncm", e.target.value)} placeholder="00000000" style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>CFOP</div><input value={cfg.padroes?.cfop || ""} onChange={e => setPad("cfop", e.target.value)} placeholder="5102" style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>CSOSN</div><input value={cfg.padroes?.csosn || ""} onChange={e => setPad("csosn", e.target.value)} placeholder="102" style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Origem</div><input value={cfg.padroes?.origem || "0"} onChange={e => setPad("origem", e.target.value)} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Unidade</div><input value={cfg.padroes?.unidade || "UN"} onChange={e => setPad("unidade", e.target.value)} style={inp} /></div>
+        </div>
+      </div>
+
+      {msg && (
+        <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.tipo === "ok" ? "#d1fae5" : "#fee2e2", color: msg.tipo === "ok" ? "#065f46" : "#991b1b", fontSize: 13, fontWeight: 600 }}>
+          {msg.texto}
+        </div>
+      )}
+
+      <button onClick={salvar} disabled={salvando} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 14, cursor: salvando ? "not-allowed" : "pointer", opacity: salvando ? 0.7 : 1 }}>
+        {salvando ? "Salvando..." : "💾 Salvar configuracao fiscal"}
+      </button>
+    </div>
+  );
+}
+
+// ── RESUMO FISCAL (faturamento total vs com nota) ─────────────
+function ResumoFiscal() {
+  const [dados, setDados] = useState(null);
+  const [carregando, setCarregando] = useState(false);
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const r = await authFetch(BACKEND_URL + "/notas/resumo");
+      if (r.ok) setDados(await r.json());
+    } catch {}
+    setCarregando(false);
+  }
+  useEffect(() => { carregar(); }, []);
+
+  if (!dados) {
+    return (
+      <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", textAlign: "center", color: "#888", fontSize: 13 }}>
+        {carregando ? "Carregando..." : "Sem dados"}
+      </div>
+    );
+  }
+
+  const linha = (rotulo, valor, cor, negrito) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #f5f5f5" }}>
+      <span style={{ fontSize: 13, color: negrito ? "#1a1a1a" : "#666", fontWeight: negrito ? 700 : 400 }}>{rotulo}</span>
+      <span style={{ fontSize: negrito ? 16 : 14, fontWeight: negrito ? 800 : 600, color: cor }}>R$ {Number(valor).toFixed(2)}</span>
+    </div>
+  );
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🧾 Faturamento x Notas (hoje)</div>
+        <button onClick={carregar} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, cursor: "pointer", color: "#555" }}>↻</button>
+      </div>
+
+      {linha("Faturamento total do dia", dados.faturamentoTotal, "#7b1a0a", true)}
+      {linha("  Salao", dados.totalSalao, "#666")}
+      {linha("  Delivery", dados.totalDelivery, "#666")}
+      <div style={{ height: 8 }} />
+      {linha("Com nota emitida", dados.comNotaEmitida, "#10b981")}
+      {linha("Sem nota emitida", dados.semNotaEmitida, "#f59e0b")}
+
+      <div style={{ fontSize: 11, color: "#888", marginTop: 8 }}>
+        {dados.qtdComNota} de {dados.qtdVendas} vendas do salao com nota.
+      </div>
+      <div style={{ background: "#fef3c7", borderRadius: 8, padding: "8px 10px", fontSize: 11, color: "#92400e", marginTop: 6, lineHeight: 1.5 }}>
+        ℹ️ {dados.observacao}
+      </div>
     </div>
   );
 }
@@ -2001,7 +2349,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         </div>
       </div>
       <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["notif","🔔"],["impressora","🖨️"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
+        {[["horario","🕐"],["notif","🔔"],["impressora","🖨️"],["fiscal","🧾"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
       </div>
@@ -2091,6 +2439,13 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
 
       {subAba === "impressora" && (
         <ImpressoraConfig />
+      )}
+
+      {subAba === "fiscal" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <FiscalConfig />
+          <ResumoFiscal />
+        </div>
       )}
 
       {subAba === "evento" && (
@@ -2777,6 +3132,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>R$ {v.total.toFixed(2)}</div>
                       <div style={{ fontSize: 11, color: "#888" }}>{v.pagamento === "pix" ? "🟢 Pix" : v.pagamento === "cartao" ? "💳 Cartão" : "💵 Dinheiro"}</div>
+                      <BadgeNota status={v.notaFiscalStatus} />
                     </div>
                   </div>
                   {vendaAberta === v.id && (
@@ -2787,6 +3143,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                           <span>R$ {(it.qty*it.preco).toFixed(2)}</span>
                         </div>
                       ))}
+                      {v._id && <BotaoEmitirNota venda={v} onEmitido={() => { if (setHistoricoSalao) setHistoricoSalao(h => h.map(x => x._id === v._id ? { ...x, notaFiscalStatus: "autorizada" } : x)); }} />}
                       <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.grayL}`, display:"flex", gap:8 }}>
                         <button onClick={(e)=>{
                           e.stopPropagation();
