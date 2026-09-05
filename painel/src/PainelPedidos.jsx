@@ -89,7 +89,18 @@ const DEFAULT_CONFIG = {
 };
 
 // ── HELPERS ───────────────────────────────────────────────────
-function calcTotal(itens = [], desconto = 0) { return itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0) + 5 - (desconto || 0); }
+const TAXA_ENTREGA_PADRAO = 5;
+function calcTotal(itens = [], desconto = 0, taxa = TAXA_ENTREGA_PADRAO) {
+  return itens.reduce((s, i) => s + (i.qty || 1) * i.preco, 0) + (Number(taxa) || 0) - (desconto || 0);
+}
+// O backend ja grava o total com a taxa vigente na hora do pedido.
+// Esse valor e a fonte da verdade — recalcular no cliente com taxa fixa
+// fazia o painel divergir do que foi realmente cobrado do cliente.
+function totalPedido(pedido, taxa = TAXA_ENTREGA_PADRAO) {
+  const t = Number(pedido?.total);
+  if (Number.isFinite(t) && t > 0) return t;
+  return calcTotal(pedido?.itens || [], pedido?.desconto || 0, taxa);
+}
 function horaFmt(iso) { return new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }); }
 function dataFmt(iso) { return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" }); }
 function dtFmt(iso) { return dataFmt(iso) + " às " + horaFmt(iso); }
@@ -1366,6 +1377,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
   const [ajusteQtd, setAjusteQtd] = useState("");
   const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
+  const salvarPrecoTimer = useRef(null);
+  // Limpa o timer de debounce ao desmontar
+  useEffect(() => () => { if (salvarPrecoTimer.current) clearTimeout(salvarPrecoTimer.current); }, []);
 
   // Dropdown cascata para vínculo com cardápio
   function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),3500); }
@@ -1401,7 +1415,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
     if(!novo.nome.trim()) return showMsg("Nome é obrigatório.","erro");
     setSaving(true);
     try {
-      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean), custoPorUnidade:parseFloat(novo.custoPorUnidade)||0, margemDesejada:parseFloat(novo.margemDesejada)||0, precoVendaAtual:parseFloat(novo.precoVendaAtual)||0 };
+      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean), custoPorUnidade:parseMoedaGlobal(novo.custoPorUnidade), margemDesejada:parseFloat(novo.margemDesejada)||0, precoVendaAtual:parseMoedaGlobal(novo.precoVendaAtual) };
       const r = await authFetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok) return showMsg((await r.json()).erro||"Erro ao criar.","erro");
       showMsg(`✅ ${novo.nome} cadastrado!`);
@@ -1415,7 +1429,17 @@ function Estoque({ backendUrl, cardapio = [] }) {
   async function salvarEdicao() {
     setSaving(true);
     try {
-      const body = { ...editando, cardapioNomes: typeof editando.cardapioNomes === "string" ? editando.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) : editando.cardapioNomes };
+      const body = {
+        ...editando,
+        cardapioNomes: typeof editando.cardapioNomes === "string" ? editando.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean) : editando.cardapioNomes,
+        // Campos com mascara de moeda: converter antes de enviar (Number no schema)
+        custoPorUnidade: parseMoedaGlobal(editando.custoPorUnidade),
+        precoVendaAtual: parseMoedaGlobal(editando.precoVendaAtual),
+        margemDesejada:  parseFloat(editando.margemDesejada) || 0,
+        quantidade:      parseFloat(editando.quantidade) || 0,
+        minimo:          parseFloat(editando.minimo) || 0,
+        consumoPorVenda: parseFloat(editando.consumoPorVenda) || 1,
+      };
       const r = await authFetch(backendUrl+`/estoque/${editando._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok) return showMsg("Erro ao salvar.","erro");
       showMsg("✅ Alterações salvas!");
@@ -1555,9 +1579,18 @@ function Estoque({ backendUrl, cardapio = [] }) {
                 cardapioNomes={it.cardapioNomes||[]}
                 cardapio={cardapio}
                 backendUrl={backendUrl}
-                onChange={async (campo,val)=>{
-                  await authFetch(backendUrl+`/estoque/${it._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({[campo]:parseFloat(val)||0})});
-                  carregar();
+                onChange={(campo,val)=>{
+                  // Debounce: antes disparava 1 PUT + 1 GET por tecla digitada.
+                  // E parseFloat("R$ 12,50") era NaN -> gravava 0.
+                  const valorNum = campo === "margemDesejada" ? (parseFloat(val)||0) : parseMoedaGlobal(val);
+                  if (salvarPrecoTimer.current) clearTimeout(salvarPrecoTimer.current);
+                  salvarPrecoTimer.current = setTimeout(async () => {
+                    try {
+                      const r = await authFetch(backendUrl+`/estoque/${it._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({[campo]:valorNum})});
+                      if (!r.ok) { showMsg("Erro ao salvar preco.","erro"); return; }
+                      carregar();
+                    } catch { showMsg("Erro de conexao ao salvar preco.","erro"); }
+                  }, 700);
                 }}
               />
             )}
@@ -1920,14 +1953,29 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
   const [saved, setSaved] = useState(false);
   const [testeCEP, setTesteCEP] = useState("");
   const [resultadoCEP, setResultadoCEP] = useState(null);
-  useEffect(() => { setCfg(config); }, [config]);
-  async function salvar() { setSaving(true); await onSave(cfg); setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500); }
-  function setHorario(dia, campo, v) { setCfg(p => ({ ...p, horarioFuncionamento: { ...p.horarioFuncionamento, [dia]: { ...p.horarioFuncionamento[dia], [campo]: v } } })); }
-  function setMensagem(campo, v) { setCfg(p => ({ ...p, mensagensAutomaticas: { ...p.mensagensAutomaticas, [campo]: v } })); }
-  function setCEP(campo, v) { setCfg(p => ({ ...p, entregaCEP: { ...p.entregaCEP, [campo]: v } })); }
-  function setFidelidade(campo, v) { setCfg(p => ({ ...p, fidelidade: { ...p.fidelidade, [campo]: v } })); }
-  function setAvaliacao(campo, v) { setCfg(p => ({ ...p, avaliacao: { ...p.avaliacao, [campo]: v } })); }
-  function setEvento(campo, v) { setCfg(p => ({ ...p, modoEvento: { ...(p.modoEvento || {}), [campo]: v } })); }
+  // Marca que o usuario mexeu em algo. Enquanto true, o polling (que reescreve
+  // `config` a cada 8s com um objeto novo) NAO pode sobrescrever o formulario.
+  const editandoRef = useRef(false);
+  const marcarEditado = () => { editandoRef.current = true; };
+  useEffect(() => {
+    if (editandoRef.current) return; // usuario esta digitando: nao resetar
+    setCfg(config);
+  }, [config]);
+  async function salvar() {
+    setSaving(true);
+    const ok = await onSave(cfg);
+    setSaving(false);
+    if (ok === false) { alert("Nao foi possivel salvar. Verifique a conexao e tente de novo."); return; }
+    editandoRef.current = false; // libera a ressincronizacao com o servidor
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  }
+  function setHorario(dia, campo, v) { marcarEditado(); setCfg(p => ({ ...p, horarioFuncionamento: { ...p.horarioFuncionamento, [dia]: { ...p.horarioFuncionamento[dia], [campo]: v } } })); }
+  function setMensagem(campo, v) { marcarEditado(); setCfg(p => ({ ...p, mensagensAutomaticas: { ...p.mensagensAutomaticas, [campo]: v } })); }
+  function setCEP(campo, v) { marcarEditado(); setCfg(p => ({ ...p, entregaCEP: { ...p.entregaCEP, [campo]: v } })); }
+  function setFidelidade(campo, v) { marcarEditado(); setCfg(p => ({ ...p, fidelidade: { ...p.fidelidade, [campo]: v } })); }
+  function setAvaliacao(campo, v) { marcarEditado(); setCfg(p => ({ ...p, avaliacao: { ...p.avaliacao, [campo]: v } })); }
+  function setEvento(campo, v) { marcarEditado(); setCfg(p => ({ ...p, modoEvento: { ...(p.modoEvento || {}), [campo]: v } })); }
   async function testarCEP() {
     try { const r = await fetch("https://viacep.com.br/ws/" + testeCEP.replace(/\D/g, "") + "/json/"); const d = await r.json(); setResultadoCEP({ valido: !d.erro, endereco: d.erro ? null : d.logradouro + ", " + d.bairro + " - " + d.localidade + "/" + d.uf }); } catch { setResultadoCEP({ valido: false }); }
   }
@@ -2092,11 +2140,11 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>⚙️ Geral</div>
           {[["nomeEstabelecimento","Nome do estabelecimento"],["nomeAgente","Nome do agente IA"]].map(([campo, lbl]) => (
-            <div key={campo}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input value={cfg[campo]} onChange={e => setCfg(p => ({ ...p, [campo]: e.target.value }))} style={inputStyle} /></div>
+            <div key={campo}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input value={cfg[campo]} onChange={e => { marcarEditado(); setCfg(p => ({ ...p, [campo]: e.target.value })); }} style={inputStyle} /></div>
           ))}
           <div style={{ display: "flex", gap: 8 }}>
             {[["taxaEntrega","Taxa (R$)","number",0.5],["tempoEntregaMin","Mín. (min)","number",1],["tempoEntregaMax","Máx. (min)","number",1]].map(([campo, lbl, type, step]) => (
-              <div key={campo} style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input type={type} step={step} value={cfg[campo]} onChange={e => setCfg(p => ({ ...p, [campo]: parseFloat(e.target.value) }))} style={inputStyle} /></div>
+              <div key={campo} style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>{lbl}</div><input type={type} step={step} value={cfg[campo]} onChange={e => { marcarEditado(); const v = e.target.value; setCfg(p => ({ ...p, [campo]: v === "" ? "" : (parseFloat(v) ?? "") })); }} style={inputStyle} /></div>
             ))}
           </div>
         </div>
@@ -2348,7 +2396,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 function totMesaRel(m) { return totMesaCompleta(m); }
 
 // ── DASHBOARD COM GRÁFICOS ────────────────────────────────────
-function DashboardCharts({ pedidos = [], historicoSalao = [], periodo }) {
+function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
   const dias = periodo === "hoje" ? 1 : periodo === "semana" ? 7 : 30;
   const agora = new Date();
   const dataInicio = new Date(agora); dataInicio.setDate(dataInicio.getDate() - dias + 1); dataInicio.setHours(0,0,0,0);
@@ -2363,7 +2411,7 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo }) {
   const porHora = Array.from({ length: 24 }, (_, h) => ({ hora: h, valor: 0, qty: 0 }));
   pedidosEntregues.forEach(p => {
     const h = new Date(p.horario).getHours();
-    const total = (p.itens||[]).reduce((s,i)=>s+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0);
+    const total = totalPedido(p, taxaEntrega);
     porHora[h].valor += total;
     porHora[h].qty += 1;
   });
@@ -2379,7 +2427,7 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo }) {
   const porDiaSemana = diasSemana.map(d => ({ dia: d, valor: 0, qty: 0 }));
   pedidosEntregues.forEach(p => {
     const d = new Date(p.horario).getDay();
-    const total = (p.itens||[]).reduce((s,i)=>s+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0);
+    const total = totalPedido(p, taxaEntrega);
     porDiaSemana[d].valor += total;
     porDiaSemana[d].qty += 1;
   });
@@ -2393,8 +2441,8 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo }) {
   const dataInicioAnterior = new Date(dataInicio); dataInicioAnterior.setDate(dataInicioAnterior.getDate() - dias);
   const pedidosAnt = pedidos.filter(p => p.status === "entregue" && new Date(p.horario) >= dataInicioAnterior && new Date(p.horario) < dataInicio);
   const vendasAnt = historicoSalao.filter(v => new Date(v.fechamento) >= dataInicioAnterior && new Date(v.fechamento) < dataInicio);
-  const totalAtual = pedidosEntregues.reduce((s,p)=>s+((p.itens||[]).reduce((a,i)=>a+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0)),0) + vendasSalao.reduce((s,v)=>s+(v.total||0),0);
-  const totalAnt = pedidosAnt.reduce((s,p)=>s+((p.itens||[]).reduce((a,i)=>a+(i.qty||1)*i.preco,0) + 5 - (p.desconto||0)),0) + vendasAnt.reduce((s,v)=>s+(v.total||0),0);
+  const totalAtual = pedidosEntregues.reduce((s,p)=>s+totalPedido(p, taxaEntrega),0) + vendasSalao.reduce((s,v)=>s+(v.total||0),0);
+  const totalAnt = pedidosAnt.reduce((s,p)=>s+totalPedido(p, taxaEntrega),0) + vendasAnt.reduce((s,v)=>s+(v.total||0),0);
   const variacao = totalAnt > 0 ? ((totalAtual - totalAnt) / totalAnt) * 100 : 0;
 
   // ── TOP ITENS ──
@@ -2515,7 +2563,7 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo }) {
   );
 }
 
-function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
+function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
   const [periodo, setPeriodo] = useState("semana");
   const [subAba, setSubAba] = useState("geral");
   const [vendaAberta, setVendaAberta] = useState(null);
@@ -2555,7 +2603,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
   const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
   const corte = new Date(); corte.setDate(corte.getDate() - diasFiltro); corte.setHours(0, 0, 0, 0);
   const pp = entregues.filter(p => new Date(p.horario) >= corte);
-  const totalDelivery = pp.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
+  const totalDelivery = pp.reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
   const totalDescontos = pp.reduce((s, p) => s + (p.desconto || 0), 0);
   const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
 
@@ -2575,7 +2623,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
   const ds = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
   const porDia = ds.map((nome, idx) => {
     const pedidosDia = entregues.filter(p => new Date(p.horario).getDay() === idx);
-    const fatDelivery = pedidosDia.reduce((s, p) => s + calcTotal(p.itens, p.desconto || 0), 0);
+    const fatDelivery = pedidosDia.reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
     const fatSalao = historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).reduce((s, v) => s + v.total, 0);
     const fat = fatDelivery + fatSalao;
     return { nome, fat, qtd: pedidosDia.length + historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).length };
@@ -2587,14 +2635,14 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
   let barras = [];
   if (periodo === "hoje") {
     for (let h = 11; h <= 23; h += 2) {
-      const vDel = pp.filter(p => { const hr = new Date(p.horario).getHours(); return hr >= h && hr < h + 2; }).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+      const vDel = pp.filter(p => { const hr = new Date(p.horario).getHours(); return hr >= h && hr < h + 2; }).reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
       const vSal = historicoSalao.filter(v => { const hr = new Date(v.fechamento).getHours(); return hr >= h && hr < h + 2; }).reduce((s, v) => s + v.total, 0);
       barras.push({ label: h + "h", valor: vDel + vSal, destaque: new Date().getHours() >= h && new Date().getHours() < h + 2 });
     }
   } else if (periodo === "semana") {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
-      const vDel = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+      const vDel = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
       const vSal = historicoSalao.filter(v => isMesmosDias(v.fechamento, d)).reduce((s, v) => s + v.total, 0);
       barras.push({ label: i === 0 ? "Hoje" : ds[d.getDay()], valor: vDel + vSal, destaque: i === 0 });
     }
@@ -2602,7 +2650,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
     for (let s = 3; s >= 0; s--) {
       const ini = new Date(); ini.setDate(ini.getDate() - s * 7 - 6); ini.setHours(0, 0, 0, 0);
       const fim = new Date(); fim.setDate(fim.getDate() - s * 7); fim.setHours(23, 59, 59, 999);
-      const vDel = entregues.filter(p => new Date(p.horario) >= ini && new Date(p.horario) <= fim).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+      const vDel = entregues.filter(p => new Date(p.horario) >= ini && new Date(p.horario) <= fim).reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
       const vSal = historicoSalao.filter(v => new Date(v.fechamento) >= ini && new Date(v.fechamento) <= fim).reduce((s, v) => s + v.total, 0);
       barras.push({ label: s === 0 ? "Esta sem." : "Sem. -" + s, valor: vDel + vSal, destaque: s === 0 });
     }
@@ -2628,7 +2676,7 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
 
       {/* DASHBOARD */}
       {subAba === "dash" && (
-        <DashboardCharts pedidos={pedidos} historicoSalao={historicoSalao} periodo={periodo} />
+        <DashboardCharts pedidos={pedidos} historicoSalao={historicoSalao} periodo={periodo} taxaEntrega={taxaEntrega} />
       )}
 
       {/* GERAL */}
@@ -2992,12 +3040,12 @@ function Relatorios({ pedidos, faturadoSalao = 0, mesasSalao = [], setMesasSalao
     </div>
   );
 }
-function Clientes({ pedidos }) {
+function Clientes({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
   const [busca, setBusca] = useState(""); const [sel, setSel] = useState(null); const [ord, setOrd] = useState("gasto");
   const cm = {}; pedidos.forEach(p => { if (!cm[p.telefone]) cm[p.telefone] = { nome: p.cliente, telefone: p.telefone, pedidos: [] }; cm[p.telefone].pedidos.push(p); });
   const clientes = Object.values(cm).map(c => {
     const ent = c.pedidos.filter(p => p.status === "entregue");
-    const tg = ent.reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+    const tg = ent.reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
     const ci = {}; ent.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
     const fav = Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n]) => n);
     const ds = c.pedidos.map(p => new Date(p.horario)).sort((a, b) => a - b);
@@ -3034,7 +3082,7 @@ function Clientes({ pedidos }) {
                 <div><span style={{ fontWeight: 700, fontSize: 13 }}>Pedido #{p.id}</span><div style={{ fontSize: 11, color: "#aaa", marginTop: 1 }}>{dtFmt(p.horario)}</div></div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                   <Badge status={p.status} />
-                  <span style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>R$ {calcTotal(p.itens, p.desconto).toFixed(2)}</span>
+                  <span style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>R$ {totalPedido(p).toFixed(2)}</span>
                   {p.desconto > 0 && <span style={{ fontSize: 11, color: "#8b5cf6" }}>🎟️ -{p.desconto.toFixed(2)}</span>}
                 </div>
               </div>
@@ -3084,8 +3132,8 @@ function Clientes({ pedidos }) {
 }
 
 // ── CARD PEDIDO ───────────────────────────────────────────────
-function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit, cardapio }) {
-  const total = calcTotal(pedido.itens, pedido.desconto || 0);
+function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit, cardapio, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
+  const total = totalPedido(pedido, taxaEntrega);
   const sc = STATUS_CONFIG[pedido.status] || STATUS_CONFIG.novo;
   const nxt = { novo: "preparando", preparando: "entrega", entrega: "entregue" }[pedido.status];
   const isNovo = pedido.status === "novo";
@@ -3124,7 +3172,7 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit,
   }
 
   const editSubtotal = editItens.reduce((s, i) => s + i.qty * i.preco, 0);
-  const editTotal = editSubtotal + 5 - (pedido.desconto || 0);
+  const editTotal = editSubtotal + (Number(taxaEntrega) || 0) - (pedido.desconto || 0);
 
   const cardapioFiltrado = (cardapio || []).filter(c => c.ativo !== false && c.nome.toLowerCase().includes(buscaItem.toLowerCase()));
 
@@ -3199,7 +3247,7 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit,
                 ))}
               </>
             )}
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.gray }}><span>Taxa de entrega</span><span>R$ 5,00</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.gray }}><span>Taxa de entrega</span><span>R$ {(Number(taxaEntrega)||0).toFixed(2)}</span></div>
             {(editMode ? pedido.desconto : pedido.desconto) > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.purple }}><span>🎟️ Desconto ({pedido.cupom})</span><span>-R$ {pedido.desconto.toFixed(2)}</span></div>}
             <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 4, borderTop: `1px solid ${T.grayL}`, fontSize: 15, fontWeight: 700, color: editMode ? T.blue : T.wine }}><span>Total</span><span>R$ {editMode ? editTotal.toFixed(2) : total.toFixed(2)}</span></div>
           </div>
@@ -4421,7 +4469,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       if (!notifAtivo) return;
       if (!("Notification" in window)) return;
       if (Notification.permission !== "granted") return;
-      const total = (pedido.itens || []).reduce((s, i) => s + (i.qty || 1) * i.preco, 0) + 5 - (pedido.desconto || 0);
+      const total = totalPedido(pedido, Number(config?.taxaEntrega) || TAXA_ENTREGA_PADRAO);
       const corpo = `${pedido.cliente || "Cliente"} — R$ ${total.toFixed(2)}\n📍 ${pedido.endereco || ""}`;
       const n = new Notification(`🔔 Novo pedido #${pedido.id}`, {
         body: corpo,
@@ -4434,7 +4482,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       n.onclick = () => { window.focus(); n.close(); };
       setTimeout(() => n.close(), 12000);
     } catch (e) { console.warn("Notificação falhou:", e); }
-  }, []);
+  }, [config?.taxaEntrega]); // sem essa dep, capturava a taxa inicial (stale closure)
 
   // Solicita permissão de notificação ao carregar (silenciosamente falha se navegador não suporta)
   useEffect(() => {
@@ -4445,6 +4493,31 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       Notification.requestPermission().catch(() => {});
     } catch {}
   }, []);
+
+  // Sincroniza o historico do salao com o servidor (fonte da verdade).
+  // O localStorage passa a ser apenas cache offline/otimista.
+  const sincronizarSalao = useCallback(async () => {
+    try {
+      const r = await authFetch(BACKEND_URL + "/vendas-salao");
+      if (!r.ok) return;
+      const vendasServidor = await r.json();
+      if (!Array.isArray(vendasServidor)) return;
+      setHistoricoSalao(prev => {
+        // Mantem vendas locais que ainda nao chegaram no servidor (POST falhou/offline)
+        const idsServidor = new Set(vendasServidor.map(v => String(v._id)));
+        const pendentesLocais = prev.filter(v => !v._id || !idsServidor.has(String(v._id)));
+        return [...vendasServidor, ...pendentesLocais];
+      });
+      const totalServidor = vendasServidor.reduce((s, v) => s + (Number(v.total) || 0), 0);
+      setFaturadoSalao(totalServidor);
+    } catch (e) { console.warn("Falha ao sincronizar vendas do salao:", e.message); }
+  }, []);
+
+  useEffect(() => {
+    sincronizarSalao();
+    const t = setInterval(sincronizarSalao, 60000); // 1min: vendas nao mudam tao rapido
+    return () => clearInterval(t);
+  }, [sincronizarSalao]);
 
   // Reconexão automática da impressora Bluetooth
   // - Tenta 1x ao carregar (após 1.5s)
@@ -4589,11 +4662,29 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   };
 
   const saveConfig = async (novoCfg) => {
-    try { await authFetch(BACKEND_URL + "/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(novoCfg) }); setConfig(novoCfg); const rs = await authFetch(BACKEND_URL + "/config/status-loja"); if (rs.ok) setStatusLoja(await rs.json()); } catch { setConfig(novoCfg); }
+    try {
+      const r = await authFetch(BACKEND_URL + "/config", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(novoCfg),
+      });
+      if (!r.ok) { console.error("Falha ao salvar config:", r.status); return false; }
+      // Usa o que o servidor devolveu (ja validado/saneado), nao o otimista
+      const salvo = await r.json().catch(() => novoCfg);
+      setConfig(salvo);
+      const rs = await authFetch(BACKEND_URL + "/config/status-loja");
+      if (rs.ok) setStatusLoja(await rs.json());
+      return true;
+    } catch (e) {
+      console.error("Erro de rede ao salvar config:", e.message);
+      return false;
+    }
   };
 
+  // Taxa vigente vinda da config do servidor (nao mais o 5 hardcoded)
+  const taxaEntrega = Number(config?.taxaEntrega);
+  const taxaEntregaOk = Number.isFinite(taxaEntrega) ? taxaEntrega : TAXA_ENTREGA_PADRAO;
+
   const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidos.filter(p => p.status === s).length; return a; }, {});
-  const totalDeliveryHoje = pedidos.filter(p => p.status === "entregue" && isMesmosDias(p.horario, new Date())).reduce((s, p) => s + calcTotal(p.itens, p.desconto), 0);
+  const totalDeliveryHoje = pedidos.filter(p => p.status === "entregue" && isMesmosDias(p.horario, new Date())).reduce((s, p) => s + totalPedido(p, taxaEntregaOk), 0);
   const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
   const totalHoje = totalDeliveryHoje + totalSalaoHoje;
   const novos = counts["novo"] || 0;
@@ -4747,15 +4838,15 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
                     <div className="serif-title" style={{ fontSize: 22, color: T.dark, fontWeight: 700, marginBottom: 6 }}>Nenhum pedido por aqui</div>
                     <div style={{ fontSize: 14, color: T.gray }}>{filtro === "todos" ? "Os pedidos aparecerão aqui assim que chegarem pelo WhatsApp" : `Nenhum pedido com status "${STATUS_CONFIG[filtro]?.label || filtro}"`}</div>
                   </div>
-                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} onEdit={editPedido} cardapio={cardapio} atualizando={!!atualizando[p.id]} />)
+                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} onEdit={editPedido} cardapio={cardapio} taxaEntrega={taxaEntregaOk} atualizando={!!atualizando[p.id]} />)
               }
             </div>
           )}
 
-          {aba === "relatorios"  && <Relatorios pedidos={pedidos} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
+          {aba === "relatorios"  && <Relatorios pedidos={pedidos} taxaEntrega={taxaEntregaOk} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
           {aba === "fechamento"  && <FechamentoDia backendUrl={BACKEND_URL} pedidos={pedidos} historicoSalao={historicoSalao} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} />}
           {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} cardapio={cardapio} />}
-          {aba === "clientes"    && <Clientes pedidos={pedidos} />}
+          {aba === "clientes"    && <Clientes pedidos={pedidos} taxaEntrega={taxaEntregaOk} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
