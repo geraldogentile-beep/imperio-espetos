@@ -204,7 +204,17 @@ const VendaSalaoSchema = new mongoose.Schema({
   garcomId: String,
   itens: { type: Array, required: true },
   total: { type: Number, required: true, min: 0 },
-  pagamento: { type: String, required: true, enum: ["pix", "cartao", "dinheiro"] },
+  // Resumo (compatibilidade com o historico antigo): a forma unica, ou "misto"
+  pagamento: { type: String, required: true, enum: ["pix", "cartao", "dinheiro", "misto"] },
+  // Detalhe: a comanda pode ser dividida (metade dinheiro, metade pix)
+  pagamentos: {
+    type: [{
+      tipo:  { type: String, enum: ["pix", "cartao", "dinheiro"], required: true },
+      valor: { type: Number, required: true, min: 0 },
+      _id: false,
+    }],
+    default: [],
+  },
   abertura: Date,
   fechamento: { type: Date, default: Date.now },
   // ── NFC-e ──
@@ -1452,13 +1462,53 @@ app.get("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req
     res.json(lista);
   } catch { res.json([]); }
 });
+const FORMAS_PAGAMENTO = ["pix", "cartao", "dinheiro"];
+
+// Aceita o formato antigo (pagamento: "pix") e o novo (pagamentos: [{tipo, valor}]).
+// Devolve { pagamento, pagamentos } ou { erro }.
+function normalizarPagamento(body) {
+  const total = Number(body.total) || 0;
+  const lista = Array.isArray(body.pagamentos) ? body.pagamentos : null;
+
+  if (!lista || !lista.length) {
+    if (!FORMAS_PAGAMENTO.includes(body.pagamento)) return { erro: "Forma de pagamento invalida" };
+    return { pagamento: body.pagamento, pagamentos: [{ tipo: body.pagamento, valor: parseFloat(total.toFixed(2)) }] };
+  }
+
+  const limpa = [];
+  for (const p of lista) {
+    if (!FORMAS_PAGAMENTO.includes(p?.tipo)) return { erro: "Forma de pagamento invalida: " + p?.tipo };
+    const v = Number(p.valor);
+    if (!Number.isFinite(v) || v <= 0) return { erro: "Valor invalido no pagamento em " + p.tipo };
+    limpa.push({ tipo: p.tipo, valor: parseFloat(v.toFixed(2)) });
+  }
+
+  // Tolerancia de 2 centavos: divisao por 3 nao fecha exato
+  const soma = limpa.reduce((acc, p) => acc + p.valor, 0);
+  if (Math.abs(soma - total) > 0.02) {
+    return { erro: "A soma dos pagamentos (R$ " + soma.toFixed(2) + ") nao bate com o total (R$ " + total.toFixed(2) + ")" };
+  }
+
+  // Dois lancamentos na mesma forma viram um
+  const agrupado = [];
+  for (const p of limpa) {
+    const ex = agrupado.find(x => x.tipo === p.tipo);
+    if (ex) ex.valor = parseFloat((ex.valor + p.valor).toFixed(2));
+    else agrupado.push({ ...p });
+  }
+  return { pagamento: agrupado.length === 1 ? agrupado[0].tipo : "misto", pagamentos: agrupado };
+}
+
 app.post("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
-  const { mesa, itens, total, pagamento } = req.body;
+  const { itens, total } = req.body;
   if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
   if (!total || total <= 0) return res.status(400).json({ erro: "Total inválido" });
-  if (!pagamento) return res.status(400).json({ erro: "Forma de pagamento obrigatória" });
+
+  const pag = normalizarPagamento(req.body);
+  if (pag.erro) return res.status(400).json({ erro: pag.erro });
+
   try {
-    const venda = await VendaSalaoDB.create(req.body);
+    const venda = await VendaSalaoDB.create({ ...req.body, pagamento: pag.pagamento, pagamentos: pag.pagamentos });
     // Baixa automática no estoque
     await baixarEstoqueVenda(req.body.itens, String(venda._id));
     res.status(201).json(venda);
@@ -1842,10 +1892,16 @@ app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) 
     const totalSalao = vendasHoje.reduce((s, v) => s + (v.total || 0), 0);
 
     // Por forma de pagamento
+    // Comanda dividida entra em cada forma pelo valor que coube a ela
     const porPagamento = { pix: 0, cartao: 0, dinheiro: 0 };
     vendasHoje.forEach(v => {
-      const pag = v.pagamento || "dinheiro";
-      porPagamento[pag] = (porPagamento[pag] || 0) + (v.total || 0);
+      const partes = Array.isArray(v.pagamentos) && v.pagamentos.length
+        ? v.pagamentos
+        : [{ tipo: v.pagamento || "dinheiro", valor: v.total || 0 }];
+      partes.forEach(p => {
+        if (!FORMAS_PAGAMENTO.includes(p.tipo)) return;
+        porPagamento[p.tipo] += Number(p.valor) || 0;
+      });
     });
 
     // Por garçom

@@ -349,7 +349,7 @@ class ImpressoraBT {
 
   // ── IMPRIMIR RECIBO/COMANDA P/ CAIXA ──
   // Para conferência no caixa: itens COM preços, TOTAL, forma de pagamento
-  async imprimirRecibo({ mesa, cliente, garcom, itens, total, pagamento, abertura, fechamento }) {
+  async imprimirRecibo({ mesa, cliente, garcom, itens, total, pagamento, pagamentos, pagamentoTexto, abertura, fechamento }) {
     const ab = abertura ? new Date(abertura) : new Date();
     const fe = fechamento ? new Date(fechamento) : new Date();
     const cmds = [
@@ -381,9 +381,16 @@ class ImpressoraBT {
     }
     cmds.push(texto("--------------------------"), NL, NL);
     cmds.push(ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
-    if (pagamento) {
-      const pgNome = { pix:"PIX", cartao:"Cartao", dinheiro:"Dinheiro" }[pagamento] || pagamento;
-      cmds.push(ALIGN_LEFT, NL, texto(`Pagamento: ${pgNome}`), NL);
+    // Comanda dividida: cada forma sai na sua linha, com o valor que coube
+    const nomePg = { pix:"PIX", cartao:"Cartao", dinheiro:"Dinheiro", misto:"Misto" };
+    if (Array.isArray(pagamentos) && pagamentos.length > 1) {
+      cmds.push(ALIGN_LEFT, NL, texto("Pagamento:"), NL);
+      for (const pg of pagamentos) {
+        cmds.push(texto(`  ${nomePg[pg.tipo] || pg.tipo}  R$ ${(Number(pg.valor)||0).toFixed(2)}`), NL);
+      }
+    } else if (pagamentoTexto || pagamento) {
+      const pgNome = pagamentoTexto || nomePg[pagamento] || pagamento;
+      cmds.push(ALIGN_LEFT, NL, texto(`Pagamento: ${removerAcentos(String(pgNome))}`), NL);
     }
     cmds.push(NL, NL, ALIGN_CENTER);
     cmds.push(texto("Obrigado pela visita!"), NL);

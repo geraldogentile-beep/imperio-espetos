@@ -3054,7 +3054,17 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 
   // Por forma de pagamento
   const porPag = {pix:0,cartao:0,dinheiro:0};
-  historicoSalao.forEach(v=>{ const p=v.pagamento||"dinheiro"; porPag[p]=(porPag[p]||0)+(v.total||0); });
+  historicoSalao.forEach(v=>{
+    // Comanda dividida soma em cada forma o valor que coube a ela; sem isso o
+    // "misto" viraria uma coluna fantasma e o dinheiro sumia do fechamento.
+    const partes = Array.isArray(v.pagamentos) && v.pagamentos.length
+      ? v.pagamentos
+      : [{ tipo: v.pagamento || "dinheiro", valor: v.total || 0 }];
+    partes.forEach(pt => {
+      if (porPag[pt.tipo] === undefined) return;
+      porPag[pt.tipo] += Number(pt.valor) || 0;
+    });
+  });
 
   async function fecharDia() {
     setLoading(true);
@@ -3753,7 +3763,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>R$ {v.total.toFixed(2)}</div>
-                      <div style={{ fontSize: 11, color: "#888" }}>{v.pagamento === "pix" ? "🟢 Pix" : v.pagamento === "cartao" ? "💳 Cartão" : "💵 Dinheiro"}</div>
+                      <div style={{ fontSize: 11, color: "#888" }}>{v.pagamento === "pix" ? "🟢 Pix" : v.pagamento === "cartao" ? "💳 Cartão" : v.pagamento === "misto" ? "🔀 Misto" : "💵 Dinheiro"}</div>
                       <BadgeNota status={v.notaFiscalStatus} />
                     </div>
                   </div>
@@ -3786,7 +3796,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                             <div class="info">${v.cliente&&v.cliente!=='—'?'Cliente: '+v.cliente+'<br>':''}${v.garcom&&v.garcom!=='—'?'Garçom: '+v.garcom+'<br>':''}Fechamento: ${new Date(v.fechamento).toLocaleString('pt-BR',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</div>
                             ${v.itens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
                             <div class="total"><span>TOTAL</span><span>R$ ${v.total.toFixed(2)}</span></div>
-                            <div class="info" style="margin-top:10px">Pagamento: ${v.pagamento==='pix'?'Pix':v.pagamento==='cartao'?'Cartão':'Dinheiro'}</div>
+                            <div class="info" style="margin-top:10px">Pagamento: ${descrevePagamento(v.pagamentos, v.pagamento)}</div>
                             <div class="rodape">Obrigado! 🍢</div>
                             <br><button onclick="window.print()">🖨️ Imprimir</button>
                           </body></html>`);
@@ -4352,6 +4362,16 @@ function migrarMesa(m) {
   return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
 }
 function fmtR(v) { return "R$ "+v.toFixed(2); }
+
+const FORMAS_PAG = [["pix","🟢 Pix"],["cartao","💳 Cartão"],["dinheiro","💵 Dinheiro"]];
+const NOME_PAG = { pix: "Pix", cartao: "Cartão", dinheiro: "Dinheiro", misto: "Misto" };
+
+// Texto para recibo e mensagem: "Pix" ou "Pix R$ 30,00 + Dinheiro R$ 20,00"
+function descrevePagamento(pagamentos, pagamentoSimples) {
+  if (!Array.isArray(pagamentos) || pagamentos.length === 0) return NOME_PAG[pagamentoSimples] || pagamentoSimples || "";
+  if (pagamentos.length === 1) return NOME_PAG[pagamentos[0].tipo] || pagamentos[0].tipo;
+  return pagamentos.map(p => `${NOME_PAG[p.tipo] || p.tipo} ${fmtR(p.valor)}`).join(" + ");
+}
 function tempoAberto(abertura) {
   if(!abertura) return null;
   const m = Math.floor((Date.now()-new Date(abertura))/60000);
@@ -4471,6 +4491,39 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const setTelaSalao = setTelaSalaoGlobal;
   const [catFiltro, setCatFiltro] = useState("todos");
   const [pagSalao, setPagSalao] = useState("pix");
+  // Comanda paga em mais de uma forma (metade dinheiro, metade pix)
+  const [pagDividido, setPagDividido] = useState(false);
+  const [valoresPag, setValoresPag] = useState({ pix: "", cartao: "", dinheiro: "" });
+
+  // Campos de pagamento do registro. Aceita a lista nova e cai no modo antigo
+  // (uma forma so) quando ninguem passa nada.
+  function resumoPagamento(pagamentos, total) {
+    const lista = Array.isArray(pagamentos) && pagamentos.length
+      ? pagamentos
+      : [{ tipo: pagSalao, valor: parseFloat((Number(total)||0).toFixed(2)) }];
+    return {
+      pagamento: lista.length === 1 ? lista[0].tipo : "misto",
+      pagamentos: lista,
+      pagamentoTexto: descrevePagamento(lista, pagSalao),   // so para o recibo
+    };
+  }
+
+  function limparPagamento() {
+    setPagDividido(false);
+    setValoresPag({ pix: "", cartao: "", dinheiro: "" });
+  }
+
+  // Monta o que vai para o servidor e diz quanto ainda falta lancar
+  function montarPagamentos(total) {
+    if (!pagDividido) {
+      return { pagamentos: [{ tipo: pagSalao, valor: parseFloat(total.toFixed(2)) }], falta: 0 };
+    }
+    const lista = FORMAS_PAG
+      .map(([tipo]) => ({ tipo, valor: parseMoedaGlobal(valoresPag[tipo]) }))
+      .filter(p => p.valor > 0);
+    const soma = lista.reduce((acc, p) => acc + p.valor, 0);
+    return { pagamentos: lista, falta: parseFloat((total - soma).toFixed(2)) };
+  }
   const [divSalao, setDivSalao] = useState(1);
   const [selSC, setSelSC] = useState(0); // índice da sub-comanda ativa
   const fechandoRef = useRef(false); // trava contra duplo clique em fechar mesa/comanda
@@ -4592,7 +4645,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setTimeout(()=>win.print(),400);
   }
 
-  async function fecharComanda(idxSC, pagamento){
+  async function fecharComanda(idxSC, pagamentos){
     // Duplo clique no botao criava DUAS vendas no banco
     if (fechandoRef.current) return;
     fechandoRef.current = true;
@@ -4610,7 +4663,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       subComanda: scFechando.label,
       itens: todosItens,
       total: totalSC,
-      pagamento: pagamento||pagSalao,
+      ...resumoPagamento(pagamentos, totalSC),
       abertura: scFechando.abertura||mesa.abertura,
       fechamento: new Date().toISOString(),
     };
@@ -4641,6 +4694,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
     }
 
+    limparPagamento();
+
     // Remove a comanda fechada
     const novasSCs = mesa.subComandas.filter((_,i)=>i!==idxSC);
     const novoStatus = novasSCs.length===0||novasSCs.every(s=>s.itens.length===0&&(s.rodadas||[]).length===0)?"livre":"ocupada";
@@ -4658,7 +4713,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setDivSalao(1);
   }
 
-  async function fecharMesa(){
+  async function fecharMesa(pagamentos){
     if (fechandoRef.current) return; // evita venda duplicada por duplo clique
     fechandoRef.current = true;
     // Fecha todas as comandas de uma vez
@@ -4669,7 +4724,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       id: Date.now(), mesa: mesa.id,
       cliente: (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ")||"—",
       garcom: garcomLogado?.nome||mesa.garcom||"—", garcomId:garcomLogado?.id||null,
-      itens:todosItens, total:totalMesa, pagamento:pagSalao,
+      itens:todosItens, total:totalMesa,
+      ...resumoPagamento(pagamentos, totalMesa),
       abertura:mesa.abertura, fechamento:new Date().toISOString(),
     };
     try {
@@ -4697,8 +4753,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
     }
 
-    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} via ${pagSalao}`);
+    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} — ${descrevePagamento(pagamentos, pagSalao)}`);
     upd(initMesa(mesa.id-1));
+    limparPagamento();
     setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
     fechandoRef.current = false;
   }
@@ -4787,6 +4844,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   if(telaSalao==="fechar") {
     const fecharUma = mesa.subComandas.length > 1; // se há múltiplas, fecha só a ativa
     const totalFechar = fecharUma ? totalSCAtual : totalAcumulado;
+    const pagInfo = montarPagamentos(totalFechar);
+    const pagOk = !pagDividido || (pagInfo.pagamentos.length > 0 && Math.abs(pagInfo.falta) <= 0.02);
+    const pagTexto = descrevePagamento(pagInfo.pagamentos, pagSalao);
     const todosItensFechar = fecharUma
       ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
       : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
@@ -4830,12 +4890,47 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           </div>}
         </div>
         <div style={card2}>
-          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>💳 Pagamento</div>
-          <div style={{display:"flex",gap:8}}>
-            {[["pix","🟢 Pix"],["cartao","💳 Cartão"],["dinheiro","💵 Dinheiro"]].map(([k,l])=>(
-              <button key={k} onClick={()=>setPagSalao(k)} style={{flex:1,padding:"10px 4px",borderRadius:12,border:`2px solid ${pagSalao===k?"#7b1a0a":"#e0e0e0"}`,background:pagSalao===k?"#fef0ed":"#fff",fontWeight:pagSalao===k?700:500,fontSize:12,cursor:"pointer",color:pagSalao===k?"#7b1a0a":"#555"}}>{l}</button>
-            ))}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{fontWeight:700,fontSize:12,color:"#888",textTransform:"uppercase"}}>💳 Pagamento</div>
+            <button onClick={()=>{ setPagDividido(d=>!d); setValoresPag({pix:"",cartao:"",dinheiro:""}); }}
+              style={{background:pagDividido?"#7b1a0a":"#f0f0f0",color:pagDividido?"#fff":"#666",border:"none",borderRadius:8,padding:"6px 11px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+              {pagDividido ? "↩ Uma forma só" : "✂️ Dividir formas"}
+            </button>
           </div>
+
+          {!pagDividido ? (
+            <div style={{display:"flex",gap:8}}>
+              {FORMAS_PAG.map(([k,l])=>(
+                <button key={k} onClick={()=>setPagSalao(k)} style={{flex:1,padding:"10px 4px",borderRadius:12,border:`2px solid ${pagSalao===k?"#7b1a0a":"#e0e0e0"}`,background:pagSalao===k?"#fef0ed":"#fff",fontWeight:pagSalao===k?700:500,fontSize:12,cursor:"pointer",color:pagSalao===k?"#7b1a0a":"#555"}}>{l}</button>
+              ))}
+            </div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {FORMAS_PAG.map(([k,l])=>(
+                <div key={k} style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:96,fontSize:12,fontWeight:600,color:"#555",flexShrink:0}}>{l}</div>
+                  <input inputMode="decimal" value={valoresPag[k]} placeholder="0,00"
+                    onChange={e=>setValoresPag(v=>({...v,[k]:mascaraMoeda(e.target.value)}))}
+                    style={{flex:1,minWidth:0,padding:"9px 10px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:15,outline:"none",boxSizing:"border-box",color:"#333"}} />
+                  <button onClick={()=>{
+                    const outros = FORMAS_PAG.filter(([o])=>o!==k).reduce((acc,[o])=>acc+parseMoedaGlobal(valoresPag[o]),0);
+                    const resto = Math.max(0, parseFloat((totalFechar-outros).toFixed(2)));
+                    // Passa pela mascara para ficar igual ao que o usuario digita
+                    setValoresPag(v=>({...v,[k]: resto>0 ? mascaraMoeda(String(Math.round(resto*100))) : ""}));
+                  }} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"9px 10px",fontSize:11,cursor:"pointer",color:"#555",fontWeight:700,flexShrink:0}}>resto</button>
+                </div>
+              ))}
+              <div style={{
+                marginTop:2,borderRadius:10,padding:"9px 12px",fontSize:13,fontWeight:700,textAlign:"center",
+                background: pagOk ? "#d1fae5" : "#fef3c7",
+                color: pagOk ? "#065f46" : "#92400e",
+              }}>
+                {pagOk ? `✅ Fecha certo — ${fmtR(totalFechar)}`
+                  : pagInfo.falta > 0 ? `Falta lançar ${fmtR(pagInfo.falta)}`
+                  : `Passou ${fmtR(Math.abs(pagInfo.falta))} do total`}
+              </div>
+            </div>
+          )}
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={async()=>{
@@ -4850,7 +4945,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               garcom: nomeGarcom,
               itens: todosItensFechar,
               total: totalFechar,
-              pagamento: pagSalao,
+              pagamento: pagInfo.pagamentos.length === 1 ? pagInfo.pagamentos[0].tipo : "misto",
+              pagamentoTexto: pagTexto,
               abertura: abertura,
               fechamento: new Date().toISOString(),
             };
@@ -4890,14 +4986,18 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               <div class="info">${nomeCliente&&nomeCliente!=="—"?'Cliente: '+nomeCliente+'<br>':''}${nomeGarcom&&nomeGarcom!=="—"?'Garçom: '+nomeGarcom+'<br>':''}Abertura: ${abertura?new Date(abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
               ${todosItensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
               <div class="total"><span>TOTAL</span><span>R$ ${totalFechar.toFixed(2)}</span></div>
-              <div class="info" style="margin-top:12px">Pagamento: ${pagSalao==='pix'?'Pix':pagSalao==='cartao'?'Cartão':'Dinheiro'}</div>
+              <div class="info" style="margin-top:12px">Pagamento: ${pagTexto}</div>
               <div class="rodape">Obrigado pela visita! 🍢</div>
               <br><button onclick="window.print()">🖨️ Imprimir</button>
             </body></html>`);
             win.document.close();
             setTimeout(()=>win.print(),500);
           }} style={{background:T.grayLL,color:T.gray,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"12px 0",fontWeight:600,fontSize:14,cursor:"pointer",flex:1}}>🖨️ Imprimir</button>
-          <button onClick={()=>fecharUma?fecharComanda(scIdx,pagSalao):fecharMesa()} style={{...BP2("linear-gradient(135deg,#065f46,#10b981)"),flex:2}}>✅ Confirmar — {fmtR(totalFechar)}</button>
+          <button disabled={!pagOk}
+            onClick={()=>fecharUma?fecharComanda(scIdx,pagInfo.pagamentos):fecharMesa(pagInfo.pagamentos)}
+            style={{...BP2(pagOk?"linear-gradient(135deg,#065f46,#10b981)":"#ccc"),flex:2,cursor:pagOk?"pointer":"not-allowed"}}>
+            ✅ Confirmar — {fmtR(totalFechar)}
+          </button>
         </div>
       </div>
     </div>
