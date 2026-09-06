@@ -185,6 +185,20 @@ const CardapioSchema = new mongoose.Schema({
   tempoPreparo: { type: Number, default: 10, min: 0 },
   ativo: { type: Boolean, default: true },
   obs: String,
+  // ── Variações ──
+  // Mesmo prato com carnes diferentes muda de preço (Lanche Imperial com
+  // kafta e um valor, com picanha e outro). Em vez de virar um item de
+  // cardapio para cada carne, o item tem uma lista de opcoes e o preco de
+  // cada uma. Vazio = item de preco fixo, como sempre foi.
+  variacaoRotulo: { type: String, default: "" },   // "Tipo de carne"
+  variacoes: {
+    type: [{
+      nome:  { type: String, required: true },     // "Picanha"
+      preco: { type: Number, required: true, min: 0 },  // preço FINAL, não acréscimo
+      _id: false,
+    }],
+    default: [],
+  },
   // ── Dados fiscais (NFC-e) ──
   // Quem define esses valores e o CONTADOR. Vazio = usa o padrao da config fiscal.
   fiscal: {
@@ -1338,12 +1352,31 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   // Apenas campos permitidos
-  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs", "fiscal"];
+  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs", "fiscal", "variacaoRotulo", "variacoes"];
   const update = {};
   for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
   if (update.preco !== undefined) update.preco = parseFloat(update.preco);
   if (update.precoPromocional !== undefined && update.precoPromocional !== null) update.precoPromocional = parseFloat(update.precoPromocional);
   if (update.tempoPreparo !== undefined) update.tempoPreparo = parseInt(update.tempoPreparo);
+  if (update.variacoes !== undefined) {
+    if (!Array.isArray(update.variacoes)) return res.status(400).json({ erro: "variacoes deve ser uma lista" });
+    if (update.variacoes.length > 30) return res.status(400).json({ erro: "Maximo de 30 variacoes por item" });
+    const limpas = [];
+    for (const v of update.variacoes) {
+      const nome = typeof v?.nome === "string" ? v.nome.trim() : "";
+      const preco = Number(v?.preco);
+      if (!nome) return res.status(400).json({ erro: "Toda variacao precisa de um nome" });
+      if (!Number.isFinite(preco) || preco < 0) return res.status(400).json({ erro: "Preco invalido na variacao \"" + nome + "\"" });
+      if (limpas.some(x => x.nome.toLowerCase() === nome.toLowerCase())) {
+        return res.status(400).json({ erro: "Variacao repetida: " + nome });
+      }
+      limpas.push({ nome, preco: parseFloat(preco.toFixed(2)) });
+    }
+    update.variacoes = limpas;
+  }
+  if (update.variacaoRotulo !== undefined) {
+    update.variacaoRotulo = typeof update.variacaoRotulo === "string" ? update.variacaoRotulo.trim().slice(0, 40) : "";
+  }
   if (update.fiscal !== undefined) {
     const f = update.fiscal && typeof update.fiscal === "object" ? update.fiscal : {};
     update.fiscal = {
@@ -1601,9 +1634,12 @@ async function baixarEstoqueVenda(itens, vendaId) {
     const estoques = await EstoqueDB.find({ ativo: true }).lean();
     for (const item of itens) {
       const qty = item.qty || 1;
-      // Encontra estoque vinculado a este item do cardápio
+      // Encontra estoque vinculado a este item do cardápio.
+      // Item com variação vira "Lanche Imperial (Picanha)" no nome, então o
+      // vínculo tem que ser pelo nome base — senão a baixa nunca acontece.
+      const nomeCard = String(item.nomeBase || item.nome || "").toLowerCase();
       const est = estoques.find(e =>
-        e.cardapioNomes.some(n => n.toLowerCase() === item.nome?.toLowerCase())
+        e.cardapioNomes.some(n => n.toLowerCase() === nomeCard)
       );
       if (!est) continue;
       const desconto = qty * (est.consumoPorVenda || 1);
@@ -2422,7 +2458,10 @@ app.get("/config/fiscal/status", authMiddleware(["dono", "caixa"]), async (req, 
 // Item sem configuração própria herda o padrão da config fiscal.
 function montarItensFiscais(itens, cfg) {
   return (itens || []).map((it, idx) => {
-    const doCardapio = CARDAPIO.find(c => c.nome?.toLowerCase() === String(it.nome).toLowerCase());
+    // Casa por id primeiro: o nome do item muda quando tem variação
+    // ("Lanche Imperial (Picanha)") e deixaria de bater com o cardápio.
+    const doCardapio = CARDAPIO.find(c => it.id !== undefined && c.id === it.id)
+      || CARDAPIO.find(c => c.nome?.toLowerCase() === String(it.nomeBase || it.nome).toLowerCase());
     const f = doCardapio?.fiscal || {};
     const qtd = Number(it.qty) || 1;
     const preco = Number(it.preco) || 0;

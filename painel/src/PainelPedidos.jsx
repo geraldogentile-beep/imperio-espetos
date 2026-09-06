@@ -535,7 +535,21 @@ function Cardapio({ cardapio, onReload }) {
   }
   async function salvarEdicao(item) {
     setSaving(true);
-    try { await authFetch(BACKEND_URL + "/cardapio/" + item.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(item) }); onReload(); } catch { onReload(); }
+    // Variação em branco é rascunho do formulário, não erro: some no salvamento
+    const limpo = { ...item, variacoes: (item.variacoes || []).filter(v => String(v.nome || "").trim() !== "") };
+    try {
+      const r = await authFetch(BACKEND_URL + "/cardapio/" + item.id, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(limpo),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        // Sem isso o erro do servidor sumia e o usuário achava que tinha salvo
+        alert("Nao foi possivel salvar: " + (d.erro || ("erro " + r.status)));
+        setSaving(false);
+        return;
+      }
+      onReload();
+    } catch { onReload(); }
     setSaving(false); setEditando(null);
   }
   async function deletarItem(id) {
@@ -605,6 +619,43 @@ function Cardapio({ cardapio, onReload }) {
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>🎉 Preço promocional (modo evento)</div>
                   <input type="number" step="0.50" value={editando.precoPromocional || ""} onChange={e => setEditando(p => ({ ...p, precoPromocional: e.target.value === "" ? null : parseFloat(e.target.value) }))} placeholder="Deixe vazio para não entrar no evento" style={inputStyle} />
                 </div>
+              </div>
+
+              {/* Variações — mesmo prato, preço diferente conforme a escolha */}
+              <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#666", marginBottom: 2 }}>🍖 Variações (opcional)</div>
+                <div style={{ fontSize: 10, color: "#aaa", marginBottom: 6, lineHeight: 1.5 }}>
+                  Para prato que muda de preço conforme a escolha — o tipo de carne, por exemplo.
+                  Cada variação leva o <strong>preço final</strong> do item, não o acréscimo.
+                  Sem nenhuma variação, o item usa o preço lá em cima.
+                </div>
+
+                {(editando.variacoes || []).length > 0 && (
+                  <div style={{ marginBottom: 6 }}>
+                    <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>Título da escolha</div>
+                    <input value={editando.variacaoRotulo || ""} placeholder="Tipo de carne"
+                      onChange={e => setEditando(p => ({ ...p, variacaoRotulo: e.target.value }))}
+                      style={{ ...inputStyle, fontSize: 12 }} />
+                  </div>
+                )}
+
+                {(editando.variacoes || []).map((v, idx) => (
+                  <div key={idx} style={{ display: "flex", gap: 6, marginBottom: 5, alignItems: "center" }}>
+                    <input value={v.nome} placeholder="Picanha"
+                      onChange={e => setEditando(p => ({ ...p, variacoes: (p.variacoes || []).map((x, i) => i === idx ? { ...x, nome: e.target.value } : x) }))}
+                      style={{ ...inputStyle, fontSize: 12, flex: 2 }} />
+                    <input type="number" step="0.50" value={v.preco} placeholder="0.00"
+                      onChange={e => setEditando(p => ({ ...p, variacoes: (p.variacoes || []).map((x, i) => i === idx ? { ...x, preco: e.target.value === "" ? "" : parseFloat(e.target.value) } : x) }))}
+                      style={{ ...inputStyle, fontSize: 12, flex: 1 }} />
+                    <button onClick={() => setEditando(p => ({ ...p, variacoes: (p.variacoes || []).filter((_, i) => i !== idx) }))}
+                      style={{ background: "#fee2e2", color: "#ef4444", border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 12, cursor: "pointer", fontWeight: 700 }}>✕</button>
+                  </div>
+                ))}
+
+                <button onClick={() => setEditando(p => ({ ...p, variacoes: [...(p.variacoes || []), { nome: "", preco: p.preco || 0 }] }))}
+                  style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 8, padding: "8px 12px", fontSize: 12, cursor: "pointer", fontWeight: 700 }}>
+                  + Variação
+                </button>
               </div>
 
               {/* Dados fiscais — quem define e o contador. Vazio = usa o padrao da config fiscal */}
@@ -4368,6 +4419,11 @@ function migrarMesa(m) {
 }
 function fmtR(v) { return "R$ "+v.toFixed(2); }
 
+// Duas carnes diferentes do mesmo prato sao linhas SEPARADAS na comanda.
+// Antes o agrupamento era so por id, entao "Lanche (picanha)" e
+// "Lanche (kafta)" viravam a mesma linha e um dos precos se perdia.
+function chaveItem(it) { return String(it?.id) + "|" + (it?.variacao || ""); }
+
 const FORMAS_PAG = [["pix","🟢 Pix"],["cartao","💳 Cartão"],["dinheiro","💵 Dinheiro"]];
 const NOME_PAG = { pix: "Pix", cartao: "Cartão", dinheiro: "Dinheiro", misto: "Misto" };
 
@@ -4496,6 +4552,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const setTelaSalao = setTelaSalaoGlobal;
   const [catFiltro, setCatFiltro] = useState("todos");
   const [pagSalao, setPagSalao] = useState("pix");
+  const [varAberta, setVarAberta] = useState(null);   // item com a escolha de carne aberta
   // Comanda paga em mais de uma forma (metade dinheiro, metade pix)
   const [pagDividido, setPagDividido] = useState(false);
   const [valoresPag, setValoresPag] = useState({ pix: "", cartao: "", dinheiro: "" });
@@ -4583,21 +4640,28 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
   // Atualiza apenas a sub-comanda ativa
 
-  function addItem(item){
-    const precoAgora = precoItem(item);
-    const existe=sc.itens.find(i=>i.id===item.id);
+  function addItem(item, variacao){
+    // Variação tem preço próprio e vira nome próprio na comanda e na cozinha
+    // nomeBase preserva o nome do cardápio: o backend liga estoque e dados
+    // fiscais por ele, já que o nome exibido ganha o sufixo da variação
+    const base = variacao
+      ? { ...item, nome: `${item.nome} (${variacao.nome})`, nomeBase: item.nome, variacao: variacao.nome, precoPromocional: null }
+      : item;
+    const precoAgora = variacao ? Number(variacao.preco) || 0 : precoItem(item);
+    const chave = chaveItem(base);
+    const existe=sc.itens.find(i=>chaveItem(i)===chave);
     const itens=existe
       // Sempre atualiza o preço para o atual (caso modo evento tenha ligado/desligado)
-      ? sc.itens.map(i=>i.id===item.id?{...i,qty:(i.qty||1)+1,preco:precoAgora}:i)
-      : [...sc.itens,{...item,preco:precoAgora,qty:1}];
+      ? sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+1,preco:precoAgora}:i)
+      : [...sc.itens,{...base,preco:precoAgora,qty:1}];
     const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
     const novaAbertura = mesa.abertura||new Date().toISOString();
     const novoStatus = mesa.status==="livre"?"ocupada":mesa.status;
     upd({...mesa, garcom:nomeGarcom, status:novoStatus, abertura:novaAbertura,
          subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
   }
-  function chgQty(id,d){
-    const itens=sc.itens.map(i=>i.id===id?{...i,qty:(i.qty||1)+d}:i).filter(i=>i.qty>0);
+  function chgQty(chave,d){
+    const itens=sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+d}:i).filter(i=>i.qty>0);
     const allEmpty = mesa.subComandas.every((s,i)=>i===scIdx?itens.length===0:s.itens.length===0&&(s.rodadas||[]).length===0);
     upd({...mesa, status:allEmpty?"livre":mesa.status,
          subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
@@ -4690,7 +4754,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     fechandoRef.current = true;
     const scFechando = mesa.subComandas[idxSC];
     const todosItens = [...(scFechando.rodadas||[]).flatMap(r=>r.itens), ...scFechando.itens].reduce((acc,it)=>{
-      const ex=acc.find(i=>i.id===it.id); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
+      const ex=acc.find(i=>chaveItem(i)===chaveItem(it)); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
     }, []);
     const subtotalSC = totMesa(scFechando.itens) + (scFechando.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0);
     const descontoSC = Math.min(Math.max(0, Number(descInfo?.valor) || 0), subtotalSC);
@@ -4763,7 +4827,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     fechandoRef.current = true;
     // Fecha todas as comandas de uma vez
     const todosItens = (mesa.subComandas||[]).flatMap(sc=>[...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens])
-      .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+      .reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
     const subtotalMesa = totMesaCompleta(mesa);
     const descontoMesa = Math.min(Math.max(0, Number(descInfo?.valor) || 0), subtotalMesa);
     const totalMesa = parseFloat((subtotalMesa - descontoMesa).toFixed(2));
@@ -4865,22 +4929,80 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       )}
       <div style={{padding:"10px 14px 80px",display:"flex",flexDirection:"column",gap:8}}>
         {cardapio.filter(filtrarCardapio).map(item=>{
-          const na=sc.itens.find(i=>i.id===item.id);
+          const variacoes = Array.isArray(item.variacoes) ? item.variacoes : [];
+          const temVariacao = variacoes.length > 0;
           const precoExibido = precoItem(item);
           const temPromo = emModoEvento && item.precoPromocional && item.precoPromocional > 0 && item.precoPromocional < item.preco;
+
+          // Item com variação: a linha soma todas as carnes lançadas
+          const naSimples = sc.itens.find(i=>chaveItem(i)===chaveItem(item));
+          const qtdTotal = temVariacao
+            ? sc.itens.filter(i=>i.id===item.id).reduce((soma,i)=>soma+(i.qty||1),0)
+            : (naSimples ? naSimples.qty||1 : 0);
+          const aberto = varAberta === item.id;
+
+          const precos = variacoes.map(v=>Number(v.preco)||0);
+          const faixa = temVariacao
+            ? (Math.min(...precos) === Math.max(...precos)
+                ? fmtR(Math.min(...precos))
+                : `${fmtR(Math.min(...precos))} a ${fmtR(Math.max(...precos))}`)
+            : null;
+
           return(
-            <div key={item.id} style={{...card2,marginBottom:0,display:"flex",alignItems:"center",gap:10,border:`2px solid ${na?"#7b1a0a":temPromo?"#f59e0b":"transparent"}`}}>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:14}}>{item.nome}</div>
-                <div style={{fontSize:12,color:"#888"}}>
-                  {temPromo ? <><span style={{textDecoration:"line-through",marginRight:6}}>{fmtR(item.preco)}</span><span style={{color:"#f59e0b",fontWeight:700}}>🎉 {fmtR(precoExibido)}</span></> : fmtR(precoExibido)}
+            <div key={item.id} style={{...card2,marginBottom:0,border:`2px solid ${qtdTotal?"#7b1a0a":temPromo?"#f59e0b":"transparent"}`}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:14}}>{item.nome}</div>
+                  <div style={{fontSize:12,color:"#888"}}>
+                    {temVariacao ? faixa
+                      : temPromo ? <><span style={{textDecoration:"line-through",marginRight:6}}>{fmtR(item.preco)}</span><span style={{color:"#f59e0b",fontWeight:700}}>🎉 {fmtR(precoExibido)}</span></>
+                      : fmtR(precoExibido)}
+                  </div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  {temVariacao ? (
+                    <>
+                      <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{qtdTotal}</span>
+                      <button onClick={()=>setVarAberta(aberto?null:item.id)}
+                        style={{padding:"7px 12px",borderRadius:20,border:"none",background:aberto?"#f0f0f0":"#7b1a0a",color:aberto?"#555":"#fff",fontWeight:700,fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>
+                        {aberto ? "Fechar" : "Escolher"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={()=>naSimples&&chgQty(chaveItem(item),-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:naSimples?"#fee2e2":"#f0f0f0",color:naSimples?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:naSimples?"pointer":"default"}}>−</button>
+                      <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{qtdTotal}</span>
+                      <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
+                    </>
+                  )}
                 </div>
               </div>
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <button onClick={()=>na&&chgQty(item.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:na?"#fee2e2":"#f0f0f0",color:na?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:na?"pointer":"default"}}>−</button>
-                <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{na?na.qty||1:0}</span>
-                <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
-              </div>
+
+              {/* Escolha da carne */}
+              {temVariacao && aberto && (
+                <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #e8e8e8",display:"flex",flexDirection:"column",gap:6}}>
+                  <div style={{fontSize:11,color:"#888",fontWeight:700,textTransform:"uppercase"}}>
+                    {item.variacaoRotulo || "Escolha"}
+                  </div>
+                  {variacoes.map(v=>{
+                    const linha = sc.itens.find(i=>i.id===item.id && i.variacao===v.nome);
+                    const qtd = linha ? linha.qty||1 : 0;
+                    return (
+                      <div key={v.nome} style={{display:"flex",alignItems:"center",gap:8,background:qtd?"#fef0ed":"#faf9f8",borderRadius:10,padding:"7px 10px"}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:13,fontWeight:qtd?700:500,color:"#333"}}>{v.nome}</div>
+                          <div style={{fontSize:12,color:"#7b1a0a",fontWeight:700}}>{fmtR(Number(v.preco)||0)}</div>
+                        </div>
+                        <button onClick={()=>qtd&&chgQty(chaveItem({id:item.id,variacao:v.nome}),-1)}
+                          style={{width:28,height:28,borderRadius:"50%",border:"none",background:qtd?"#fee2e2":"#f0f0f0",color:qtd?"#ef4444":"#ccc",fontWeight:800,fontSize:16,cursor:qtd?"pointer":"default"}}>−</button>
+                        <span style={{fontWeight:800,fontSize:15,minWidth:18,textAlign:"center"}}>{qtd}</span>
+                        <button onClick={()=>addItem(item,v)}
+                          style={{width:28,height:28,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:16,cursor:"pointer"}}>+</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}
@@ -4904,8 +5026,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const pagTexto = descrevePagamento(pagInfo.pagamentos, pagSalao);
     const podeConfirmar = pagOk && !desc.erro && totalFechar > 0;
     const todosItensFechar = fecharUma
-      ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
-      : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+      ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
+      : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
     return (
     <div style={{background:T.cream,minHeight:"100%"}}>
       <div style={H2}>
@@ -5209,9 +5331,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
                   <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{it.nome}</div><div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div></div>
                   <div style={{display:"flex",alignItems:"center",gap:5}}>
-                    <button onClick={()=>chgQty(it.id,-1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:15,cursor:"pointer"}}>−</button>
+                    <button onClick={()=>chgQty(chaveItem(it),-1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:15,cursor:"pointer"}}>−</button>
                     <span style={{fontWeight:800,minWidth:18,textAlign:"center"}}>{it.qty||1}</span>
-                    <button onClick={()=>chgQty(it.id,1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:15,cursor:"pointer"}}>+</button>
+                    <button onClick={()=>chgQty(chaveItem(it),1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:15,cursor:"pointer"}}>+</button>
                   </div>
                   <div style={{fontWeight:800,fontSize:13,color:"#7b1a0a",minWidth:50,textAlign:"right"}}>{fmtR((it.qty||1)*it.preco)}</div>
                 </div>
@@ -5266,7 +5388,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 <button onClick={async()=>{
                   const nomeGarcom = garcomLogado?.nome||mesa.garcom||"—";
                   const todosItens = (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens])
-                    .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
+                    .reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
                   const clienteNome = (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ") || "—";
 
                   // Se a impressora Bluetooth estiver conectada, usa ela direto
