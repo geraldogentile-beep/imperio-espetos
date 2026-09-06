@@ -44,6 +44,10 @@ const NOVOS_ITENS = [
   { categoria: "Cervejas",        nome: "Michelob Ultra",                  preco: 10.00, tempoPreparo: 1,  obs: null },
   { categoria: "Cervejas",        nome: "Ice Smirnoff",                    preco: 12.00, tempoPreparo: 1,  obs: null },
 
+  // ── Refeições completas (do cardápio impresso) ──
+  { categoria: "Refeições",       nome: "Jantinha Imperial",               preco: 18.00, tempoPreparo: 15, obs: "arroz, feijão com bacon e calabresa, mandioca cozida, vinagrete, farofa, molho da casa" },
+  { categoria: "Refeições",       nome: "Lanche Imperial",                 preco: 18.00, tempoPreparo: 15, obs: "pão com gergelim, kafta com queijo, molho da casa, barbecue, vinagrete, alface — outro sabor de espeto altera o valor" },
+
   // ── Doces de balcão ──
   { categoria: "Doces",           nome: "Pão de mel",                      preco: 11.00, tempoPreparo: 1,  obs: null },
   { categoria: "Doces",           nome: "Trufa",                           preco: 7.00,  tempoPreparo: 1,  obs: null },

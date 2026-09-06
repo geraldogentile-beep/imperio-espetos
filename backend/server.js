@@ -530,8 +530,10 @@ let CARDAPIO = [
   { id: 67, categoria: "Doces",           nome: "Trident",                       preco: 3.00,  tempoPreparo: 1,  ativo: true, obs: null },
   { id: 68, categoria: "Doces",           nome: "Halls",                         preco: 3.00,  tempoPreparo: 1,  ativo: true, obs: null },
   { id: 69, categoria: "Doces",           nome: "Mentos",                        preco: 3.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 70, categoria: "Refeições",       nome: "Jantinha Imperial",             preco: 18.00, tempoPreparo: 15, ativo: true, obs: "arroz, feijão com bacon e calabresa, mandioca cozida, vinagrete, farofa, molho da casa" },
+  { id: 71, categoria: "Refeições",       nome: "Lanche Imperial",               preco: 18.00, tempoPreparo: 15, ativo: true, obs: "pão com gergelim, kafta com queijo, molho da casa, barbecue, vinagrete, alface — outro sabor de espeto altera o valor" },
 ];
-let nextItemId = 70;
+let nextItemId = 72;
 
 // ── CUPONS ────────────────────────────────────────────────────
 let cupons = [
@@ -2643,6 +2645,12 @@ const REGRAS_FISCAIS = [
   },
 
   // ── COBERTURA POR CATEGORIA (doces, acompanhamentos, o que sobrar) ──
+  {
+    quando: (n, c) => c === "refeicoes" || /jantinha|lanche|prato feito|refeicao/.test(n),
+    fiscal: { ...PROPRIA, ncm: "21069090" },
+    confianca: CONFIANCA.MEDIA,
+    nota: "Refeição montada na casa: produção própria (CFOP 5101), NCM 2106.90.90 de preparação alimentícia. Confirmar com o contador se ele prefere classificar pelo componente principal.",
+  },
   {
     quando: (n, c) => ["doces", "acompanhamentos", "tradicionais", "especiais", "churrasco grego"].includes(c),
     fiscal: { ...PROPRIA, ncm: "21069090" },
