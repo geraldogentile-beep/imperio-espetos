@@ -396,6 +396,10 @@ async function inicializarDados() {
   } else {
     CARDAPIO = await CardapioDB.find().lean();
   }
+  // O id do cardapio e um contador proprio, separado do _id do Mongo. Fixo no
+  // codigo, ele voltava a 48 a cada restart e colidia com itens ja criados —
+  // dois itens com o mesmo id fazem editar/excluir pegar o errado.
+  nextItemId = CARDAPIO.reduce((max, i) => Math.max(max, Number(i.id) || 0), 0) + 1;
 
   // Inicializa cupons se vazio
   const totalCupons = await CupomDB.countDocuments();
@@ -503,8 +507,31 @@ let CARDAPIO = [
   { id: 45, categoria: "Cervejas",        nome: "Chopp",                   preco: 10.00, tempoPreparo: 3,  ativo: true, obs: "caneca" },
   { id: 46, categoria: "Cervejas",        nome: "Chopp Vinho",             preco: 12.00, tempoPreparo: 3,  ativo: true, obs: "caneca" },
   { id: 47, categoria: "Energético",      nome: "Monster",                 preco: 12.00, tempoPreparo: 1,  ativo: true, obs: null },
+  // ── Itens pedidos pela casa em 05/09/2026 ──
+  { id: 48, categoria: "Acompanhamentos", nome: "Porção de arroz",               preco: 8.00,  tempoPreparo: 5,  ativo: true, obs: null },
+  { id: 49, categoria: "Acompanhamentos", nome: "Porção de feijão",              preco: 8.00,  tempoPreparo: 5,  ativo: true, obs: "com bacon e calabresa" },
+  { id: 50, categoria: "Acompanhamentos", nome: "Mandioca",                      preco: 5.00,  tempoPreparo: 8,  ativo: true, obs: null },
+  { id: 51, categoria: "Tradicionais",    nome: "Sambiquira",                    preco: 6.00,  tempoPreparo: 12, ativo: true, obs: null },
+  { id: 52, categoria: "Especiais",       nome: "Alcatra com queijo",            preco: 12.00, tempoPreparo: 15, ativo: true, obs: null },
+  { id: 53, categoria: "Especiais",       nome: "Mignon com calabresa",          preco: 15.00, tempoPreparo: 18, ativo: true, obs: null },
+  { id: 54, categoria: "Doces",           nome: "Queijo com doce de leite",      preco: 12.00, tempoPreparo: 8,  ativo: true, obs: null },
+  { id: 55, categoria: "Refrigerantes",   nome: "Coca-Cola 600ml",               preco: 8.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 56, categoria: "Refrigerantes",   nome: "Coca-Cola Zero 600ml",          preco: 8.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 57, categoria: "Refrigerantes",   nome: "Guaraná Antarctica 600ml",      preco: 8.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 58, categoria: "Refrigerantes",   nome: "Guaraná Antarctica Zero 600ml", preco: 8.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 59, categoria: "Suco",            nome: "Suco de Uva 200ml",             preco: 6.00,  tempoPreparo: 5,  ativo: true, obs: null },
+  { id: 60, categoria: "Suco",            nome: "Suco de Laranja 200ml",         preco: 6.00,  tempoPreparo: 5,  ativo: true, obs: null },
+  { id: 61, categoria: "Suco",            nome: "Suco de Uva 900ml",             preco: 12.00, tempoPreparo: 5,  ativo: true, obs: null },
+  { id: 62, categoria: "Suco",            nome: "Suco de Laranja 900ml",         preco: 12.00, tempoPreparo: 5,  ativo: true, obs: null },
+  { id: 63, categoria: "Cervejas",        nome: "Michelob Ultra",                preco: 10.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 64, categoria: "Cervejas",        nome: "Ice Smirnoff",                  preco: 12.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 65, categoria: "Doces",           nome: "Pão de mel",                    preco: 11.00, tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 66, categoria: "Doces",           nome: "Trufa",                         preco: 7.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 67, categoria: "Doces",           nome: "Trident",                       preco: 3.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 68, categoria: "Doces",           nome: "Halls",                         preco: 3.00,  tempoPreparo: 1,  ativo: true, obs: null },
+  { id: 69, categoria: "Doces",           nome: "Mentos",                        preco: 3.00,  tempoPreparo: 1,  ativo: true, obs: null },
 ];
-let nextItemId = 48;
+let nextItemId = 70;
 
 // ── CUPONS ────────────────────────────────────────────────────
 let cupons = [
@@ -2450,6 +2477,17 @@ const REVENDA_ST = { cfop: "5405", csosn: "500", origem: "0", unidade: "UN" };
 // A primeira regra que casar vence — ordem importa.
 // "Heineken Zero" precisa vir antes de "Heineken", "lata" antes do genérico.
 const REGRAS_FISCAIS = [
+  // ── BEBIDA "ICE" (revenda) ──
+  // Fica na aba Cervejas por praticidade, mas nao e cerveja: NCM e CEST
+  // saem de outro grupo. Deixado sem CEST de proposito — a emissao recusa
+  // ate o contador informar, em vez de mandar classificacao errada.
+  {
+    quando: (n, c) => c === "cervejas" && /ice|smirnoff|vodka/.test(n),
+    fiscal: { ...REVENDA_ST, ncm: "22089000", cest: "" },
+    confianca: CONFIANCA.BAIXA,
+    nota: "Bebida ice nao e cerveja — entra em bebidas alcoolicas (NCM 2208). Peca ao contador o NCM exato e o CEST; sem o CEST a emissao e recusada de proposito.",
+  },
+
   // ── CERVEJAS E CHOPP (revenda com ST) ──
   {
     quando: (n, c) => c === "cervejas" && /(zero|sem alcool)/.test(n),
@@ -2542,7 +2580,7 @@ const REGRAS_FISCAIS = [
     nota: "1602.50.00 = preparações de carne bovina.",
   },
   {
-    quando: (n) => /frango|tulipa|coracao|coracaozinho|galinha/.test(n),
+    quando: (n) => /frango|tulipa|coracao|coracaozinho|galinha|sambiquira/.test(n),
     fiscal: { ...PROPRIA, ncm: "16023290" },
     confianca: CONFIANCA.ALTA,
     nota: "1602.32.90 = preparações de galos/galinhas, cozidas. (1602.32.10 é só para carne crua.)",
@@ -2572,7 +2610,7 @@ const REGRAS_FISCAIS = [
     nota: "Assumi base bovina. Se for mistura de carnes (bovina + suína, por exemplo), o contador pode preferir 1602.90.00.",
   },
   {
-    quando: (n) => /queijo/.test(n) && !/romeu/.test(n),
+    quando: (n, c) => /queijo/.test(n) && !/romeu/.test(n) && c !== "doces",
     fiscal: { ...PROPRIA, ncm: "04061010" },
     confianca: CONFIANCA.MEDIA,
     nota: "0406.10.10 = queijo fresco (coalho).",
@@ -2584,10 +2622,24 @@ const REGRAS_FISCAIS = [
     nota: "1905.90.90 = outros produtos de padaria.",
   },
   {
-    quando: (n) => /chocolate/.test(n),
+    quando: (n) => /chocolate|trufa/.test(n),
     fiscal: { ...PROPRIA, ncm: "18069000" },
     confianca: CONFIANCA.MEDIA,
     nota: "1806.90.00 = preparações com chocolate.",
+  },
+
+  // ── BALAS E CHICLES (revenda, nao producao propria) ──
+  {
+    quando: (n) => /trident|chiclete|goma de mascar/.test(n),
+    fiscal: { cfop: "5102", csosn: "102", cest: "", origem: "0", unidade: "UN", ncm: "17041000" },
+    confianca: CONFIANCA.BAIXA,
+    nota: "Goma de mascar comprada pronta: revenda (CFOP 5102), NCM 1704.10.00. Confirmar com o contador se tem ST no PR — se tiver, vira CFOP 5405 + CSOSN 500 + CEST.",
+  },
+  {
+    quando: (n) => /halls|mentos|bala|drops|pastilha/.test(n),
+    fiscal: { cfop: "5102", csosn: "102", cest: "", origem: "0", unidade: "UN", ncm: "17049090" },
+    confianca: CONFIANCA.BAIXA,
+    nota: "Bala/pastilha comprada pronta: revenda (CFOP 5102), NCM 1704.90.90. Confirmar com o contador se tem ST no PR.",
   },
 
   // ── COBERTURA POR CATEGORIA (doces, acompanhamentos, o que sobrar) ──
