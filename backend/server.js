@@ -204,6 +204,13 @@ const VendaSalaoSchema = new mongoose.Schema({
   garcomId: String,
   itens: { type: Array, required: true },
   total: { type: Number, required: true, min: 0 },
+  // ── Desconto ──
+  // subtotal = soma dos itens; total = o que o cliente pagou de fato.
+  // Venda antiga nao tem subtotal: nesse caso ele e igual ao total.
+  subtotal:      { type: Number, default: 0, min: 0 },
+  desconto:      { type: Number, default: 0, min: 0 },   // em reais
+  descontoTipo:  { type: String, default: "", enum: ["", "percentual", "valor", "total"] },
+  descontoInfo:  { type: String, default: "" },          // "10%", "arredondado para R$ 50,00"
   // Resumo (compatibilidade com o historico antigo): a forma unica, ou "misto"
   pagamento: { type: String, required: true, enum: ["pix", "cartao", "dinheiro", "misto"] },
   // Detalhe: a comanda pode ser dividida (metade dinheiro, metade pix)
@@ -1462,6 +1469,28 @@ app.get("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req
     res.json(lista);
   } catch { res.json([]); }
 });
+// Confere que subtotal - desconto = total. Sem isso da para mandar um total
+// menor que os itens e o faturamento do dia nao fecha com a comanda.
+function normalizarDesconto(body) {
+  const total = Number(body.total) || 0;
+  const subtotal = Number(body.subtotal) > 0 ? Number(body.subtotal) : total;
+  const desconto = Number(body.desconto) || 0;
+
+  if (desconto < 0) return { erro: "Desconto negativo" };
+  if (desconto > subtotal) return { erro: "Desconto maior que o valor da comanda" };
+  if (Math.abs((subtotal - desconto) - total) > 0.02) {
+    return { erro: "Subtotal (R$ " + subtotal.toFixed(2) + ") menos desconto (R$ " + desconto.toFixed(2) +
+                   ") nao bate com o total (R$ " + total.toFixed(2) + ")" };
+  }
+  const tipos = ["percentual", "valor", "total"];
+  return {
+    subtotal: parseFloat(subtotal.toFixed(2)),
+    desconto: parseFloat(desconto.toFixed(2)),
+    descontoTipo: desconto > 0 && tipos.includes(body.descontoTipo) ? body.descontoTipo : "",
+    descontoInfo: desconto > 0 ? String(body.descontoInfo || "").slice(0, 60) : "",
+  };
+}
+
 const FORMAS_PAGAMENTO = ["pix", "cartao", "dinheiro"];
 
 // Aceita o formato antigo (pagamento: "pix") e o novo (pagamentos: [{tipo, valor}]).
@@ -1504,11 +1533,17 @@ app.post("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (re
   if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
   if (!total || total <= 0) return res.status(400).json({ erro: "Total inválido" });
 
+  const desc = normalizarDesconto(req.body);
+  if (desc.erro) return res.status(400).json({ erro: desc.erro });
+
   const pag = normalizarPagamento(req.body);
   if (pag.erro) return res.status(400).json({ erro: pag.erro });
 
   try {
-    const venda = await VendaSalaoDB.create({ ...req.body, pagamento: pag.pagamento, pagamentos: pag.pagamentos });
+    const venda = await VendaSalaoDB.create({
+      ...req.body, ...desc,
+      pagamento: pag.pagamento, pagamentos: pag.pagamentos,
+    });
     // Baixa automática no estoque
     await baixarEstoqueVenda(req.body.itens, String(venda._id));
     res.status(201).json(venda);
@@ -2715,6 +2750,10 @@ async function emitirUmaNota({ vendaId, pedidoId, cpfCliente, cfg, usuario }) {
   }
 
   const itensFiscais = montarItensFiscais(itens, cfg);
+  // ATENCAO ao plugar o provedor: quando a comanda teve desconto, a soma dos
+  // itens (subtotal) e MAIOR que valorTotal. O XML da NFC-e precisa levar isso
+  // em vDesc (rateado por item ou no total), senao a SEFAZ rejeita por
+  // divergencia entre o somatorio dos itens e o valor da nota.
   const errosItens = validarItensFiscais(itensFiscais);
   if (errosItens.length) {
     return { http: 400, corpo: { erro: "Itens sem dados fiscais. Preencha no cardapio ou defina um padrao.", detalhes: errosItens } };

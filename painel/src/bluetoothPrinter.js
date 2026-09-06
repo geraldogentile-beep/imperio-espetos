@@ -349,7 +349,7 @@ class ImpressoraBT {
 
   // ── IMPRIMIR RECIBO/COMANDA P/ CAIXA ──
   // Para conferência no caixa: itens COM preços, TOTAL, forma de pagamento
-  async imprimirRecibo({ mesa, cliente, garcom, itens, total, pagamento, pagamentos, pagamentoTexto, abertura, fechamento }) {
+  async imprimirRecibo({ mesa, cliente, garcom, itens, total, subtotal, desconto, descontoInfo, pagamento, pagamentos, pagamentoTexto, abertura, fechamento }) {
     const ab = abertura ? new Date(abertura) : new Date();
     const fe = fechamento ? new Date(fechamento) : new Date();
     const cmds = [
@@ -379,7 +379,15 @@ class ImpressoraBT {
       const meio = nome.padEnd(20, " ");
       cmds.push(texto(`${qtd} ${meio}${preco.padStart(7, " ")}`), NL);
     }
-    cmds.push(texto("--------------------------"), NL, NL);
+    cmds.push(texto("--------------------------"), NL);
+    // So mostra subtotal/desconto quando houve desconto — senao poluiria o cupom
+    if (Number(desconto) > 0) {
+      cmds.push(ALIGN_RIGHT);
+      cmds.push(texto(`Subtotal  R$ ${(Number(subtotal) || 0).toFixed(2)}`), NL);
+      const rotulo = descontoInfo ? `Desconto (${removerAcentos(String(descontoInfo))})` : "Desconto";
+      cmds.push(texto(`${rotulo}  -R$ ${Number(desconto).toFixed(2)}`), NL);
+    }
+    cmds.push(NL);
     cmds.push(ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
     // Comanda dividida: cada forma sai na sua linha, com o valor que coube
     const nomePg = { pix:"PIX", cartao:"Cartao", dinheiro:"Dinheiro", misto:"Misto" };

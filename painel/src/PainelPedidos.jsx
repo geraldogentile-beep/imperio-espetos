@@ -3517,7 +3517,10 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const corte = new Date(); corte.setDate(corte.getDate() - diasFiltro); corte.setHours(0, 0, 0, 0);
   const pp = entregues.filter(p => new Date(p.horario) >= corte);
   const totalDelivery = pp.reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
-  const totalDescontos = pp.reduce((s, p) => s + (p.desconto || 0), 0);
+  // Cupons no delivery + desconto dado no fechamento das comandas
+  const descontoDelivery = pp.reduce((s, p) => s + (p.desconto || 0), 0);
+  const descontoSalao = historicoSalao.reduce((s, v) => s + (Number(v.desconto) || 0), 0);
+  const totalDescontos = descontoDelivery + descontoSalao;
   const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
 
   // Faturamento do salão — mesas abertas + já fechadas
@@ -3599,7 +3602,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           <Metrica icon="🛵" label="Delivery" valor={"R$ " + totalDelivery.toFixed(2)} sub={pp.length + " pedido" + (pp.length !== 1 ? "s" : "")} cor="#10b981" />
           <Metrica icon="🍽️" label="Salão" valor={"R$ " + totalSalao.toFixed(2)} cor="#3b82f6" />
           <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
-          {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub="via cupons" cor="#8b5cf6" />}
+          {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub={descontoSalao > 0 && descontoDelivery > 0 ? "cupons + comandas" : descontoSalao > 0 ? "no fechamento" : "via cupons"} cor="#8b5cf6" />}
         </div>
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📊 {periodo === "hoje" ? "Por hora" : periodo === "semana" ? "Por dia" : "Por semana"}</div>
@@ -3795,6 +3798,8 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                             <div class="sub">Relatório de Venda — Mesa ${v.mesa}</div>
                             <div class="info">${v.cliente&&v.cliente!=='—'?'Cliente: '+v.cliente+'<br>':''}${v.garcom&&v.garcom!=='—'?'Garçom: '+v.garcom+'<br>':''}Fechamento: ${new Date(v.fechamento).toLocaleString('pt-BR',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</div>
                             ${v.itens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
+                            ${v.desconto > 0 ? `<div class="linha"><span>Subtotal</span><span>R$ ${(v.subtotal||v.total).toFixed(2)}</span></div>
+                            <div class="linha"><span>Desconto${v.descontoInfo?' ('+v.descontoInfo+')':''}</span><span>− R$ ${v.desconto.toFixed(2)}</span></div>` : ''}
                             <div class="total"><span>TOTAL</span><span>R$ ${v.total.toFixed(2)}</span></div>
                             <div class="info" style="margin-top:10px">Pagamento: ${descrevePagamento(v.pagamentos, v.pagamento)}</div>
                             <div class="rodape">Obrigado! 🍢</div>
@@ -4495,6 +4500,38 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const [pagDividido, setPagDividido] = useState(false);
   const [valoresPag, setValoresPag] = useState({ pix: "", cartao: "", dinheiro: "" });
 
+  // Desconto no fechamento. Tres jeitos de dizer a mesma coisa:
+  //   percentual -> "10% no pix"
+  //   valor      -> "tira R$ 5"
+  //   total      -> "deu 51, cobra 50" (o mais natural para arredondar)
+  const [descModo, setDescModo] = useState("nenhum");
+  const [descValor, setDescValor] = useState("");
+
+  function calcDesconto(subtotal) {
+    const vazio = { valor: 0, texto: "", erro: null };
+    if (descModo === "nenhum" || !descValor) return vazio;
+
+    if (descModo === "percentual") {
+      const pct = parseFloat(String(descValor).replace(",", ".")) || 0;
+      if (pct <= 0) return vazio;
+      if (pct > 100) return { ...vazio, erro: "Percentual acima de 100%" };
+      return { valor: parseFloat((subtotal * pct / 100).toFixed(2)), texto: `${pct}%`, erro: null };
+    }
+
+    if (descModo === "valor") {
+      const v = parseMoedaGlobal(descValor);
+      if (v <= 0) return vazio;
+      if (v > subtotal) return { ...vazio, erro: "Desconto maior que a conta" };
+      return { valor: v, texto: fmtR(v), erro: null };
+    }
+
+    // "total": o operador digita quanto vai cobrar e o desconto sai da conta
+    const alvo = parseMoedaGlobal(descValor);
+    if (alvo <= 0) return vazio;
+    if (alvo > subtotal) return { ...vazio, erro: "Valor maior que a conta" };
+    return { valor: parseFloat((subtotal - alvo).toFixed(2)), texto: `arredondado para ${fmtR(alvo)}`, erro: null };
+  }
+
   // Campos de pagamento do registro. Aceita a lista nova e cai no modo antigo
   // (uma forma so) quando ninguem passa nada.
   function resumoPagamento(pagamentos, total) {
@@ -4511,6 +4548,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   function limparPagamento() {
     setPagDividido(false);
     setValoresPag({ pix: "", cartao: "", dinheiro: "" });
+    setDescModo("nenhum");
+    setDescValor("");
   }
 
   // Monta o que vai para o servidor e diz quanto ainda falta lancar
@@ -4645,7 +4684,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setTimeout(()=>win.print(),400);
   }
 
-  async function fecharComanda(idxSC, pagamentos){
+  async function fecharComanda(idxSC, pagamentos, descInfo){
     // Duplo clique no botao criava DUAS vendas no banco
     if (fechandoRef.current) return;
     fechandoRef.current = true;
@@ -4653,7 +4692,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const todosItens = [...(scFechando.rodadas||[]).flatMap(r=>r.itens), ...scFechando.itens].reduce((acc,it)=>{
       const ex=acc.find(i=>i.id===it.id); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
     }, []);
-    const totalSC = totMesa(scFechando.itens) + (scFechando.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0);
+    const subtotalSC = totMesa(scFechando.itens) + (scFechando.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0);
+    const descontoSC = Math.min(Math.max(0, Number(descInfo?.valor) || 0), subtotalSC);
+    const totalSC = parseFloat((subtotalSC - descontoSC).toFixed(2));
     const registro = {
       id: Date.now(),
       mesa: mesa.id,
@@ -4662,6 +4703,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       garcomId: garcomLogado?.id || null,
       subComanda: scFechando.label,
       itens: todosItens,
+      subtotal: subtotalSC,
+      desconto: descontoSC,
+      descontoTipo: descontoSC > 0 ? (descInfo?.tipo || "") : "",
+      descontoInfo: descontoSC > 0 ? (descInfo?.texto || "") : "",
       total: totalSC,
       ...resumoPagamento(pagamentos, totalSC),
       abertura: scFechando.abertura||mesa.abertura,
@@ -4713,18 +4758,25 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setDivSalao(1);
   }
 
-  async function fecharMesa(pagamentos){
+  async function fecharMesa(pagamentos, descInfo){
     if (fechandoRef.current) return; // evita venda duplicada por duplo clique
     fechandoRef.current = true;
     // Fecha todas as comandas de uma vez
     const todosItens = (mesa.subComandas||[]).flatMap(sc=>[...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens])
       .reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
-    const totalMesa = totMesaCompleta(mesa);
+    const subtotalMesa = totMesaCompleta(mesa);
+    const descontoMesa = Math.min(Math.max(0, Number(descInfo?.valor) || 0), subtotalMesa);
+    const totalMesa = parseFloat((subtotalMesa - descontoMesa).toFixed(2));
     const registro = {
       id: Date.now(), mesa: mesa.id,
       cliente: (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ")||"—",
       garcom: garcomLogado?.nome||mesa.garcom||"—", garcomId:garcomLogado?.id||null,
-      itens:todosItens, total:totalMesa,
+      itens:todosItens,
+      subtotal: subtotalMesa,
+      desconto: descontoMesa,
+      descontoTipo: descontoMesa > 0 ? (descInfo?.tipo || "") : "",
+      descontoInfo: descontoMesa > 0 ? (descInfo?.texto || "") : "",
+      total: totalMesa,
       ...resumoPagamento(pagamentos, totalMesa),
       abertura:mesa.abertura, fechamento:new Date().toISOString(),
     };
@@ -4843,10 +4895,14 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   // TELA FECHAR
   if(telaSalao==="fechar") {
     const fecharUma = mesa.subComandas.length > 1; // se há múltiplas, fecha só a ativa
-    const totalFechar = fecharUma ? totalSCAtual : totalAcumulado;
+    const subtotalFechar = fecharUma ? totalSCAtual : totalAcumulado;
+    const desc = calcDesconto(subtotalFechar);
+    const totalFechar = parseFloat((subtotalFechar - desc.valor).toFixed(2));
+    const descontoInfo = { valor: desc.valor, tipo: desc.valor > 0 ? descModo : "", texto: desc.texto };
     const pagInfo = montarPagamentos(totalFechar);
     const pagOk = !pagDividido || (pagInfo.pagamentos.length > 0 && Math.abs(pagInfo.falta) <= 0.02);
     const pagTexto = descrevePagamento(pagInfo.pagamentos, pagSalao);
+    const podeConfirmar = pagOk && !desc.erro && totalFechar > 0;
     const todosItensFechar = fecharUma
       ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
       : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>i.id===it.id);if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
@@ -4888,6 +4944,67 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{fontSize:12,color:"#92400e"}}>Cada pessoa paga</div>
             <div style={{fontWeight:800,fontSize:22,color:"#7b1a0a"}}>{fmtR(totalFechar/divSalao)}</div>
           </div>}
+        </div>
+        {/* Desconto */}
+        <div style={card2}>
+          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🏷️ Desconto</div>
+          <div style={{display:"flex",gap:6,marginBottom:descModo==="nenhum"?0:10}}>
+            {[["nenhum","Sem"],["percentual","%"],["valor","R$"],["total","Cobrar"]].map(([k,l])=>(
+              <button key={k} onClick={()=>{ setDescModo(k); setDescValor(""); }}
+                style={{flex:1,padding:"8px 2px",borderRadius:10,border:`2px solid ${descModo===k?"#7b1a0a":"#e0e0e0"}`,background:descModo===k?"#fef0ed":"#fff",fontWeight:descModo===k?700:500,fontSize:12,cursor:"pointer",color:descModo===k?"#7b1a0a":"#555"}}>{l}</button>
+            ))}
+          </div>
+
+          {descModo !== "nenhum" && (
+            <>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <input inputMode="decimal" value={descValor}
+                  placeholder={descModo==="percentual" ? "10" : descModo==="valor" ? "0,00" : fmtR(subtotalFechar).replace("R$ ","")}
+                  onChange={e=>setDescValor(descModo==="percentual" ? e.target.value.replace(/[^\d,.]/g,"") : mascaraMoeda(e.target.value))}
+                  style={{flex:1,minWidth:0,padding:"10px 12px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:16,outline:"none",boxSizing:"border-box",color:"#333"}} />
+                {descModo === "percentual" && (
+                  <div style={{display:"flex",gap:5}}>
+                    {["5","10"].map(p=>(
+                      <button key={p} onClick={()=>setDescValor(p)}
+                        style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"10px 11px",fontSize:12,cursor:"pointer",color:"#555",fontWeight:700}}>{p}%</button>
+                    ))}
+                  </div>
+                )}
+                {descModo === "total" && (
+                  <button onClick={()=>{
+                    // Arredonda para baixo no multiplo de 5 mais proximo: 51 -> 50, 63 -> 60
+                    const alvo = Math.floor(subtotalFechar / 5) * 5;
+                    setDescValor(alvo > 0 ? mascaraMoeda(String(Math.round(alvo*100))) : "");
+                  }} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"10px 11px",fontSize:12,cursor:"pointer",color:"#555",fontWeight:700,whiteSpace:"nowrap"}}>↓ 5</button>
+                )}
+              </div>
+              <div style={{fontSize:11,color:"#999",marginTop:6}}>
+                {descModo==="percentual" ? "Percentual sobre o total da comanda"
+                  : descModo==="valor" ? "Quanto tirar da conta"
+                  : "Quanto o cliente vai pagar — o desconto sai da diferença"}
+              </div>
+            </>
+          )}
+
+          {desc.erro && (
+            <div style={{marginTop:8,background:"#fee2e2",color:"#991b1b",borderRadius:9,padding:"8px 11px",fontSize:12,fontWeight:600}}>
+              {desc.erro}
+            </div>
+          )}
+
+          {desc.valor > 0 && !desc.erro && (
+            <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #f0f0f0",fontSize:13}}>
+              <div style={{display:"flex",justifyContent:"space-between",color:"#666",padding:"2px 0"}}>
+                <span>Subtotal</span><span>{fmtR(subtotalFechar)}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",color:"#10b981",fontWeight:700,padding:"2px 0"}}>
+                <span>Desconto {desc.texto ? `(${desc.texto})` : ""}</span><span>− {fmtR(desc.valor)}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:800,color:"#7b1a0a",paddingTop:6}}>
+                <span>A pagar</span><span>{fmtR(totalFechar)}</span>
+              </div>
+            </div>
+          )}
         </div>
         <div style={card2}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -4944,6 +5061,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               cliente: nomeCliente,
               garcom: nomeGarcom,
               itens: todosItensFechar,
+              subtotal: subtotalFechar,
+              desconto: desc.valor,
+              descontoInfo: desc.texto,
               total: totalFechar,
               pagamento: pagInfo.pagamentos.length === 1 ? pagInfo.pagamentos[0].tipo : "misto",
               pagamentoTexto: pagTexto,
@@ -4985,6 +5105,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               <div class="sub">Comanda — Mesa ${mesa.id}${fecharUma?` | ${sc.label}`:""}</div>
               <div class="info">${nomeCliente&&nomeCliente!=="—"?'Cliente: '+nomeCliente+'<br>':''}${nomeGarcom&&nomeGarcom!=="—"?'Garçom: '+nomeGarcom+'<br>':''}Abertura: ${abertura?new Date(abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
               ${todosItensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
+              ${desc.valor > 0 ? `<div class="linha"><span>Subtotal</span><span>R$ ${subtotalFechar.toFixed(2)}</span></div>
+              <div class="linha"><span>Desconto${desc.texto?' ('+desc.texto+')':''}</span><span>− R$ ${desc.valor.toFixed(2)}</span></div>` : ''}
               <div class="total"><span>TOTAL</span><span>R$ ${totalFechar.toFixed(2)}</span></div>
               <div class="info" style="margin-top:12px">Pagamento: ${pagTexto}</div>
               <div class="rodape">Obrigado pela visita! 🍢</div>
@@ -4993,9 +5115,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             win.document.close();
             setTimeout(()=>win.print(),500);
           }} style={{background:T.grayLL,color:T.gray,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"12px 0",fontWeight:600,fontSize:14,cursor:"pointer",flex:1}}>🖨️ Imprimir</button>
-          <button disabled={!pagOk}
-            onClick={()=>fecharUma?fecharComanda(scIdx,pagInfo.pagamentos):fecharMesa(pagInfo.pagamentos)}
-            style={{...BP2(pagOk?"linear-gradient(135deg,#065f46,#10b981)":"#ccc"),flex:2,cursor:pagOk?"pointer":"not-allowed"}}>
+          <button disabled={!podeConfirmar}
+            onClick={()=>fecharUma?fecharComanda(scIdx,pagInfo.pagamentos,descontoInfo):fecharMesa(pagInfo.pagamentos,descontoInfo)}
+            style={{...BP2(podeConfirmar?"linear-gradient(135deg,#065f46,#10b981)":"#ccc"),flex:2,cursor:podeConfirmar?"pointer":"not-allowed"}}>
             ✅ Confirmar — {fmtR(totalFechar)}
           </button>
         </div>
