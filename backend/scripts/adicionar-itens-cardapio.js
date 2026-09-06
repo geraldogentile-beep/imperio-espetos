@@ -48,15 +48,57 @@ const NOVOS_ITENS = [
   { categoria: "Refeições",       nome: "Jantinha Imperial",               preco: 18.00, tempoPreparo: 15, obs: "arroz, feijão com bacon e calabresa, mandioca cozida, vinagrete, farofa, molho da casa" },
   { categoria: "Refeições",       nome: "Lanche Imperial",                 preco: 18.00, tempoPreparo: 15, obs: "pão com gergelim, kafta com queijo, molho da casa, barbecue, vinagrete, alface — outro sabor de espeto altera o valor" },
 
-  // ── Doces de balcão ──
-  { categoria: "Doces",           nome: "Pão de mel",                      preco: 11.00, tempoPreparo: 1,  obs: null },
-  { categoria: "Doces",           nome: "Trufa",                           preco: 7.00,  tempoPreparo: 1,  obs: null },
-  { categoria: "Doces",           nome: "Trident",                         preco: 3.00,  tempoPreparo: 1,  obs: null },
-  { categoria: "Doces",           nome: "Halls",                           preco: 3.00,  tempoPreparo: 1,  obs: null },
-  { categoria: "Doces",           nome: "Mentos",                          preco: 3.00,  tempoPreparo: 1,  obs: null },
+  // ── Guloseimas de balcão ──
+  // Categoria separada de "Doces" de proposito: "Doces" e a aba dos espetos
+  // doces (Romeu e Julieta, morango com chocolate). Bala e pao de mel nao sao
+  // espeto e nao devem aparecer junto.
+  { categoria: "Guloseimas",      nome: "Pão de mel",                      preco: 11.00, tempoPreparo: 1,  obs: null },
+  { categoria: "Guloseimas",      nome: "Trufa",                           preco: 7.00,  tempoPreparo: 1,  obs: null },
+  { categoria: "Guloseimas",      nome: "Trident",                         preco: 3.00,  tempoPreparo: 1,  obs: null },
+  { categoria: "Guloseimas",      nome: "Halls",                           preco: 3.00,  tempoPreparo: 1,  obs: null },
+  { categoria: "Guloseimas",      nome: "Mentos",                          preco: 3.00,  tempoPreparo: 1,  obs: null },
 ];
 
 const normalizar = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+
+// Decide o que fazer, sem tocar no banco. Separado de main() para dar para
+// testar: isso escreve em dados de producao e nao pode sair no chute.
+export function planejar(existentes, novos) {
+  const porNome = new Map(existentes.map((i) => [normalizar(i.nome), i]));
+  let proximoId = existentes.reduce((max, i) => Math.max(max, Number(i.id) || 0), 0) + 1;
+
+  const inserir = [];
+  const pulados = [];
+  const recategorizar = [];   // ja existe, mas na categoria errada
+
+  for (const item of novos) {
+    const jaTem = porNome.get(normalizar(item.nome));
+    if (jaTem) {
+      // Corrige quem foi criado numa rodada anterior com a categoria antiga.
+      // So a categoria: preco e observacao podem ter sido ajustados a mao.
+      if (jaTem.categoria !== item.categoria) {
+        recategorizar.push({ id: jaTem.id, nome: item.nome, de: jaTem.categoria, para: item.categoria });
+      } else {
+        pulados.push(item.nome);
+      }
+      continue;
+    }
+    inserir.push({
+      id: proximoId++,
+      categoria: item.categoria,
+      nome: item.nome,
+      preco: item.preco,
+      precoPromocional: null,
+      tempoPreparo: item.tempoPreparo,
+      ativo: true,
+      obs: item.obs,
+      // Vazio de proposito: preencher em Config -> Fiscal -> "Preencher os itens vazios"
+      fiscal: { ncm: "", cfop: "", csosn: "", cest: "", origem: "0", unidade: "UN" },
+    });
+    porNome.set(normalizar(item.nome), { id: proximoId - 1, nome: item.nome, categoria: item.categoria });
+  }
+  return { inserir, pulados, recategorizar };
+}
 
 async function main() {
   const uri = process.env.MONGO_URI;
@@ -68,58 +110,55 @@ async function main() {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 15000 });
   const col = mongoose.connection.collection("cardapios");
 
-  const existentes = await col.find({}, { projection: { id: 1, nome: 1 } }).toArray();
-  const nomes = new Set(existentes.map((i) => normalizar(i.nome)));
+  const existentes = await col.find({}, { projection: { id: 1, nome: 1, categoria: 1 } }).toArray();
+  const maiorId = existentes.reduce((max, i) => Math.max(max, Number(i.id) || 0), 0);
 
-  // O id é um número sequencial próprio, separado do _id do Mongo
-  let proximoId = existentes.reduce((max, i) => Math.max(max, Number(i.id) || 0), 0) + 1;
+  const { inserir, pulados, recategorizar } = planejar(existentes, NOVOS_ITENS);
 
-  const inserir = [];
-  const pulados = [];
-  for (const item of NOVOS_ITENS) {
-    if (nomes.has(normalizar(item.nome))) { pulados.push(item.nome); continue; }
-    inserir.push({
-      id: proximoId++,
-      categoria: item.categoria,
-      nome: item.nome,
-      preco: item.preco,
-      precoPromocional: null,
-      tempoPreparo: item.tempoPreparo,
-      ativo: true,
-      obs: item.obs,
-      // Vazio de propósito: preencher em Config → Fiscal → "Preencher os itens vazios"
-      fiscal: { ncm: "", cfop: "", csosn: "", cest: "", origem: "0", unidade: "UN" },
-    });
-    nomes.add(normalizar(item.nome));
-  }
+  console.log(`\nCardápio atual: ${existentes.length} itens (maior id: ${maiorId})`);
+  if (pulados.length) console.log(`Já estavam certos, pulados: ${pulados.join(", ")}`);
 
-  console.log(`\nCardápio atual: ${existentes.length} itens (maior id: ${proximoId - inserir.length - 1})`);
-  if (pulados.length) console.log(`Já existiam, pulados: ${pulados.join(", ")}`);
-
-  if (!inserir.length) {
-    console.log("\nNada novo para adicionar.");
+  if (!inserir.length && !recategorizar.length) {
+    console.log("\nNada a fazer.");
     await mongoose.disconnect();
     return;
   }
 
-  console.log(`\n${DRY_RUN ? "SERIAM ADICIONADOS" : "ADICIONANDO"} ${inserir.length} itens:\n`);
-  for (const i of inserir) {
-    console.log(`  #${String(i.id).padEnd(4)} ${i.categoria.padEnd(16)} ${i.nome.padEnd(32)} R$ ${i.preco.toFixed(2)}`);
+  if (inserir.length) {
+    console.log(`\n${DRY_RUN ? "SERIAM ADICIONADOS" : "ADICIONANDO"} ${inserir.length} itens:\n`);
+    for (const i of inserir) {
+      console.log(`  #${String(i.id).padEnd(4)} ${i.categoria.padEnd(16)} ${i.nome.padEnd(32)} R$ ${i.preco.toFixed(2)}`);
+    }
+  }
+
+  if (recategorizar.length) {
+    console.log(`\n${DRY_RUN ? "SERIAM MOVIDOS" : "MOVENDO"} ${recategorizar.length} itens de categoria:\n`);
+    for (const r of recategorizar) {
+      console.log(`  #${String(r.id).padEnd(4)} ${r.nome.padEnd(32)} ${r.de} -> ${r.para}`);
+    }
   }
 
   if (DRY_RUN) {
     console.log("\n--dry-run: nada foi gravado. Rode sem a flag para aplicar.");
   } else {
-    await col.insertMany(inserir);
-    console.log(`\n✅ ${inserir.length} itens adicionados.`);
+    if (inserir.length) await col.insertMany(inserir);
+    for (const r of recategorizar) {
+      await col.updateOne({ id: r.id }, { $set: { categoria: r.para } });
+    }
+    console.log(`\n✅ ${inserir.length} adicionados, ${recategorizar.length} movidos de categoria.`);
     console.log("Agora rode: pm2 restart imperio-backend");
-    console.log("Depois, em Config → Fiscal, clique em \"Preencher os itens vazios\".");
+    console.log("Depois, em Config -> Fiscal, clique em \"Preencher os itens vazios\".");
   }
 
   await mongoose.disconnect();
 }
 
-main().catch((e) => {
-  console.error("Falhou:", e.message);
-  process.exit(1);
-});
+// Só executa quando chamado direto — o teste importa planejar() sem conectar
+if (process.argv[1] && process.argv[1].endsWith("adicionar-itens-cardapio.js")) {
+  main().catch((e) => {
+    console.error("Falhou:", e.message);
+    process.exit(1);
+  });
+}
+
+export { NOVOS_ITENS };
