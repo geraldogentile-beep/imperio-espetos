@@ -4759,6 +4759,37 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   //   percentual -> "10% no pix"
   //   valor      -> "tira R$ 5"
   //   total      -> "deu 51, cobra 50" (o mais natural para arredondar)
+  // Desconto e gorjeta so com o administrador. Quem esta no caixa nao libera
+  // sozinho: pede o PIN do dono, que vale para ESTE fechamento apenas.
+  // Bloquear de vez travaria o caixa a noite inteira — no varejo isso se
+  // resolve com liberacao do gerente, nao com porta trancada.
+  const [liberado, setLiberado] = useState(false);
+  const [pedindoPin, setPedindoPin] = useState(false);
+  const [pinAdm, setPinAdm] = useState("");
+  const [erroPin, setErroPin] = useState(null);
+  const [autorizadoPor, setAutorizadoPor] = useState("");
+  const podeAjustarValor = isDono || liberado;
+
+  async function liberarComPin() {
+    setErroPin(null);
+    try {
+      const r = await fetch(BACKEND_URL + "/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: pinAdm }),
+      });
+      const d = await r.json().catch(() => ({}));
+      // Só o dono libera: PIN do caixa aqui não vale de nada
+      if (r.ok && d.role === "dono") {
+        setLiberado(true); setPedindoPin(false); setPinAdm("");
+        setAutorizadoPor("administrador");
+        msgSalao("🔓 Desconto e gorjeta liberados para este fechamento");
+      } else {
+        setErroPin(r.ok ? "Esse PIN não é do administrador." : (d.erro || "PIN incorreto."));
+        setPinAdm("");
+      }
+    } catch { setErroPin("Erro de conexão."); }
+  }
+
   const [descModo, setDescModo] = useState("nenhum");
   const [descValor, setDescValor] = useState("");
 
@@ -4840,6 +4871,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setDescValor("");
     setGorjModo("nenhum");
     setGorjValor("");
+    setLiberado(false);
+    setPedindoPin(false);
+    setPinAdm("");
+    setErroPin(null);
+    setAutorizadoPor("");
   }
 
   // Monta o que vai para o servidor e diz quanto ainda falta lancar
@@ -5264,8 +5300,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const totalComanda = parseFloat((subtotalFechar - desc.valor).toFixed(2));   // isto é venda
     const gor = calcGorjeta(totalComanda);
     const totalFechar = parseFloat((totalComanda + gor.valor).toFixed(2));       // isto é o que entra no caixa
-    const descontoInfo = { valor: desc.valor, tipo: desc.valor > 0 ? descModo : "", texto: desc.texto };
-    const gorjetaInfo = { valor: gor.valor, tipo: gor.valor > 0 ? gorjModo : "", texto: gor.texto };
+    // Quando o caixa precisou de liberacao, fica registrado na venda quem
+    // autorizou — senao a dona ve um desconto e nao sabe de onde veio.
+    const selo = autorizadoPor ? ` · liberado pelo ${autorizadoPor}` : "";
+    const descontoInfo = { valor: desc.valor, tipo: desc.valor > 0 ? descModo : "", texto: desc.texto ? desc.texto + selo : "" };
+    const gorjetaInfo = { valor: gor.valor, tipo: gor.valor > 0 ? gorjModo : "", texto: gor.texto ? gor.texto + selo : "" };
     const pagInfo = montarPagamentos(totalFechar);
     const pagOk = !pagDividido || (pagInfo.pagamentos.length > 0 && Math.abs(pagInfo.falta) <= 0.02);
     const pagTexto = descrevePagamento(pagInfo.pagamentos, pagSalao);
@@ -5312,7 +5351,46 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{fontWeight:800,fontSize:22,color:"#7b1a0a"}}>{fmtR(totalFechar/divSalao)}</div>
           </div>}
         </div>
+        {/* Desconto e gorjeta: só o administrador libera */}
+        {!podeAjustarValor && (
+          <div style={card2}>
+            <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>🔒 Desconto e gorjeta</div>
+            {!pedindoPin ? (
+              <>
+                <div style={{fontSize:12,color:"#888",lineHeight:1.6,marginBottom:10}}>
+                  Só o administrador autoriza desconto ou gorjeta. Chame quem tem o PIN
+                  para liberar este fechamento.
+                </div>
+                <button onClick={()=>{setPedindoPin(true);setErroPin(null);}}
+                  style={{width:"100%",background:"#fff",color:"#7b1a0a",border:"1.5px solid #7b1a0a",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>
+                  🔓 Liberar com PIN do administrador
+                </button>
+              </>
+            ) : (
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                <input type="password" inputMode="numeric" value={pinAdm} placeholder="PIN do administrador"
+                  onChange={e=>setPinAdm(e.target.value.replace(/\D/g,"").slice(0,4))}
+                  onKeyDown={e=>{ if(e.key==="Enter"&&pinAdm.length===4) liberarComPin(); }}
+                  autoFocus
+                  style={{width:"100%",padding:"11px 12px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:18,letterSpacing:6,textAlign:"center",outline:"none",boxSizing:"border-box",color:"#333"}} />
+                {erroPin && <div style={{background:"#fee2e2",color:"#991b1b",borderRadius:9,padding:"8px 11px",fontSize:12,fontWeight:600}}>{erroPin}</div>}
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={liberarComPin} disabled={pinAdm.length!==4}
+                    style={{flex:2,background:pinAdm.length===4?"linear-gradient(135deg,#7b1a0a,#c0392b)":"#ccc",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:pinAdm.length===4?"pointer":"not-allowed"}}>
+                    Liberar
+                  </button>
+                  <button onClick={()=>{setPedindoPin(false);setPinAdm("");setErroPin(null);}}
+                    style={{flex:1,background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"10px 0",fontWeight:600,fontSize:13,cursor:"pointer"}}>
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Desconto */}
+        {podeAjustarValor && (
         <div style={card2}>
           <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🏷️ Desconto</div>
           <div style={{display:"flex",gap:6,marginBottom:descModo==="nenhum"?0:10}}>
@@ -5373,7 +5451,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             </div>
           )}
         </div>
+        )}
         {/* Gorjeta — não é venda, é dinheiro da equipe */}
+        {podeAjustarValor && (
         <div style={card2}>
           <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🙏 Gorjeta</div>
           <div style={{display:"flex",gap:6,marginBottom:gorjModo==="nenhum"?0:10}}>
@@ -5427,6 +5507,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             </div>
           )}
         </div>
+        )}
         <div style={card2}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div style={{fontWeight:700,fontSize:12,color:"#888",textTransform:"uppercase"}}>💳 Pagamento</div>
