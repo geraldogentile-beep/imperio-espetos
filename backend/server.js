@@ -374,6 +374,30 @@ const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
 const NotaFiscalDB = mongoose.model("NotaFiscal",     NotaFiscalSchema);
 
+// ── MESAS DO SALÃO ────────────────────────────────────────────
+// Ate agora a comanda aberta vivia SO no localStorage do aparelho: o garcom
+// lancava no celular dele e o caixa nunca via. So a venda FECHADA chegava ao
+// servidor. Agora o estado da mesa e do servidor, e cada aparelho sincroniza.
+const MesaSalaoSchema = new mongoose.Schema({
+  mesaId:  { type: Number, required: true },
+  dataStr: { type: String, required: true },   // dia operacional, nao data civil
+  dados:   { type: Object, required: true },   // a mesa inteira, como o painel monta
+  // Contador otimista: quem gravar com versao velha leva 409 e recarrega,
+  // em vez de apagar o que outro aparelho acabou de lancar.
+  versao:  { type: Number, default: 1 },
+  porQuem: { type: String, default: "" },
+}, { timestamps: true });
+MesaSalaoSchema.index({ dataStr: 1, mesaId: 1 }, { unique: true });
+const MesaSalaoDB = mongoose.model("MesaSalao", MesaSalaoSchema);
+
+// O dia vira as 06:00, nao a meia-noite: a casa fecha 00:00 e uma mesa aberta
+// 23:40 nao pode sumir na virada.
+function diaOperacional(d = new Date()) {
+  const x = new Date(d);
+  if (x.getHours() < 6) x.setDate(x.getDate() - 1);
+  return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+}
+
 // ── FILA DE IMPRESSÃO ─────────────────────────────────────────
 // A termica e Bluetooth e fica pareada num aparelho so (o do caixa).
 // O celular do garcom nao alcanca ela, entao enfileira aqui.
@@ -418,6 +442,9 @@ async function criarIndices() {
     await NotaFiscalDB.collection.createIndex({ status: 1, dataEmissao: -1 });
     await NotaFiscalDB.collection.createIndex({ vendaId: 1 });
     await VendaSalaoDB.collection.createIndex({ notaFiscalStatus: 1, fechamento: -1 });
+    await MesaSalaoDB.collection.createIndex({ dataStr: 1, mesaId: 1 }, { unique: true });
+    // Salao de uma semana atras nao serve para nada: some sozinho
+    await MesaSalaoDB.collection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 7 * 86400 });
     await ImpressaoDB.collection.createIndex({ status: 1, createdAt: 1 });
     // Ticket de ontem nao serve para nada: some sozinho depois de 24h
     await ImpressaoDB.collection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 86400 });
@@ -3350,6 +3377,96 @@ app.post("/reset/dados-teste", authMiddleware(["dono"]), async (req, res) => {
       mantidos: "cardápio, configurações, garçons, cupons e cadastro do estoque",
     });
   } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── MESAS: SINCRONIZAÇÃO ENTRE APARELHOS ──────────────────────
+// O garçom lança no celular, o caixa vê no PC. Antes cada aparelho tinha o
+// seu salão no localStorage e eles nunca se falavam.
+
+// GET /mesas — o estado do salão no dia operacional de hoje
+app.get("/mesas", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  try {
+    const lista = await MesaSalaoDB.find({ dataStr: diaOperacional() })
+      .select("mesaId dados versao porQuem updatedAt").lean();
+    res.json({
+      dia: diaOperacional(),
+      mesas: lista.map(m => ({ mesaId: m.mesaId, dados: m.dados, versao: m.versao, porQuem: m.porQuem, em: m.updatedAt })),
+    });
+  } catch (e) {
+    console.error("Erro ao listar mesas:", e.message);
+    res.status(500).json({ erro: "Erro ao carregar as mesas" });
+  }
+});
+
+// PUT /mesas/:mesaId  { dados, versao }
+// versao = a que o aparelho tinha quando comecou a editar. Se o servidor ja
+// estiver adiante, recusa e devolve o estado atual — assim dois garcons na
+// mesma mesa nao apagam o lancamento um do outro.
+app.put("/mesas/:mesaId", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  const mesaId = parseInt(req.params.mesaId);
+  if (!Number.isFinite(mesaId)) return res.status(400).json({ erro: "Mesa invalida" });
+
+  const { dados, versao } = req.body || {};
+  if (!dados || typeof dados !== "object") return res.status(400).json({ erro: "dados obrigatorios" });
+
+  const dataStr = diaOperacional();
+  const quem = req.user?.nome || req.user?.role || "";
+
+  try {
+    const atual = await MesaSalaoDB.findOne({ dataStr, mesaId }).lean();
+
+    // Primeira gravação do dia para esta mesa
+    if (!atual) {
+      const criada = await MesaSalaoDB.create({ mesaId, dataStr, dados, versao: 1, porQuem: quem });
+      return res.status(201).json({ ok: true, versao: criada.versao });
+    }
+
+    const esperada = Number(versao);
+    if (Number.isFinite(esperada) && esperada !== atual.versao) {
+      return res.status(409).json({
+        erro: "Essa mesa foi alterada em outro aparelho",
+        versao: atual.versao,
+        dados: atual.dados,
+        porQuem: atual.porQuem,
+      });
+    }
+
+    const novo = await MesaSalaoDB.findOneAndUpdate(
+      { dataStr, mesaId, versao: atual.versao },   // trava: so grava se ninguem passou na frente
+      { $set: { dados, porQuem: quem }, $inc: { versao: 1 } },
+      { new: true }
+    ).lean();
+
+    // Perdeu a corrida entre o findOne e o update
+    if (!novo) {
+      const agora = await MesaSalaoDB.findOne({ dataStr, mesaId }).lean();
+      return res.status(409).json({ erro: "Essa mesa foi alterada em outro aparelho", versao: agora?.versao, dados: agora?.dados });
+    }
+    res.json({ ok: true, versao: novo.versao });
+  } catch (e) {
+    // Indice unico: dois aparelhos criaram a mesma mesa ao mesmo tempo
+    if (e.code === 11000) {
+      const agora = await MesaSalaoDB.findOne({ dataStr, mesaId }).lean().catch(() => null);
+      return res.status(409).json({ erro: "Essa mesa foi criada em outro aparelho", versao: agora?.versao, dados: agora?.dados });
+    }
+    console.error("Erro ao salvar mesa:", e.message);
+    res.status(500).json({ erro: "Erro ao salvar a mesa" });
+  }
+});
+
+// DELETE /mesas — zera o salao do dia (usado pelo "zerar salão" do painel)
+app.delete("/mesas", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  try {
+    const r = await MesaSalaoDB.deleteMany({ dataStr: diaOperacional() });
+    console.log(`Salao do dia zerado por ${req.user?.nome || req.user?.role}: ${r.deletedCount} mesas`);
+    res.json({ ok: true, removidas: r.deletedCount });
+  } catch (e) {
+    console.error("Erro ao zerar mesas:", e.message);
+    res.status(500).json({ erro: "Erro ao zerar as mesas" });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════

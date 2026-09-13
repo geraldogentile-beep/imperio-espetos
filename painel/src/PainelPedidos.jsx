@@ -3847,13 +3847,16 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                   ⚠️ Esta ação não pode ser desfeita. Tem certeza?
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => {
+                  <button onClick={async () => {
                     // Zera histórico de vendas
                     if (setHistoricoSalao) setHistoricoSalao([]);
                     // Zera faturamento acumulado
                     if (setFaturadoSalaoRel) setFaturadoSalaoRel(0);
                     // Libera todas as mesas
                     if (setMesasSalaoRel) setMesasSalaoRel(p => [...MESAS_ESPECIAIS_BASE, ...p.filter(m=>!m.tipo).map((_,i)=>initMesa(i))]);
+                    // Zera tambem no servidor: sem isso o poll traz o salao
+                    // inteiro de volta em 5 segundos.
+                    try { await authFetch(BACKEND_URL + "/mesas", { method: "DELETE" }); } catch {}
                     // Limpa localStorage do salão
                     try {
                       localStorage.removeItem("imperio_faturado_salao");
@@ -4605,6 +4608,14 @@ function migrarMesa(m) {
   return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
 }
 function fmtR(v) { return "R$ "+v.toFixed(2); }
+
+// O dia do salao vira as 06:00, nao a meia-noite: a casa fecha 00:00 e uma
+// mesa aberta 23:40 nao pode sumir na virada. Mesma regra no servidor.
+function diaOperacional(d = new Date()) {
+  const x = new Date(d);
+  if (x.getHours() < 6) x.setDate(x.getDate() - 1);
+  return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+}
 
 // Duas carnes diferentes do mesmo prato sao linhas SEPARADAS na comanda.
 // Antes o agrupamento era so por id, entao "Lanche (picanha)" e
@@ -6104,7 +6115,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [mesasSalao, setMesasSalao] = useState(() => {
     try {
       const lastDay = localStorage.getItem("imperio_mesas_dia");
-      const hoje = new Date().toDateString();
+      const hoje = diaOperacional();
       const regulares = Array.from({length:16},(_,i)=>initMesa(i));
       if (lastDay !== hoje) {
         localStorage.setItem("imperio_mesas_dia", hoje);
@@ -6235,6 +6246,106 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     const t = setInterval(sincronizarSalao, 60000); // 1min: vendas nao mudam tao rapido
     return () => clearInterval(t);
   }, [sincronizarSalao]);
+
+  // ── SINCRONIZAÇÃO DAS MESAS ENTRE APARELHOS ─────────────────
+  // Antes cada aparelho tinha o seu salão no localStorage e eles nunca se
+  // falavam: o garçom lançava no celular dele e o caixa nunca via. Agora o
+  // servidor guarda o estado da mesa e todos os aparelhos convergem para ele.
+  const versaoMesa   = useRef({});   // mesaId -> versao conhecida do servidor
+  const enviadoMesa  = useRef({});   // mesaId -> JSON do que ja foi aceito
+  const pendenteMesa = useRef(new Set());  // mesas com mudanca local nao enviada
+  const syncMesasPronto = useRef(false);
+  const [conflitoMesa, setConflitoMesa] = useState(null);
+
+  // Mesa intocada nao precisa existir no servidor — evita criar 18 documentos
+  // por dia num salao vazio.
+  const mesaVazia = useCallback((m) => {
+    const mm = migrarMesa(m);
+    if (mm.status !== "livre" || mm.garcom || mm.obs) return false;
+    return (mm.subComandas || []).every(sc =>
+      !(sc.itens || []).length && !(sc.rodadas || []).length && !sc.cliente);
+  }, []);
+
+  const aplicarMesasDoServidor = useCallback((lista) => {
+    if (!lista?.length) return;
+    setMesasSalao(prev => {
+      let mudou = false;
+      const novas = prev.map(local => {
+        const remota = lista.find(r => r.mesaId === local.id);
+        if (!remota) return local;
+        // Nao sobrescreve mesa que este aparelho esta editando e ainda nao mandou
+        if (pendenteMesa.current.has(local.id)) return local;
+        if (versaoMesa.current[local.id] === remota.versao) return local;
+        versaoMesa.current[local.id] = remota.versao;
+        enviadoMesa.current[local.id] = JSON.stringify(remota.dados);
+        mudou = true;
+        return migrarMesa(remota.dados);
+      });
+      return mudou ? novas : prev;
+    });
+  }, []);
+
+  // Puxa o salão do servidor a cada 5s
+  useEffect(() => {
+    let vivo = true;
+    async function puxar() {
+      try {
+        const r = await authFetch(BACKEND_URL + "/mesas");
+        if (!r.ok || !vivo) return;
+        const d = await r.json();
+        aplicarMesasDoServidor(d.mesas);
+        syncMesasPronto.current = true;
+      } catch { /* sem rede: segue com o que tem em memoria */ }
+    }
+    puxar();
+    const t = setInterval(puxar, 5000);
+    return () => { vivo = false; clearInterval(t); };
+  }, [aplicarMesasDoServidor]);
+
+  // Manda para o servidor o que mudou aqui
+  useEffect(() => {
+    // So depois do primeiro GET: senao o aparelho empurra o proprio
+    // localStorage por cima do que ja esta no servidor.
+    if (!syncMesasPronto.current) return;
+
+    const t = setTimeout(async () => {
+      for (const mesa of mesasSalao) {
+        const atual = JSON.stringify(mesa);
+        if (enviadoMesa.current[mesa.id] === atual) continue;
+        if (enviadoMesa.current[mesa.id] === undefined && mesaVazia(mesa)) continue;
+
+        pendenteMesa.current.add(mesa.id);
+        try {
+          const r = await authFetch(BACKEND_URL + "/mesas/" + mesa.id, {
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dados: mesa, versao: versaoMesa.current[mesa.id] }),
+          });
+          const d = await r.json().catch(() => ({}));
+
+          if (r.status === 409) {
+            // Outro aparelho mexeu nessa mesa: o servidor manda, nao este celular
+            versaoMesa.current[mesa.id] = d.versao;
+            enviadoMesa.current[mesa.id] = JSON.stringify(d.dados);
+            pendenteMesa.current.delete(mesa.id);
+            if (d.dados) {
+              setMesasSalao(prev => prev.map(x => x.id === mesa.id ? migrarMesa(d.dados) : x));
+              setConflitoMesa({ mesa: mesa.id, porQuem: d.porQuem || "outro aparelho" });
+              setTimeout(() => setConflitoMesa(null), 6000);
+            }
+            continue;
+          }
+
+          if (r.ok) {
+            versaoMesa.current[mesa.id] = d.versao;
+            enviadoMesa.current[mesa.id] = atual;
+          }
+        } catch { /* sem rede: fica pendente e tenta na proxima mudanca */ }
+        pendenteMesa.current.delete(mesa.id);
+      }
+    }, 700);   // junta rajada de cliques no + antes de mandar
+
+    return () => clearTimeout(t);
+  }, [mesasSalao, mesaVazia]);
 
   // Reconexão automática da impressora Bluetooth
   // - Tenta 1x ao carregar (após 1.5s)
@@ -6575,6 +6686,19 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
         </div>}
 
         {/* CONTEÚDO PRINCIPAL */}
+        {/* Duas pessoas mexeram na mesma mesa: o servidor manda, e quem estava
+            editando precisa saber que a tela mudou embaixo dele. */}
+        {conflitoMesa && (
+          <div style={{
+            position: "fixed", top: 14, left: "50%", transform: "translateX(-50%)",
+            background: "#fef3c7", border: "1.5px solid #f59e0b", color: "#92400e",
+            borderRadius: 12, padding: "10px 16px", fontSize: 13, fontWeight: 600,
+            zIndex: 9999, boxShadow: "0 4px 20px rgba(0,0,0,0.15)", maxWidth: "92vw", textAlign: "center",
+          }}>
+            ⚠️ Mesa {conflitoMesa.mesa} foi alterada em outro aparelho — a tela foi atualizada
+          </div>
+        )}
+
         <div className="main-content" style={{ flex: 1, minWidth: 0, overflow: "auto", background: T.cream }}>
 
           {/* Alerta novos pedidos */}
