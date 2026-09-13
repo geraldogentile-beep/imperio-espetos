@@ -245,6 +245,20 @@ const VendaSalaoSchema = new mongoose.Schema({
   },
   abertura: Date,
   fechamento: { type: Date, default: Date.now },
+  // ── Trilha de edicao ──
+  // Venda fechada e dinheiro ja contado. Se alguem corrige, tem que ficar
+  // registrado o que era antes, quem mexeu e por que — senao o fechamento do
+  // dia muda sozinho e ninguem sabe explicar.
+  edicoes: {
+    type: [{
+      quando:  { type: Date, default: Date.now },
+      por:     String,
+      motivo:  String,
+      antes:   Object,   // so os campos que mudaram
+      _id: false,
+    }],
+    default: [],
+  },
   // ── NFC-e ──
   // Cache denormalizado para a listagem nao precisar de lookup por venda.
   // A fonte da verdade e a colecao NotaFiscal.
@@ -1761,8 +1775,101 @@ app.post("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (re
   }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
+// PUT /vendas-salao/:id — corrige uma venda ja fechada.
+// So o que costuma sair errado no balcao: forma de pagamento, desconto,
+// gorjeta, mesa e nome. ITENS ficam de fora de proposito: mexer neles exige
+// refazer a baixa de estoque, e nesse caso o certo e excluir e lancar de novo.
+app.put("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
+  const { motivo } = req.body || {};
+  // Banco fora e id malformado sao coisas diferentes: engolir os dois no
+  // mesmo catch faria uma queda do Mongo aparecer como "id invalido".
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel. Tente de novo em instantes." });
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id invalido" });
+
+  let venda;
+  try {
+    venda = await VendaSalaoDB.findById(req.params.id).lean();
+  } catch (e) {
+    console.error("Erro ao carregar venda para correcao:", e.message);
+    return res.status(500).json({ erro: "Erro ao carregar a venda" });
+  }
+  if (!venda) return res.status(404).json({ erro: "Venda nao encontrada" });
+
+  // Nota ja autorizada esta na SEFAZ: mudar valor aqui deixa os dois
+  // registros divergentes. Tem que cancelar a nota primeiro.
+  if (venda.notaFiscalStatus === "autorizada") {
+    return res.status(409).json({ erro: "Essa venda ja tem nota fiscal autorizada. Cancele a nota antes de corrigir a venda." });
+  }
+
+  // O subtotal vem da venda: os itens nao mudam, entao ele nao muda.
+  const subtotal = Number(venda.subtotal) > 0 ? Number(venda.subtotal) : Number(venda.total) || 0;
+  const desconto = req.body.desconto !== undefined ? Number(req.body.desconto) || 0 : Number(venda.desconto) || 0;
+  const total = parseFloat((subtotal - desconto).toFixed(2));
+  if (total <= 0) return res.status(400).json({ erro: "Desconto deixaria a venda em zero ou negativa" });
+
+  const corpo = {
+    ...venda,
+    ...req.body,
+    subtotal, desconto, total,
+    gorjeta: req.body.gorjeta !== undefined ? Number(req.body.gorjeta) || 0 : Number(venda.gorjeta) || 0,
+  };
+
+  const desc = normalizarDesconto(corpo);
+  if (desc.erro) return res.status(400).json({ erro: desc.erro });
+  const gor = normalizarGorjeta(corpo);
+  if (gor.erro) return res.status(400).json({ erro: gor.erro });
+  const pag = normalizarPagamento(corpo);
+  if (pag.erro) return res.status(400).json({ erro: pag.erro });
+
+  const novo = {
+    ...desc, ...gor,
+    pagamento: pag.pagamento, pagamentos: pag.pagamentos,
+  };
+  if (typeof req.body.cliente === "string") novo.cliente = req.body.cliente.trim().slice(0, 120);
+  if (req.body.mesa !== undefined) {
+    const m = parseInt(req.body.mesa);
+    if (!Number.isFinite(m) || m < 0) return res.status(400).json({ erro: "Mesa invalida" });
+    novo.mesa = m;
+  }
+
+  // Guarda so o que realmente mudou, para a trilha nao virar lixo
+  const antes = {};
+  for (const k of Object.keys(novo)) {
+    if (JSON.stringify(venda[k]) !== JSON.stringify(novo[k])) antes[k] = venda[k];
+  }
+  if (!Object.keys(antes).length) return res.json({ ok: true, semMudanca: true, venda });
+
+  try {
+    const atualizada = await VendaSalaoDB.findByIdAndUpdate(
+      req.params.id,
+      {
+        $set: novo,
+        $push: { edicoes: { quando: new Date(), por: req.user?.nome || req.user?.role || "", motivo: String(motivo || "").slice(0, 200), antes } },
+      },
+      { new: true }
+    ).lean();
+    console.log(`Venda ${req.params.id} corrigida por ${req.user?.nome || req.user?.role}: ${Object.keys(antes).join(", ")}`);
+    res.json({ ok: true, venda: atualizada, alterou: Object.keys(antes) });
+  } catch (e) {
+    console.error("Erro ao corrigir venda:", e.message);
+    res.status(500).json({ erro: "Erro ao salvar a correcao" });
+  }
+});
+
 app.delete("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
-  try { await VendaSalaoDB.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel. Tente de novo em instantes." });
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id invalido" });
+  try {
+    const venda = await VendaSalaoDB.findById(req.params.id).lean();
+    if (!venda) return res.status(404).json({ erro: "Venda nao encontrada" });
+    // Mesma razao do PUT: a nota ja esta na SEFAZ.
+    if (venda.notaFiscalStatus === "autorizada") {
+      return res.status(409).json({ erro: "Essa venda ja tem nota fiscal autorizada. Cancele a nota antes de excluir a venda." });
+    }
+    await VendaSalaoDB.findByIdAndDelete(req.params.id);
+    console.log(`Venda ${req.params.id} (Mesa ${venda.mesa}, R$ ${Number(venda.total).toFixed(2)}) excluida por ${req.user?.nome || req.user?.role}`);
+    res.json({ ok: true });
+  }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
 app.get("/vendas-salao/historico", authMiddleware(["dono", "caixa"]), async (req, res) => {

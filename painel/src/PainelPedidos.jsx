@@ -717,6 +717,146 @@ function Cardapio({ cardapio, onReload }) {
   );
 }
 
+// ── CORRIGIR VENDA JÁ FECHADA ─────────────────────────────────
+// Erra-se a forma de pagamento, esquece-se o desconto, digita-se a gorjeta
+// errada. Antes a única saída era EXCLUIR a venda — o que apagava o registro
+// inteiro e ninguém sabia depois o que tinha acontecido.
+// Itens ficam de fora: mexer neles exige refazer a baixa de estoque.
+function CorrigirVenda({ venda, onPronto, onCancelar }) {
+  const subtotal = Number(venda.subtotal) > 0 ? Number(venda.subtotal) : Number(venda.total) || 0;
+  const [mesa, setMesa] = useState(String(venda.mesa ?? ""));
+  const [cliente, setCliente] = useState(venda.cliente === "—" ? "" : (venda.cliente || ""));
+  const [desconto, setDesconto] = useState(Number(venda.desconto) > 0 ? mascaraMoeda(String(Math.round(Number(venda.desconto) * 100))) : "");
+  const [gorjeta, setGorjeta] = useState(Number(venda.gorjeta) > 0 ? mascaraMoeda(String(Math.round(Number(venda.gorjeta) * 100))) : "");
+  const jaEraMisto = (venda.pagamentos || []).length > 1;
+  const [dividido, setDividido] = useState(jaEraMisto);
+  const [formaUnica, setFormaUnica] = useState(jaEraMisto ? "pix" : (venda.pagamento || "dinheiro"));
+  const [valores, setValores] = useState(() => {
+    const v = { pix: "", cartao: "", dinheiro: "" };
+    for (const p of venda.pagamentos || []) {
+      if (v[p.tipo] !== undefined) v[p.tipo] = mascaraMoeda(String(Math.round(Number(p.valor) * 100)));
+    }
+    return v;
+  });
+  const [motivo, setMotivo] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState(null);
+
+  const vDesc = parseMoedaGlobal(desconto);
+  const vGorj = parseMoedaGlobal(gorjeta);
+  const total = parseFloat((subtotal - vDesc).toFixed(2));
+  const aPagar = parseFloat((total + vGorj).toFixed(2));
+
+  const listaPag = dividido
+    ? FORMAS_PAG.map(([tipo]) => ({ tipo, valor: parseMoedaGlobal(valores[tipo]) })).filter(p => p.valor > 0)
+    : [{ tipo: formaUnica, valor: aPagar }];
+  const somaPag = listaPag.reduce((s, p) => s + p.valor, 0);
+  const pagFecha = Math.abs(somaPag - aPagar) <= 0.02 && listaPag.length > 0;
+  const podeSalvar = total > 0 && vDesc <= subtotal && vGorj <= total && pagFecha && !salvando;
+
+  async function salvar() {
+    setSalvando(true); setErro(null);
+    try {
+      const r = await authFetch(BACKEND_URL + "/vendas-salao/" + venda._id, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mesa: parseInt(mesa) || 0,
+          cliente: cliente.trim() || "—",
+          desconto: vDesc, descontoTipo: vDesc > 0 ? "valor" : "", descontoInfo: vDesc > 0 ? "corrigido no caixa" : "",
+          gorjeta: vGorj, gorjetaTipo: vGorj > 0 ? "valor" : "", gorjetaInfo: vGorj > 0 ? "corrigido no caixa" : "",
+          total,
+          pagamentos: listaPag,
+          motivo: motivo.trim(),
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setErro(d.erro || `Erro ${r.status}`); setSalvando(false); return; }
+      onPronto(d.venda);
+    } catch { setErro("Erro de conexao."); }
+    setSalvando(false);
+  }
+
+  const inp = { width: "100%", padding: "9px 11px", border: "1.5px solid #e0e0e0", borderRadius: 9, fontSize: 14, color: "#333", outline: "none", boxSizing: "border-box" };
+  const rot = { fontSize: 11, color: "#888", marginBottom: 3 };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #f0f0f0", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#333" }}>✏️ Corrigir venda</div>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ width: 80 }}><div style={rot}>Mesa</div>
+          <input inputMode="numeric" value={mesa} onChange={e => setMesa(e.target.value.replace(/\D/g, ""))} style={inp} /></div>
+        <div style={{ flex: 1 }}><div style={rot}>Cliente</div>
+          <input value={cliente} onChange={e => setCliente(e.target.value)} placeholder="—" style={inp} /></div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: 1 }}><div style={rot}>Desconto</div>
+          <input inputMode="decimal" value={desconto} onChange={e => setDesconto(mascaraMoeda(e.target.value))} placeholder="0,00" style={inp} /></div>
+        <div style={{ flex: 1 }}><div style={rot}>Gorjeta</div>
+          <input inputMode="decimal" value={gorjeta} onChange={e => setGorjeta(mascaraMoeda(e.target.value))} placeholder="0,00" style={inp} /></div>
+      </div>
+
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <div style={rot}>Pagamento</div>
+          <button onClick={() => setDividido(d => !d)}
+            style={{ background: dividido ? "#7b1a0a" : "#f0f0f0", color: dividido ? "#fff" : "#666", border: "none", borderRadius: 8, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+            {dividido ? "↩ Uma forma" : "✂️ Dividir"}
+          </button>
+        </div>
+        {!dividido ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            {FORMAS_PAG.map(([k, l]) => (
+              <button key={k} onClick={() => setFormaUnica(k)}
+                style={{ flex: 1, padding: "9px 2px", borderRadius: 10, border: `2px solid ${formaUnica === k ? "#7b1a0a" : "#e0e0e0"}`, background: formaUnica === k ? "#fef0ed" : "#fff", fontWeight: formaUnica === k ? 700 : 500, fontSize: 12, cursor: "pointer", color: formaUnica === k ? "#7b1a0a" : "#555" }}>{l}</button>
+            ))}
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {FORMAS_PAG.map(([k, l]) => (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ width: 92, fontSize: 12, fontWeight: 600, color: "#555", flexShrink: 0 }}>{l}</div>
+                <input inputMode="decimal" value={valores[k]} placeholder="0,00"
+                  onChange={e => setValores(v => ({ ...v, [k]: mascaraMoeda(e.target.value) }))} style={{ ...inp, flex: 1, minWidth: 0 }} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Conferência */}
+      <div style={{ background: "#faf9f8", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, lineHeight: 1.8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", color: "#666" }}><span>Itens (não muda)</span><span>{fmtR(subtotal)}</span></div>
+        {vDesc > 0 && <div style={{ display: "flex", justifyContent: "space-between", color: "#10b981" }}><span>Desconto</span><span>− {fmtR(vDesc)}</span></div>}
+        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, color: "#7b1a0a" }}><span>Total da venda</span><span>{fmtR(total)}</span></div>
+        {vGorj > 0 && <>
+          <div style={{ display: "flex", justifyContent: "space-between", color: "#065f46" }}><span>Gorjeta</span><span>+ {fmtR(vGorj)}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}><span>Recebido</span><span>{fmtR(aPagar)}</span></div>
+        </>}
+        <div style={{ marginTop: 4, fontWeight: 700, color: pagFecha ? "#065f46" : "#92400e" }}>
+          {pagFecha ? "✅ Pagamento fecha" : `⚠️ Pagamento soma ${fmtR(somaPag)}, precisa ser ${fmtR(aPagar)}`}
+        </div>
+      </div>
+
+      <div>
+        <div style={rot}>Motivo da correção (fica registrado)</div>
+        <input value={motivo} onChange={e => setMotivo(e.target.value)} placeholder="Ex: cliente pagou no pix, não em dinheiro" style={inp} />
+      </div>
+
+      {erro && <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 9, padding: "9px 12px", fontSize: 12, fontWeight: 600 }}>{erro}</div>}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={salvar} disabled={!podeSalvar}
+          style={{ flex: 2, background: podeSalvar ? "linear-gradient(135deg,#065f46,#10b981)" : "#ccc", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: podeSalvar ? "pointer" : "not-allowed" }}>
+          {salvando ? "Salvando..." : "💾 Salvar correção"}
+        </button>
+        <button onClick={onCancelar} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "10px 0", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
 // ── NFC-e NA LISTA DE VENDAS ──────────────────────────────────
 function BadgeNota({ status }) {
   if (!status || status === "sem_nota") return null;
@@ -3500,6 +3640,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const [periodo, setPeriodo] = useState("semana");
   const [subAba, setSubAba] = useState("geral");
   const [vendaAberta, setVendaAberta] = useState(null);
+  const [corrigindo, setCorrigindo] = useState(null);   // _id da venda em correcao
   const [zerarAberto, setZerarAberto] = useState(false);
   const [relGarcons, setRelGarcons] = useState([]);
   const [loadingGarcons, setLoadingGarcons] = useState(false);
@@ -3894,10 +4035,34 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                             if (setFaturadoSalaoRel) setFaturadoSalaoRel(f => Math.max(0, f - v.total));
                             setVendaAberta(null);
                           }
-                        }} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", width: "100%" }}>
+                        }} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", flex: 1 }}>
                           🗑️ Excluir
                         </button>
+                        {v._id && (
+                          <button onClick={(e) => { e.stopPropagation(); setCorrigindo(c => c === v._id ? null : v._id); }}
+                            style={{ background: "#eff6ff", color: "#1d4ed8", border: "1.5px solid #bfdbfe", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", flex: 1 }}>
+                            ✏️ Corrigir
+                          </button>
+                        )}
                       </div>
+
+                      {corrigindo === v._id && (
+                        <CorrigirVenda venda={v}
+                          onCancelar={() => setCorrigindo(null)}
+                          onPronto={(atualizada) => {
+                            setCorrigindo(null);
+                            if (setHistoricoSalao && atualizada) {
+                              setHistoricoSalao(h => h.map(x => String(x._id) === String(atualizada._id) ? { ...x, ...atualizada } : x));
+                            }
+                          }} />
+                      )}
+
+                      {(v.edicoes || []).length > 0 && (
+                        <div style={{ marginTop: 8, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "8px 11px", fontSize: 11, color: "#92400e", lineHeight: 1.6 }}>
+                          ✏️ Corrigida {v.edicoes.length}x — última por <strong>{v.edicoes[v.edicoes.length-1].por || "?"}</strong>
+                          {v.edicoes[v.edicoes.length-1].motivo ? `: "${v.edicoes[v.edicoes.length-1].motivo}"` : ""}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
