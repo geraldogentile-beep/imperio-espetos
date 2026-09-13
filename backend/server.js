@@ -736,6 +736,10 @@ Responda SEMPRE em português brasileiro.`;
 }
 
 // ── CLAUDE API ────────────────────────────────────────────────
+// Um lugar so para trocar o modelo. Estava preso em claude-sonnet-4, duas
+// geracoes atras — modelo antigo erra mais o JSON do pedido e inventa item
+// que nao existe no cardapio.
+const MODELO_IA = process.env.MODELO_IA || "claude-opus-5";
 async function chamarClaude(historico, tel) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45000); // 45s: evita request pendurada
@@ -744,7 +748,7 @@ async function chamarClaude(historico, tel) {
     res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": ENV.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: buildSystemPrompt(tel), messages: historico }),
+      body: JSON.stringify({ model: MODELO_IA, max_tokens: 4000, system: buildSystemPrompt(tel), messages: historico }),
       signal: ctrl.signal,
     });
   } finally {
@@ -756,7 +760,22 @@ async function chamarClaude(historico, tel) {
     throw new Error(`Claude API erro ${res.status}`);
   }
   const data = await res.json();
-  return data.content?.[0]?.text || "Desculpe, tive um probleminha. Pode repetir?";
+
+  // Resposta cortada no meio nao pode ir para o cliente: com o cardapio
+  // grande, 1000 tokens truncavam o JSON do pedido e o bot mandava frase
+  // pela metade como se estivesse completa.
+  if (data.stop_reason === "max_tokens") {
+    console.error(`Resposta truncada por max_tokens (tel ${tel}).`);
+    throw new Error("Resposta da IA truncada — max_tokens curto demais.");
+  }
+
+  // Junta todos os blocos de texto, nao so o primeiro
+  const texto = (data.content || [])
+    .filter(b => b.type === "text")
+    .map(b => b.text)
+    .join("")
+    .trim();
+  return texto || "Desculpe, tive um probleminha. Pode repetir?";
 }
 
 // Valida o JSON que a IA emitiu antes de virar pedido no banco.
@@ -845,6 +864,187 @@ async function checarFidelidade(pedido) {
 // ── BAILEYS — CONECTAR WHATSAPP ───────────────────────────────
 let conectandoWhatsApp = false;
 
+
+// ── FILA DE MENSAGENS POR CLIENTE ─────────────────────────────
+// No WhatsApp ninguem escreve o pedido inteiro numa mensagem so: manda
+// "quero 2 espetos", depois "de picanha", depois o endereco. Cada uma
+// disparava uma chamada a IA em PARALELO, todas mexendo no MESMO historico.
+// Resultado: o bot respondia duas vezes, se contradizia, ou respondia a
+// primeira frase ignorando o resto.
+//
+// Duas camadas resolvem isso:
+//   1) espera curta juntando o que o cliente digitar em seguida;
+//   2) fila serial por telefone — a rodada seguinte so comeca quando a
+//      anterior termina.
+const ESPERA_MENSAGEM_MS = 2500;
+const bufferMensagens = new Map();   // tel -> { textos, timer }
+const filaPorCliente   = new Map();  // tel -> promessa da ultima rodada
+
+function enfileirarPorCliente(tel, tarefa) {
+  const anterior = filaPorCliente.get(tel) || Promise.resolve();
+  // .then(tarefa, tarefa): a proxima roda mesmo se a anterior falhou
+  const atual = anterior.then(tarefa, tarefa).catch(e => {
+    console.error(`Erro na fila de ${tel}:`, e?.message || e);
+  });
+  filaPorCliente.set(tel, atual);
+  atual.finally(() => { if (filaPorCliente.get(tel) === atual) filaPorCliente.delete(tel); });
+  return atual;
+}
+
+function agendarMensagem(tel, texto) {
+  const b = bufferMensagens.get(tel) || { textos: [], timer: null };
+  b.textos.push(texto);
+  if (b.timer) clearTimeout(b.timer);
+  b.timer = setTimeout(() => {
+    bufferMensagens.delete(tel);
+    const junto = b.textos.join("\n");
+    enfileirarPorCliente(tel, () => processarMensagemCliente(tel, junto));
+  }, ESPERA_MENSAGEM_MS);
+  bufferMensagens.set(tel, b);
+}
+
+// Processa UMA rodada de conversa de um cliente. Chamada sempre pela fila,
+// nunca direto: duas chamadas simultaneas mexeriam no mesmo historico.
+async function processarMensagemCliente(tel, texto) {
+    // Verifica avaliação pendente
+    if (aguardandoAvaliacao.has(tel)) {
+      const nota = parseInt(texto.trim());
+      if (nota >= 1 && nota <= 5) {
+        const pedidoId = aguardandoAvaliacao.get(tel);
+        const pedido = pedidos.find(p => p.id === pedidoId);
+        const novaAv = { pedidoId, telefone: tel, cliente: pedido?.cliente || tel, nota, horario: new Date().toISOString() };
+          avaliacoes.push(novaAv);
+          try { await AvaliacaoDB.create(novaAv); } catch (e) { console.error("Erro ao salvar avaliação:", e.message); }
+        aguardandoAvaliacao.delete(tel);
+        const agradecimento = CONFIG.avaliacao.mensagemObrigado.replace(/{cliente}/g, pedido?.cliente || "");
+        await enviarMsg(tel, agradecimento);
+        return;
+      }
+      aguardandoAvaliacao.delete(tel);
+    }
+
+    try {
+      addMsg(tel, "user", texto);
+      const resposta = await chamarClaude(getHist(tel), tel);
+      addMsg(tel, "assistant", resposta);
+
+      const dadosPedido = extrairPedido(resposta);
+      if (dadosPedido) {
+        // ── Validação do JSON gerado pela IA ──
+        // Antes: qualquer coisa que o modelo emitisse ia direto pro banco.
+        const erros = validarPedidoIA(dadosPedido);
+        if (erros.length) {
+          console.error(`Pedido invalido de ${tel}:`, erros.join(" | "));
+          await enviarMsg(tel, "😅 Tive um probleminha para registrar seu pedido. Pode confirmar os itens novamente, por favor?");
+          return;
+        }
+
+        // Reforça preços do cardápio (promocional se em modo evento).
+        // Item fora do cardápio é rejeitado: antes mantinha o preço inventado pela IA.
+        const itensValidados = [];
+        for (const it of dadosPedido.itens) {
+          const cardapioItem = CARDAPIO.find(c => c.nome.toLowerCase() === String(it.nome).toLowerCase());
+          if (!cardapioItem) {
+            console.error(`Item fora do cardapio recusado: "${it.nome}" (tel ${tel})`);
+            await enviarMsg(tel, `😕 Não encontrei *${it.nome}* no cardápio. Pode conferir o pedido?`);
+            itensValidados.length = 0;
+            break;
+          }
+          itensValidados.push({
+            nome: cardapioItem.nome,
+            qty: Math.min(99, Math.max(1, Math.floor(Number(it.qty) || 1))),
+            preco: precoAtual(cardapioItem),
+            obs: typeof it.obs === "string" ? it.obs.slice(0, 120) : undefined,
+          });
+        }
+        if (!itensValidados.length) return;
+
+        const subtotal = itensValidados.reduce((s, i) => s + i.qty * i.preco, 0);
+
+        // Desconto só existe via cupom validado. Antes, o valor vinha direto da IA.
+        let desconto = 0;
+        let cupomAplicado = "";
+        if (dadosPedido.cupom) {
+          const r = aplicarCupom(subtotal, String(dadosPedido.cupom));
+          if (r.erro) {
+            await enviarMsg(tel, `😕 O cupom *${dadosPedido.cupom}* não pôde ser aplicado: ${r.erro}`);
+          } else if (r.cupom) {
+            desconto = Math.min(r.desconto || 0, subtotal); // nunca maior que o subtotal
+            cupomAplicado = r.cupom.codigo;
+          }
+        }
+
+        const taxa = Number(CONFIG.taxaEntrega) || 0;
+        const total = Math.max(0, subtotal + taxa - desconto);
+        const tempoPreparo = calcularTempoPreparo(itensValidados);
+
+        // `id` DEPOIS do spread: antes, o JSON da IA podia sobrescrever o id
+        // gerado pelo counter (colisão de chave única = pedido perdido).
+        const pedido = {
+          cliente:  String(dadosPedido.cliente).slice(0, 120),
+          endereco: String(dadosPedido.endereco).slice(0, 250),
+          obs:      typeof dadosPedido.obs === "string" ? dadosPedido.obs.slice(0, 250) : "",
+          itens:    itensValidados,
+          subtotal: parseFloat(subtotal.toFixed(2)),
+          desconto: parseFloat(desconto.toFixed(2)),
+          cupom:    cupomAplicado,
+          total:    parseFloat(total.toFixed(2)),
+          id:       String(counter++).padStart(5, "0"),
+          telefone: tel,
+          tempoPreparo,
+          status:   "novo",
+          horario:  new Date().toISOString(),
+        };
+
+        // Só confirma ao cliente DEPOIS de persistir. Antes, o cliente recebia
+        // "pedido confirmado" e a cozinha nunca via o pedido se o create falhasse.
+        const mongoOk = mongoose.connection.readyState === 1;
+        if (mongoOk) {
+          try {
+            await PedidoDB.create(pedido);
+          } catch (e) {
+            console.error("FALHA AO SALVAR PEDIDO:", e.message, JSON.stringify(pedido));
+            await enviarMsg(tel, "😔 Não consegui registrar seu pedido agora. Pode tentar de novo em instantes?");
+            counter--; // devolve o numero para nao criar buraco na sequencia
+            return;
+          }
+        } else {
+          console.warn("MongoDB offline — pedido salvo apenas em memoria:", pedido.id);
+        }
+        pedidos.push(pedido);
+
+        // Incrementa o uso do cupom só depois do pedido existir de fato
+        if (cupomAplicado) {
+          const cupomMem = cupons.find(c => c.codigo === cupomAplicado);
+          if (cupomMem) cupomMem.usoAtual = (cupomMem.usoAtual || 0) + 1;
+          try { await CupomDB.updateOne({ codigo: cupomAplicado }, { $inc: { usoAtual: 1 } }); }
+          catch (e) { console.error("Erro ao incrementar uso do cupom:", e.message); }
+        }
+
+        console.log(`📦 Pedido #${pedido.id} — ${pedido.cliente}`);
+        await enviarMsg(tel, resposta);
+        await enviarMsg(tel, `⏱️ Tempo estimado: *${tempoPreparo} minutos*`);
+        if (CONFIG.fidelidade.ativo) {
+          const f = await carregarFidelidade(tel);
+          const meta = Math.max(1, Number(CONFIG.fidelidade.pedidosParaGanhar) || 1);
+          const faltam = meta - (f.pedidosEntregues % meta);
+          await enviarMsg(tel, `🏆 Fidelidade: ${f.pedidosEntregues} pedido${f.pedidosEntregues !== 1 ? "s" : ""} entregue${f.pedidosEntregues !== 1 ? "s" : ""}. Faltam *${faltam}* para ganhar ${CONFIG.fidelidade.brinde}!`);
+        }
+        return;
+      }
+      await enviarMsg(tel, resposta);
+    } catch (err) {
+      console.error("Erro ao processar mensagem:", err.message);
+      // Antes o cliente ficava sem NENHUMA resposta (mensagem entregue e silencio).
+      // Se a ANTHROPIC_KEY expirasse, o bot ficava mudo sem ninguem perceber.
+      try {
+        await enviarMsg(tel, "😅 Tive uma instabilidade aqui. Pode mandar sua mensagem de novo, por favor?");
+      } catch (e2) { console.error("Falha ao avisar cliente sobre o erro:", e2.message); }
+      // Remove a ultima mensagem do historico para nao envenenar o contexto
+      try { const h = getHist(tel); if (h.length && h[h.length - 1].role === "user") h.pop(); } catch {}
+    }
+}
+
 async function conectarWhatsApp() {
   // Guarda contra sockets duplicados: reconexao concorrente (close emitido 2x,
   // ou logout + auto-reconnect) criava dois sockets vivos. Os dois handlers
@@ -910,154 +1110,17 @@ async function conectarWhatsApp() {
 
     // Recebe mensagens
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
-    for (const msg of messages) {
-      if (msg.key.fromMe) continue;
-      const tel = msg.key.remoteJid?.replace("@s.whatsapp.net", "").replace("@g.us", "");
-      if (!tel || msg.key.remoteJid?.endsWith("@g.us")) continue;
-      const texto = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption;
-      if (!texto) continue;
+      if (type !== "notify") return;
+      for (const msg of messages) {
+        if (msg.key.fromMe) continue;
+        const tel = msg.key.remoteJid?.replace("@s.whatsapp.net", "").replace("@g.us", "");
+        if (!tel || msg.key.remoteJid?.endsWith("@g.us")) continue;
+        const texto = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption;
+        if (!texto) continue;
 
-      console.log(`📩 ${tel}: ${texto}`);
-
-      // Verifica avaliação pendente
-      if (aguardandoAvaliacao.has(tel)) {
-        const nota = parseInt(texto.trim());
-        if (nota >= 1 && nota <= 5) {
-          const pedidoId = aguardandoAvaliacao.get(tel);
-          const pedido = pedidos.find(p => p.id === pedidoId);
-          const novaAv = { pedidoId, telefone: tel, cliente: pedido?.cliente || tel, nota, horario: new Date().toISOString() };
-            avaliacoes.push(novaAv);
-            try { await AvaliacaoDB.create(novaAv); } catch (e) { console.error("Erro ao salvar avaliação:", e.message); }
-          aguardandoAvaliacao.delete(tel);
-          const agradecimento = CONFIG.avaliacao.mensagemObrigado.replace(/{cliente}/g, pedido?.cliente || "");
-          await enviarMsg(tel, agradecimento);
-          continue;
-        }
-        aguardandoAvaliacao.delete(tel);
+        console.log(`📩 ${tel}: ${texto}`);
+        agendarMensagem(tel, texto);   // junta o que vier junto e processa em fila
       }
-
-      try {
-        addMsg(tel, "user", texto);
-        const resposta = await chamarClaude(getHist(tel), tel);
-        addMsg(tel, "assistant", resposta);
-
-        const dadosPedido = extrairPedido(resposta);
-        if (dadosPedido) {
-          // ── Validação do JSON gerado pela IA ──
-          // Antes: qualquer coisa que o modelo emitisse ia direto pro banco.
-          const erros = validarPedidoIA(dadosPedido);
-          if (erros.length) {
-            console.error(`Pedido invalido de ${tel}:`, erros.join(" | "));
-            await enviarMsg(tel, "😅 Tive um probleminha para registrar seu pedido. Pode confirmar os itens novamente, por favor?");
-            continue;
-          }
-
-          // Reforça preços do cardápio (promocional se em modo evento).
-          // Item fora do cardápio é rejeitado: antes mantinha o preço inventado pela IA.
-          const itensValidados = [];
-          for (const it of dadosPedido.itens) {
-            const cardapioItem = CARDAPIO.find(c => c.nome.toLowerCase() === String(it.nome).toLowerCase());
-            if (!cardapioItem) {
-              console.error(`Item fora do cardapio recusado: "${it.nome}" (tel ${tel})`);
-              await enviarMsg(tel, `😕 Não encontrei *${it.nome}* no cardápio. Pode conferir o pedido?`);
-              itensValidados.length = 0;
-              break;
-            }
-            itensValidados.push({
-              nome: cardapioItem.nome,
-              qty: Math.min(99, Math.max(1, Math.floor(Number(it.qty) || 1))),
-              preco: precoAtual(cardapioItem),
-              obs: typeof it.obs === "string" ? it.obs.slice(0, 120) : undefined,
-            });
-          }
-          if (!itensValidados.length) continue;
-
-          const subtotal = itensValidados.reduce((s, i) => s + i.qty * i.preco, 0);
-
-          // Desconto só existe via cupom validado. Antes, o valor vinha direto da IA.
-          let desconto = 0;
-          let cupomAplicado = "";
-          if (dadosPedido.cupom) {
-            const r = aplicarCupom(subtotal, String(dadosPedido.cupom));
-            if (r.erro) {
-              await enviarMsg(tel, `😕 O cupom *${dadosPedido.cupom}* não pôde ser aplicado: ${r.erro}`);
-            } else if (r.cupom) {
-              desconto = Math.min(r.desconto || 0, subtotal); // nunca maior que o subtotal
-              cupomAplicado = r.cupom.codigo;
-            }
-          }
-
-          const taxa = Number(CONFIG.taxaEntrega) || 0;
-          const total = Math.max(0, subtotal + taxa - desconto);
-          const tempoPreparo = calcularTempoPreparo(itensValidados);
-
-          // `id` DEPOIS do spread: antes, o JSON da IA podia sobrescrever o id
-          // gerado pelo counter (colisão de chave única = pedido perdido).
-          const pedido = {
-            cliente:  String(dadosPedido.cliente).slice(0, 120),
-            endereco: String(dadosPedido.endereco).slice(0, 250),
-            obs:      typeof dadosPedido.obs === "string" ? dadosPedido.obs.slice(0, 250) : "",
-            itens:    itensValidados,
-            subtotal: parseFloat(subtotal.toFixed(2)),
-            desconto: parseFloat(desconto.toFixed(2)),
-            cupom:    cupomAplicado,
-            total:    parseFloat(total.toFixed(2)),
-            id:       String(counter++).padStart(5, "0"),
-            telefone: tel,
-            tempoPreparo,
-            status:   "novo",
-            horario:  new Date().toISOString(),
-          };
-
-          // Só confirma ao cliente DEPOIS de persistir. Antes, o cliente recebia
-          // "pedido confirmado" e a cozinha nunca via o pedido se o create falhasse.
-          const mongoOk = mongoose.connection.readyState === 1;
-          if (mongoOk) {
-            try {
-              await PedidoDB.create(pedido);
-            } catch (e) {
-              console.error("FALHA AO SALVAR PEDIDO:", e.message, JSON.stringify(pedido));
-              await enviarMsg(tel, "😔 Não consegui registrar seu pedido agora. Pode tentar de novo em instantes?");
-              counter--; // devolve o numero para nao criar buraco na sequencia
-              continue;
-            }
-          } else {
-            console.warn("MongoDB offline — pedido salvo apenas em memoria:", pedido.id);
-          }
-          pedidos.push(pedido);
-
-          // Incrementa o uso do cupom só depois do pedido existir de fato
-          if (cupomAplicado) {
-            const cupomMem = cupons.find(c => c.codigo === cupomAplicado);
-            if (cupomMem) cupomMem.usoAtual = (cupomMem.usoAtual || 0) + 1;
-            try { await CupomDB.updateOne({ codigo: cupomAplicado }, { $inc: { usoAtual: 1 } }); }
-            catch (e) { console.error("Erro ao incrementar uso do cupom:", e.message); }
-          }
-
-          console.log(`📦 Pedido #${pedido.id} — ${pedido.cliente}`);
-          await enviarMsg(tel, resposta);
-          await enviarMsg(tel, `⏱️ Tempo estimado: *${tempoPreparo} minutos*`);
-          if (CONFIG.fidelidade.ativo) {
-            const f = await carregarFidelidade(tel);
-            const meta = Math.max(1, Number(CONFIG.fidelidade.pedidosParaGanhar) || 1);
-            const faltam = meta - (f.pedidosEntregues % meta);
-            await enviarMsg(tel, `🏆 Fidelidade: ${f.pedidosEntregues} pedido${f.pedidosEntregues !== 1 ? "s" : ""} entregue${f.pedidosEntregues !== 1 ? "s" : ""}. Faltam *${faltam}* para ganhar ${CONFIG.fidelidade.brinde}!`);
-          }
-          continue;
-        }
-        await enviarMsg(tel, resposta);
-      } catch (err) {
-        console.error("Erro ao processar mensagem:", err.message);
-        // Antes o cliente ficava sem NENHUMA resposta (mensagem entregue e silencio).
-        // Se a ANTHROPIC_KEY expirasse, o bot ficava mudo sem ninguem perceber.
-        try {
-          await enviarMsg(tel, "😅 Tive uma instabilidade aqui. Pode mandar sua mensagem de novo, por favor?");
-        } catch (e2) { console.error("Falha ao avisar cliente sobre o erro:", e2.message); }
-        // Remove a ultima mensagem do historico para nao envenenar o contexto
-        try { const h = getHist(tel); if (h.length && h[h.length - 1].role === "user") h.pop(); } catch {}
-      }
-    }
     });
   } finally {
     conectandoWhatsApp = false;
