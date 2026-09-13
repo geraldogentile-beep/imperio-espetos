@@ -312,7 +312,12 @@ const GarcomSchema = new mongoose.Schema({
 // ── FECHAMENTO DO DIA ──────────────────────────────────────────
 const FechamentoDiaSchema = new mongoose.Schema({
   data:            { type: Date, default: Date.now },
-  dataStr:         String,           // "2026-04-06" para busca fácil
+  dataStr:         String,           // rotulo do expediente, so para exibir
+  // A janela que ESTE fechamento cobriu. O caixa nao vira sozinho no relogio:
+  // um periodo comeca onde o anterior terminou e so fecha no botao — e o que
+  // da tempo de conferir e corrigir antes.
+  periodoInicio:   Date,
+  periodoFim:      Date,
   totalDelivery:   { type: Number, default: 0 },
   totalSalao:      { type: Number, default: 0 },
   totalGeral:      { type: Number, default: 0 },
@@ -390,6 +395,22 @@ const MesaSalaoSchema = new mongoose.Schema({
 MesaSalaoSchema.index({ dataStr: 1, mesaId: 1 }, { unique: true });
 const MesaSalaoDB = mongoose.model("MesaSalao", MesaSalaoSchema);
 
+// O periodo do caixa vai do fim do ultimo fechamento ate agora. Nunca vira
+// sozinho: enquanto ninguem apertar "fechar caixa", tudo continua no mesmo
+// periodo — e a dona pode conferir e corrigir antes de fechar.
+// Sem nenhum fechamento gravado ainda, cai na janela do expediente abaixo.
+async function periodoAbertoDoCaixa() {
+  if (!mongoPronto()) return { inicio: janelaDiaOperacional().inicio, ultimo: null };
+  try {
+    const ultimo = await FechamentoDB.findOne().sort({ data: -1 }).lean();
+    if (ultimo) {
+      const inicio = ultimo.periodoFim ? new Date(ultimo.periodoFim) : new Date(ultimo.data);
+      return { inicio, ultimo };
+    }
+  } catch (e) { console.error("Erro ao ler ultimo fechamento:", e.message); }
+  return { inicio: janelaDiaOperacional().inicio, ultimo: null };
+}
+
 // Janela do expediente: das 06:00 de um dia as 06:00 do seguinte.
 // A casa fecha 00:00, entao a comanda fechada 00:30 pertence ao expediente que
 // comecou na vespera. Contando pela data civil ela caia no dia seguinte — e o
@@ -449,7 +470,18 @@ async function criarIndices() {
     await MovEstoqueDB.collection.createIndex({ estoqueId: 1, horario: -1 });
     await MovEstoqueDB.collection.createIndex({ tipo: 1, horario: -1 });
     await AvaliacaoDB.collection.createIndex({ horario: -1 });
-    await FechamentoDB.collection.createIndex({ dataStr: 1 }, { unique: true });
+    // dataStr deixou de ser unico: da para fechar o caixa mais de uma vez no
+    // mesmo dia (dois turnos, ou uma conferencia no meio da noite). O indice
+    // antigo precisa cair antes, senao o createIndex conflita.
+    try {
+      const indices = await FechamentoDB.collection.indexes();
+      if (indices.some(i => i.name === "dataStr_1" && i.unique)) {
+        await FechamentoDB.collection.dropIndex("dataStr_1");
+        console.log("🔁 Indice unico de dataStr removido — fechamento multiplo liberado");
+      }
+    } catch { /* indice pode nem existir ainda */ }
+    await FechamentoDB.collection.createIndex({ dataStr: 1 });
+    await FechamentoDB.collection.createIndex({ data: -1 });
     await EstoqueDB.collection.createIndex({ ativo: 1, nome: 1 });
     await NotaFiscalDB.collection.createIndex({ dataEmissao: -1 });
     await NotaFiscalDB.collection.createIndex({ status: 1, dataEmissao: -1 });
@@ -1714,8 +1746,10 @@ app.patch("/cardapio/:id/preco-promocional", authMiddleware(["dono"]), async (re
 // ── VENDAS SALÃO API ─────────────────────────────────────────
 app.get("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) => {
   try {
-    const { inicio, fim } = janelaDiaOperacional();
-    const lista = await VendaSalaoDB.find({ fechamento: { $gte: inicio, $lt: fim } }).sort({ fechamento: -1 }).lean();
+    // Vai ate quando fecharem o caixa. Se a dona chegar as 10h para conferir a
+    // noite passada, os numeros ainda estao aqui.
+    const { inicio } = await periodoAbertoDoCaixa();
+    const lista = await VendaSalaoDB.find({ fechamento: { $gte: inicio } }).sort({ fechamento: -1 }).lean();
     res.json(lista);
   } catch { res.json([]); }
 });
@@ -2287,14 +2321,13 @@ app.get("/garcons/relatorio", authMiddleware(["dono"]), async (req, res) => {
 app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { obs, criadoPor } = req.body;
-    // Mesma janela das mesas e das vendas: 06:00 as 06:00. Antes, fechar o
-    // caixa depois da meia-noite pegava a janela do dia NOVO e deixava o
-    // expediente inteiro da vespera de fora — ele reaparecia no dia seguinte.
-    const { inicio: hoje, fim: amanha, dataStr } = janelaDiaOperacional();
+    // Fecha o periodo que estava aberto: do fim do ultimo fechamento ate
+    // AGORA. Nada vira sozinho no relogio — quem define o corte e o botao.
+    const { inicio: hoje } = await periodoAbertoDoCaixa();
+    const amanha = new Date();              // o corte e o instante do clique
+    const dataStr = diaOperacional(amanha); // rotulo do expediente, so para exibir
 
-    // Verifica se já foi feito fechamento hoje
-    const jaFez = await FechamentoDB.findOne({ dataStr });
-    if (jaFez) return res.status(400).json({ erro: "Fechamento do dia já realizado hoje.", fechamento: jaFez });
+
 
     // Pedidos delivery entregues hoje
     const pedidosHoje = await PedidoDB.find({ status: "entregue", horario: { $gte: hoje, $lt: amanha } }).lean();
@@ -2330,8 +2363,18 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
     Object.values(gMap).forEach(g => { g.gorjeta = parseFloat(g.gorjeta.toFixed(2)); });
     const porGarcom = Object.values(gMap).sort((a, b) => b.total - a.total);
 
+    // Fechar sem movimento nenhum so cria registro zerado no historico e
+    // confunde a conferencia depois. Melhor recusar e dizer por que.
+    if (!pedidosHoje.length && !vendasHoje.length) {
+      return res.status(400).json({
+        erro: "Nenhum movimento desde o último fechamento. Não há o que fechar.",
+        desde: hoje,
+      });
+    }
+
     const fechamento = await FechamentoDB.create({
       data: new Date(), dataStr,
+      periodoInicio: hoje, periodoFim: amanha,
       totalDelivery: parseFloat(totalDelivery.toFixed(2)),
       totalSalao: parseFloat(totalSalao.toFixed(2)),
       totalGeral: parseFloat((totalDelivery + totalSalao).toFixed(2)),
@@ -2350,6 +2393,18 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
 
     res.status(201).json(fechamento);
   } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// GET /caixa/periodo — desde quando o caixa esta aberto. O painel mostra
+// isso para nao restar duvida sobre o que os numeros da tela cobrem.
+app.get("/caixa/periodo", authMiddleware(["dono", "garcom"]), async (req, res) => {
+  const { inicio, ultimo } = await periodoAbertoDoCaixa();
+  res.json({
+    inicio,
+    agora: new Date(),
+    nuncaFechou: !ultimo,
+    ultimoFechamento: ultimo ? { data: ultimo.data, dataStr: ultimo.dataStr, totalGeral: ultimo.totalGeral } : null,
+  });
 });
 
 app.get("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
@@ -3318,8 +3373,9 @@ app.get("/notas", authMiddleware(["dono"]), async (req, res) => {
 app.get("/notas/resumo", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
-    // Sem periodo informado, "hoje" e o expediente, nao a data civil
-    const ini = de ? new Date(de) : janelaDiaOperacional().inicio;
+    // Sem periodo informado, usa o periodo aberto do caixa — o mesmo que a
+    // tela de vendas mostra, para os dois numeros nunca divergirem
+    const ini = de ? new Date(de) : (await periodoAbertoDoCaixa()).inicio;
     const fim = ate ? new Date(ate) : new Date();
 
     const vendas = await VendaSalaoDB.find({ fechamento: { $gte: ini, $lte: fim } }).lean();

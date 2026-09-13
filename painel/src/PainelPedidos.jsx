@@ -3226,17 +3226,32 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
     } catch {}
   }
 
+  // Desde quando o caixa esta aberto. Sem isso a dona olha os numeros da tela
+  // sem saber que pedaco do movimento eles cobrem.
+  const [periodo, setPeriodo] = useState(null);
+  useEffect(()=>{
+    let vivo = true;
+    async function lerPeriodo(){
+      try {
+        const r = await authFetch(backendUrl + "/caixa/periodo");
+        if (r.ok && vivo) setPeriodo(await r.json());
+      } catch {}
+    }
+    lerPeriodo();
+    const t = setInterval(lerPeriodo, 30000);
+    return ()=>{ vivo=false; clearInterval(t); };
+  },[backendUrl]);
+
   useEffect(()=>{ carregar(); },[]);
 
   // Resumo do expediente atual (antes de fechar). Vai das 06:00 as 06:00,
-  // igual ao servidor: fechar o caixa depois da meia-noite tem que somar a
-  // noite que acabou, nao comecar um dia novo zerado.
-  const hoje = inicioDoExpediente();
+  // igual ao servidor: o periodo vai do ultimo fechamento ate agora, e so
+  // muda quando alguem aperta o botao — nunca sozinho no relogio.
+  const hoje = periodo?.inicio ? new Date(periodo.inicio) : inicioDoExpediente();
   const pedidosHoje = pedidos.filter(p=>p.status==="entregue"&&new Date(p.horario)>=hoje);
   const totalDelivery = pedidosHoje.reduce((s,p)=>s+(p.total||0),0);
   const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
   const totalGeral = totalDelivery + totalSalaoHoje;
-  const jaFezHoje = historico.some(f=>f.dataStr===diaOperacional());
 
   // Por garçom do dia
   const gMap = {};
@@ -3330,12 +3345,21 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   return (
     <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:14}}>
 
-      {/* Resumo do dia atual */}
+      {/* Resumo do periodo aberto */}
       <div style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",borderRadius:16,padding:16,color:"#fff"}}>
         <div style={{fontSize:11,opacity:0.8,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>
           {new Date().toLocaleDateString("pt-BR",{weekday:"long",day:"2-digit",month:"long"})}
         </div>
-        <div style={{fontWeight:800,fontSize:22,marginBottom:12}}>Resumo do dia</div>
+        <div style={{fontWeight:800,fontSize:22,marginBottom:4}}>Caixa aberto</div>
+        {/* Sem isto, a dona olha os numeros sem saber que pedaco do movimento
+            eles cobrem — e era justamente essa a duvida dela. */}
+        <div style={{fontSize:12,opacity:0.85,marginBottom:12,lineHeight:1.5}}>
+          {periodo?.nuncaFechou
+            ? "Desde o começo — nenhum fechamento registrado ainda."
+            : periodo?.inicio
+              ? <>Desde <strong>{new Date(periodo.inicio).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</strong>, quando o caixa foi fechado.</>
+              : "Carregando período..."}
+        </div>
         <div style={{display:"flex",gap:10,marginBottom:12}}>
           <div style={{flex:1,background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"10px 12px"}}>
             <div style={{fontSize:11,opacity:0.8}}>🛵 Delivery</div>
@@ -3388,22 +3412,19 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
         </div>
       )}
 
-      {/* Botão fechar o dia */}
-      {jaFezHoje ? (
-        <div style={{background:"#d1fae5",border:"1.5px solid #10b981",borderRadius:14,padding:"14px 16px",textAlign:"center"}}>
-          <div style={{fontSize:22,marginBottom:4}}>✅</div>
-          <div style={{fontWeight:700,fontSize:14,color:"#065f46"}}>Fechamento do dia já realizado!</div>
-          <div style={{fontSize:12,color:"#065f46",opacity:0.8,marginTop:2}}>Consulte o histórico abaixo.</div>
-        </div>
-      ) : (
-        !confirmando ? (
-          <button onClick={()=>setConfirmando(true)} style={{background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:14,padding:"14px 0",fontWeight:800,fontSize:15,cursor:"pointer"}}>
-            🔒 Fechar o dia
+      {/* Botão fechar o caixa */}
+      {!confirmando ? (
+          <button onClick={()=>setConfirmando(true)} disabled={totalGeral<=0}
+            style={{background:totalGeral>0?"linear-gradient(135deg,#065f46,#10b981)":"#ccc",color:"#fff",border:"none",borderRadius:14,padding:"14px 0",fontWeight:800,fontSize:15,cursor:totalGeral>0?"pointer":"not-allowed"}}>
+            {totalGeral>0 ? "🔒 Fechar caixa" : "Nada para fechar ainda"}
           </button>
         ) : (
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🔒 Confirmar fechamento do dia?</div>
-            <div style={{fontSize:12,color:"#888",marginBottom:12}}>Os dados do dia serão arquivados. O painel zera automaticamente amanhã.</div>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🔒 Confirmar fechamento do caixa?</div>
+            <div style={{fontSize:12,color:"#888",marginBottom:12}}>
+              Fecha o período aberto e começa um novo a partir de agora. O painel
+              <strong> não zera sozinho</strong> — só neste botão.
+            </div>
             <div style={{marginBottom:10}}>
               <div style={{fontSize:11,color:"#888",marginBottom:3}}>Observação (opcional)</div>
               <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Ex: Movimento fraco, faltou chopp..." style={inp}/>
@@ -3415,8 +3436,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
               <button onClick={()=>setConfirmando(false)} style={{flex:1,background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 0",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
             </div>
           </div>
-        )
-      )}
+        )}
 
       {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
 
@@ -6159,9 +6179,9 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   });
   const [historicoSalao, setHistoricoSalao] = useState(() => {
     try {
-      const lastDay = localStorage.getItem("imperio_historico_dia");
-      const hoje = diaOperacional();
-      if (lastDay !== hoje) return [];
+      // Sem virada automatica: o periodo vai ate alguem fechar o caixa. Isto
+      // aqui e so cache para a tela nao abrir vazia — o servidor corrige em
+      // seguida com as vendas do periodo aberto.
       const saved = localStorage.getItem("imperio_historico_salao");
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
@@ -6169,13 +6189,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   const [faturadoSalao, setFaturadoSalao] = useState(() => {
     try {
-      const lastDay = localStorage.getItem("imperio_faturado_dia");
-      const hoje = diaOperacional();
-      if (lastDay !== hoje) {
-        localStorage.setItem("imperio_faturado_dia", hoje);
-        localStorage.setItem("imperio_faturado_salao", "0");
-        return 0;
-      }
+      // Idem: cache do periodo aberto, nao um contador que zera na virada
       return parseFloat(localStorage.getItem("imperio_faturado_salao") || "0");
     } catch { return 0; }
   }); // persiste entre recargas, zera automaticamente a cada novo dia
