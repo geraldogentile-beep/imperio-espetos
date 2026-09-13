@@ -739,7 +739,7 @@ Responda SEMPRE em português brasileiro.`;
 // Um lugar so para trocar o modelo. Estava preso em claude-sonnet-4, duas
 // geracoes atras — modelo antigo erra mais o JSON do pedido e inventa item
 // que nao existe no cardapio.
-const MODELO_IA = process.env.MODELO_IA || "claude-opus-5";
+const MODELO_IA = process.env.MODELO_IA || "claude-sonnet-5";
 // Ultima falha da IA, para o dono ver no painel em vez de descobrir pelo
 // cliente reclamando. A casa relatou o bot repetindo "tive uma instabilidade":
 // isso e sempre erro nesta chamada, e o motivo estava indo so para o log.
