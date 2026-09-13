@@ -3228,13 +3228,15 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 
   useEffect(()=>{ carregar(); },[]);
 
-  // Resumo do dia atual (antes de fechar)
-  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  // Resumo do expediente atual (antes de fechar). Vai das 06:00 as 06:00,
+  // igual ao servidor: fechar o caixa depois da meia-noite tem que somar a
+  // noite que acabou, nao comecar um dia novo zerado.
+  const hoje = inicioDoExpediente();
   const pedidosHoje = pedidos.filter(p=>p.status==="entregue"&&new Date(p.horario)>=hoje);
   const totalDelivery = pedidosHoje.reduce((s,p)=>s+(p.total||0),0);
   const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
   const totalGeral = totalDelivery + totalSalaoHoje;
-  const jaFezHoje = historico.some(f=>f.dataStr===hoje.toISOString().slice(0,10));
+  const jaFezHoje = historico.some(f=>f.dataStr===diaOperacional());
 
   // Por garçom do dia
   const gMap = {};
@@ -4613,6 +4615,14 @@ function fmtR(v) { return "R$ "+v.toFixed(2); }
 
 // O dia do salao vira as 06:00, nao a meia-noite: a casa fecha 00:00 e uma
 // mesa aberta 23:40 nao pode sumir na virada. Mesma regra no servidor.
+// Inicio do expediente (06:00 do dia operacional). Mesma regra do servidor.
+function inicioDoExpediente(d = new Date()) {
+  const x = new Date(d);
+  if (x.getHours() < 6) x.setDate(x.getDate() - 1);
+  x.setHours(6, 0, 0, 0);
+  return x;
+}
+
 function diaOperacional(d = new Date()) {
   const x = new Date(d);
   if (x.getHours() < 6) x.setDate(x.getDate() - 1);
@@ -6150,7 +6160,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [historicoSalao, setHistoricoSalao] = useState(() => {
     try {
       const lastDay = localStorage.getItem("imperio_historico_dia");
-      const hoje = new Date().toDateString();
+      const hoje = diaOperacional();
       if (lastDay !== hoje) return [];
       const saved = localStorage.getItem("imperio_historico_salao");
       return saved ? JSON.parse(saved) : [];
@@ -6160,7 +6170,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [faturadoSalao, setFaturadoSalao] = useState(() => {
     try {
       const lastDay = localStorage.getItem("imperio_faturado_dia");
-      const hoje = new Date().toDateString();
+      const hoje = diaOperacional();
       if (lastDay !== hoje) {
         localStorage.setItem("imperio_faturado_dia", hoje);
         localStorage.setItem("imperio_faturado_salao", "0");
@@ -6531,7 +6541,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   // Persiste dados do salão no localStorage
   useEffect(() => { try { localStorage.setItem("imperio_faturado_salao", String(faturadoSalao)); } catch {} }, [faturadoSalao]);
-  useEffect(() => { try { localStorage.setItem("imperio_historico_salao", JSON.stringify(historicoSalao)); localStorage.setItem("imperio_historico_dia", new Date().toDateString()); } catch {} }, [historicoSalao]);
+  useEffect(() => { try { localStorage.setItem("imperio_historico_salao", JSON.stringify(historicoSalao)); localStorage.setItem("imperio_historico_dia", diaOperacional()); } catch {} }, [historicoSalao]);
   useEffect(() => { try { localStorage.setItem("imperio_mesas_salao", JSON.stringify(mesasSalao)); } catch {} }, [mesasSalao]);
 
   const updateStatus = async (id, novoStatus) => {

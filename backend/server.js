@@ -390,6 +390,19 @@ const MesaSalaoSchema = new mongoose.Schema({
 MesaSalaoSchema.index({ dataStr: 1, mesaId: 1 }, { unique: true });
 const MesaSalaoDB = mongoose.model("MesaSalao", MesaSalaoSchema);
 
+// Janela do expediente: das 06:00 de um dia as 06:00 do seguinte.
+// A casa fecha 00:00, entao a comanda fechada 00:30 pertence ao expediente que
+// comecou na vespera. Contando pela data civil ela caia no dia seguinte — e o
+// fechamento do caixa da manha aparecia com "valores de ontem".
+function janelaDiaOperacional(d = new Date()) {
+  const inicio = new Date(d);
+  if (inicio.getHours() < 6) inicio.setDate(inicio.getDate() - 1);
+  inicio.setHours(6, 0, 0, 0);
+  const fim = new Date(inicio);
+  fim.setDate(fim.getDate() + 1);
+  return { inicio, fim, dataStr: diaOperacional(d) };
+}
+
 // O dia vira as 06:00, nao a meia-noite: a casa fecha 00:00 e uma mesa aberta
 // 23:40 nao pode sumir na virada.
 function diaOperacional(d = new Date()) {
@@ -1701,8 +1714,8 @@ app.patch("/cardapio/:id/preco-promocional", authMiddleware(["dono"]), async (re
 // ── VENDAS SALÃO API ─────────────────────────────────────────
 app.get("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) => {
   try {
-    const hoje = new Date(); hoje.setHours(0,0,0,0);
-    const lista = await VendaSalaoDB.find({ fechamento: { $gte: hoje } }).sort({ fechamento: -1 }).lean();
+    const { inicio, fim } = janelaDiaOperacional();
+    const lista = await VendaSalaoDB.find({ fechamento: { $gte: inicio, $lt: fim } }).sort({ fechamento: -1 }).lean();
     res.json(lista);
   } catch { res.json([]); }
 });
@@ -2274,10 +2287,10 @@ app.get("/garcons/relatorio", authMiddleware(["dono"]), async (req, res) => {
 app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { obs, criadoPor } = req.body;
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
-    const amanha = new Date(hoje); amanha.setDate(amanha.getDate() + 1);
-    const dataStr = hoje.toISOString().slice(0, 10);
+    // Mesma janela das mesas e das vendas: 06:00 as 06:00. Antes, fechar o
+    // caixa depois da meia-noite pegava a janela do dia NOVO e deixava o
+    // expediente inteiro da vespera de fora — ele reaparecia no dia seguinte.
+    const { inicio: hoje, fim: amanha, dataStr } = janelaDiaOperacional();
 
     // Verifica se já foi feito fechamento hoje
     const jaFez = await FechamentoDB.findOne({ dataStr });
@@ -3305,7 +3318,8 @@ app.get("/notas", authMiddleware(["dono"]), async (req, res) => {
 app.get("/notas/resumo", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
-    const ini = de ? new Date(de) : new Date(new Date().setHours(0, 0, 0, 0));
+    // Sem periodo informado, "hoje" e o expediente, nao a data civil
+    const ini = de ? new Date(de) : janelaDiaOperacional().inicio;
     const fim = ate ? new Date(ate) : new Date();
 
     const vendas = await VendaSalaoDB.find({ fechamento: { $gte: ini, $lte: fim } }).lean();
