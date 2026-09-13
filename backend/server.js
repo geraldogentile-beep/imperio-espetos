@@ -740,7 +740,20 @@ Responda SEMPRE em português brasileiro.`;
 // geracoes atras — modelo antigo erra mais o JSON do pedido e inventa item
 // que nao existe no cardapio.
 const MODELO_IA = process.env.MODELO_IA || "claude-opus-5";
-async function chamarClaude(historico, tel) {
+// Ultima falha da IA, para o dono ver no painel em vez de descobrir pelo
+// cliente reclamando. A casa relatou o bot repetindo "tive uma instabilidade":
+// isso e sempre erro nesta chamada, e o motivo estava indo so para o log.
+let ultimaFalhaIA = null;   // { quando, status, mensagem }
+
+function registrarFalhaIA(status, mensagem) {
+  ultimaFalhaIA = { quando: new Date().toISOString(), status: status || null, mensagem };
+  console.error(`[IA] ${status || "sem status"}: ${mensagem}`);
+}
+
+// 429 e 5xx sao passageiros — nao valem uma desculpa ao cliente na primeira vez.
+const STATUS_RETENTAVEL = new Set([429, 500, 502, 503, 504, 529]);
+
+async function chamarClaude(historico, tel, tentativa = 1) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45000); // 45s: evita request pendurada
   let res;
@@ -751,14 +764,47 @@ async function chamarClaude(historico, tel) {
       body: JSON.stringify({ model: MODELO_IA, max_tokens: 4000, system: buildSystemPrompt(tel), messages: historico }),
       signal: ctrl.signal,
     });
+  } catch (e) {
+    clearTimeout(timer);
+    // Timeout ou rede: vale uma segunda chance antes de desistir
+    if (tentativa === 1) {
+      registrarFalhaIA(null, `falha de rede (${e.name === "AbortError" ? "timeout 45s" : e.message}) — tentando de novo`);
+      await new Promise(r => setTimeout(r, 1500));
+      return chamarClaude(historico, tel, 2);
+    }
+    registrarFalhaIA(null, e.name === "AbortError" ? "timeout de 45s na Claude API" : e.message);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
+
   if (!res.ok) {
-    if (res.status === 429) throw new Error("Claude API: rate limit atingido. Tente novamente em instantes.");
-    if (res.status === 401) throw new Error("Claude API: chave inválida. Verifique ANTHROPIC_KEY.");
-    throw new Error(`Claude API erro ${res.status}`);
+    // O corpo da resposta diz o motivo exato (modelo inexistente, credito
+    // acabado, chave revogada). Antes so o numero do status chegava ao log.
+    let detalhe = "";
+    try {
+      const corpo = await res.json();
+      detalhe = corpo?.error?.message || JSON.stringify(corpo).slice(0, 200);
+    } catch { detalhe = await res.text().catch(() => "").then(t => String(t).slice(0, 200)); }
+
+    if (STATUS_RETENTAVEL.has(res.status) && tentativa === 1) {
+      registrarFalhaIA(res.status, `${detalhe} — tentando de novo`);
+      await new Promise(r => setTimeout(r, 2000));
+      return chamarClaude(historico, tel, 2);
+    }
+
+    const amigavel =
+      res.status === 401 ? "chave da IA invalida ou revogada (ANTHROPIC_KEY)"
+      : res.status === 404 ? `modelo "${MODELO_IA}" nao existe ou foi descontinuado`
+      : res.status === 400 && /credit|balance/i.test(detalhe) ? "credito da conta Anthropic esgotado"
+      : res.status === 429 ? "limite de requisicoes da Anthropic atingido"
+      : `erro ${res.status} na Claude API`;
+
+    registrarFalhaIA(res.status, `${amigavel}${detalhe ? " — " + detalhe : ""}`);
+    throw new Error(amigavel);
   }
+
+  ultimaFalhaIA = null;   // voltou a funcionar
   const data = await res.json();
 
   // Resposta cortada no meio nao pode ir para o cliente: com o cardapio
@@ -3312,10 +3358,22 @@ app.delete("/impressao/erros", authMiddleware(["dono", "caixa"]), async (req, re
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
+// GET /ia/status — o motivo real da ultima falha, so para o dono.
+// Fica fora do /health porque a mensagem da API pode citar chave e modelo.
+app.get("/ia/status", authMiddleware(["dono"]), (req, res) => {
+  res.json({
+    modelo: MODELO_IA,
+    ok: !ultimaFalhaIA,
+    ultimaFalha: ultimaFalhaIA,
+  });
+});
+
 // ── HEALTH ────────────────────────────────────────────────────
 app.get("/health", (req, res) => res.json({
   status: "ok", versao: "5.1",
   whatsapp: whatsappStatus,
+  // Nao expoe detalhe tecnico aqui (rota publica) — so diz se a IA esta em falha
+  ia: ultimaFalhaIA ? "com falha" : "ok",
   mongodb: mongoose.connection.readyState === 1 ? "conectado" : "memória",
   aberto: estaAberto(),
   pedidos: pedidos.length,

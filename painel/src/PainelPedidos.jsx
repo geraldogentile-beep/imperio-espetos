@@ -5731,12 +5731,18 @@ function WhatsAppConexao({ conexao, backendUrl }) {
   const [loading, setLoading] = useState(false);
   const [desconectando, setDesconectando] = useState(false);
   const [msgQR, setMsgQR] = useState(null);
+  const [statusIA, setStatusIA] = useState(null);
 
   async function carregarStatus() {
     try {
       const r = await authFetch(backendUrl +"/health");
       const d = await r.json();
       setStatus(d);
+    } catch {}
+    // Motivo da falha da IA: o dono precisa ver isso sem abrir log do servidor
+    try {
+      const r2 = await authFetch(backendUrl + "/ia/status");
+      if (r2.ok) setStatusIA(await r2.json());
     } catch {}
   }
 
@@ -5845,6 +5851,30 @@ function WhatsAppConexao({ conexao, backendUrl }) {
           </div>
         )}
       </div>
+
+      {/* IA fora do ar — sem isso o dono so descobre pelo cliente reclamando */}
+      {statusIA && !statusIA.ok && statusIA.ultimaFalha && (
+        <div style={{ background: "#fee2e2", border: `1px solid ${T.red}`, borderRadius: T.radius, padding: "16px 20px" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#991b1b" }}>🤖 O robô não está conseguindo responder</div>
+          <div style={{ fontSize: 13, color: "#991b1b", marginTop: 8, lineHeight: 1.6 }}>
+            {statusIA.ultimaFalha.mensagem}
+          </div>
+          <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 8 }}>
+            Modelo: {statusIA.modelo} · última falha às{" "}
+            {new Date(statusIA.ultimaFalha.quando).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          </div>
+          <div style={{ fontSize: 12, color: "#7f1d1d", marginTop: 10, lineHeight: 1.6 }}>
+            Enquanto isso o cliente recebe <em>"tive uma instabilidade, pode mandar de novo"</em>.
+            O salão e as comandas continuam funcionando normalmente.
+          </div>
+        </div>
+      )}
+
+      {statusIA && statusIA.ok && (
+        <div style={{ background: T.greenL, border: `1px solid ${T.green}30`, borderRadius: T.radius, padding: "12px 20px", fontSize: 13, color: "#065f46" }}>
+          🤖 Robô respondendo normalmente · modelo {statusIA.modelo}
+        </div>
+      )}
 
       {/* QR Code card */}
       {!conectado && (
