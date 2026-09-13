@@ -3103,6 +3103,11 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   });
   const porGarcom = Object.values(gMap).sort((a,b)=>b.total-a.total);
 
+  // Gorjeta nao e faturamento, mas esta dentro do que entrou em cada forma de
+  // pagamento. Sem mostrar separado, o dono ve "Pagamentos" maior que o
+  // faturamento e acha que tem erro.
+  const gorjetasSalao = historicoSalao.reduce((soma,v)=>soma+(Number(v.gorjeta)||0),0);
+
   // Por forma de pagamento
   const porPag = {pix:0,cartao:0,dinheiro:0};
   historicoSalao.forEach(v=>{
@@ -3161,10 +3166,12 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   ${f.porPagamento?.pix>0?`<div class="linha"><span>🟢 Pix</span><span>R$ ${f.porPagamento.pix.toFixed(2)}</span></div>`:""}
   ${f.porPagamento?.cartao>0?`<div class="linha"><span>💳 Cartão</span><span>R$ ${f.porPagamento.cartao.toFixed(2)}</span></div>`:""}
   ${f.porPagamento?.dinheiro>0?`<div class="linha"><span>💵 Dinheiro</span><span>R$ ${f.porPagamento.dinheiro.toFixed(2)}</span></div>`:""}
+  ${f.totalGorjetas>0?`<div class="linha"><span>🙏 Gorjetas (inclusas acima)</span><span>R$ ${f.totalGorjetas.toFixed(2)}</span></div>
+  <div style="font-size:10px;color:#888;margin-top:2px">Gorjeta nao e faturamento — entrou no caixa, mas nao foi venda.</div>`:""}
   ${f.porGarcom?.length>0?`
   <hr>
   <div class="sec">Por garçom</div>
-  ${f.porGarcom.map(g=>`<div class="linha"><span>🧑‍🍳 ${g.nome} (${g.vendas}x)</span><span>R$ ${g.total.toFixed(2)}</span></div>`).join("")}
+  ${f.porGarcom.map(g=>`<div class="linha"><span>🧑‍🍳 ${g.nome} (${g.vendas}x)${g.gorjeta>0?` <small style="color:#065f46">+ R$ ${g.gorjeta.toFixed(2)} gorjeta</small>`:""}</span><span>R$ ${g.total.toFixed(2)}</span></div>`).join("")}
   `:""}
   ${f.obs?`<hr><div style="font-size:12px;color:#555">📝 ${f.obs}</div>`:""}
   <div class="rodape">— Fim do relatório —</div>
@@ -3212,6 +3219,16 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
               {porPag.pix>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>🟢 Pix</span><span style={{fontWeight:700}}>R$ {porPag.pix.toFixed(2)}</span></div>}
               {porPag.cartao>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💳 Cartão</span><span style={{fontWeight:700}}>R$ {porPag.cartao.toFixed(2)}</span></div>}
               {porPag.dinheiro>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💵 Dinheiro</span><span style={{fontWeight:700}}>R$ {porPag.dinheiro.toFixed(2)}</span></div>}
+              {gorjetasSalao>0&&(
+                <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #f0f0f0"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",color:"#065f46"}}>
+                    <span>🙏 Gorjetas (inclusas acima)</span><span style={{fontWeight:700}}>R$ {gorjetasSalao.toFixed(2)}</span>
+                  </div>
+                  <div style={{fontSize:10,color:"#999",lineHeight:1.5,marginTop:3}}>
+                    Não é faturamento. É a diferença entre o que entrou e o que foi vendido.
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {porGarcom.length>0&&(
@@ -3572,6 +3589,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const descontoDelivery = pp.reduce((s, p) => s + (p.desconto || 0), 0);
   const descontoSalao = historicoSalao.reduce((s, v) => s + (Number(v.desconto) || 0), 0);
   const totalDescontos = descontoDelivery + descontoSalao;
+  const totalGorjetas = historicoSalao.reduce((s, v) => s + (Number(v.gorjeta) || 0), 0);
   const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
 
   // Faturamento do salão — mesas abertas + já fechadas
@@ -3653,6 +3671,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           <Metrica icon="🛵" label="Delivery" valor={"R$ " + totalDelivery.toFixed(2)} sub={pp.length + " pedido" + (pp.length !== 1 ? "s" : "")} cor="#10b981" />
           <Metrica icon="🍽️" label="Salão" valor={"R$ " + totalSalao.toFixed(2)} cor="#3b82f6" />
           <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
+          {totalGorjetas > 0 && <Metrica icon="🙏" label="Gorjetas" valor={"R$ " + totalGorjetas.toFixed(2)} sub="fora do faturamento" cor="#10b981" />}
           {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub={descontoSalao > 0 && descontoDelivery > 0 ? "cupons + comandas" : descontoSalao > 0 ? "no fechamento" : "via cupons"} cor="#8b5cf6" />}
         </div>
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
@@ -3818,6 +3837,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>R$ {v.total.toFixed(2)}</div>
                       <div style={{ fontSize: 11, color: "#888" }}>{v.pagamento === "pix" ? "🟢 Pix" : v.pagamento === "cartao" ? "💳 Cartão" : v.pagamento === "misto" ? "🔀 Misto" : "💵 Dinheiro"}</div>
+                      {Number(v.gorjeta) > 0 && <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 700 }}>🙏 + R$ {Number(v.gorjeta).toFixed(2)} gorjeta</div>}
                       <BadgeNota status={v.notaFiscalStatus} />
                     </div>
                   </div>
@@ -3852,6 +3872,8 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                             ${v.desconto > 0 ? `<div class="linha"><span>Subtotal</span><span>R$ ${(v.subtotal||v.total).toFixed(2)}</span></div>
                             <div class="linha"><span>Desconto${v.descontoInfo?' ('+v.descontoInfo+')':''}</span><span>− R$ ${v.desconto.toFixed(2)}</span></div>` : ''}
                             <div class="total"><span>TOTAL</span><span>R$ ${v.total.toFixed(2)}</span></div>
+                            ${Number(v.gorjeta) > 0 ? `<div class="linha"><span>Gorjeta${v.gorjetaInfo?' ('+v.gorjetaInfo+')':''}</span><span>+ R$ ${Number(v.gorjeta).toFixed(2)}</span></div>
+                            <div class="total"><span>A PAGAR</span><span>R$ ${(v.total + Number(v.gorjeta)).toFixed(2)}</span></div>` : ''}
                             <div class="info" style="margin-top:10px">Pagamento: ${descrevePagamento(v.pagamentos, v.pagamento)}</div>
                             <div class="rodape">Obrigado! 🍢</div>
                             <br><button onclick="window.print()">🖨️ Imprimir</button>
@@ -4564,6 +4586,39 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const [descModo, setDescModo] = useState("nenhum");
   const [descValor, setDescValor] = useState("");
 
+  // Gorjeta. Vem DEPOIS do desconto e nao entra no faturamento — e dinheiro
+  // que entrou e e da equipe. O modo "recebido" e o caso real do balcao:
+  // o cliente mandou R$ 60 numa conta de R$ 51, a diferenca e gorjeta.
+  const [gorjModo, setGorjModo] = useState("nenhum");
+  const [gorjValor, setGorjValor] = useState("");
+
+  function calcGorjeta(totalComanda) {
+    const vazio = { valor: 0, texto: "", erro: null };
+    if (gorjModo === "nenhum" || !gorjValor) return vazio;
+
+    if (gorjModo === "percentual") {
+      const pct = parseFloat(String(gorjValor).replace(",", ".")) || 0;
+      if (pct <= 0) return vazio;
+      if (pct > 100) return { ...vazio, erro: "Percentual acima de 100%" };
+      return { valor: parseFloat((totalComanda * pct / 100).toFixed(2)), texto: `${pct}%`, erro: null };
+    }
+
+    if (gorjModo === "valor") {
+      const v = parseMoedaGlobal(gorjValor);
+      if (v <= 0) return vazio;
+      if (v > totalComanda) return { ...vazio, erro: "Gorjeta maior que a própria conta. Confira." };
+      return { valor: v, texto: fmtR(v), erro: null };
+    }
+
+    // "recebido": o caixa digita quanto entrou e a diferença vira gorjeta
+    const recebido = parseMoedaGlobal(gorjValor);
+    if (recebido <= 0) return vazio;
+    if (recebido < totalComanda) return { ...vazio, erro: `Recebido é menor que a conta (${fmtR(totalComanda)}) — isso seria desconto, não gorjeta` };
+    const v = parseFloat((recebido - totalComanda).toFixed(2));
+    if (v > totalComanda) return { ...vazio, erro: "Gorjeta maior que a própria conta. Confira." };
+    return { valor: v, texto: `recebeu ${fmtR(recebido)}`, erro: null };
+  }
+
   function calcDesconto(subtotal) {
     const vazio = { valor: 0, texto: "", erro: null };
     if (descModo === "nenhum" || !descValor) return vazio;
@@ -4607,6 +4662,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setValoresPag({ pix: "", cartao: "", dinheiro: "" });
     setDescModo("nenhum");
     setDescValor("");
+    setGorjModo("nenhum");
+    setGorjValor("");
   }
 
   // Monta o que vai para o servidor e diz quanto ainda falta lancar
@@ -4748,7 +4805,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setTimeout(()=>win.print(),400);
   }
 
-  async function fecharComanda(idxSC, pagamentos, descInfo){
+  async function fecharComanda(idxSC, pagamentos, descInfo, gorjInfo){
     // Duplo clique no botao criava DUAS vendas no banco
     if (fechandoRef.current) return;
     fechandoRef.current = true;
@@ -4759,6 +4816,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const subtotalSC = totMesa(scFechando.itens) + (scFechando.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0);
     const descontoSC = Math.min(Math.max(0, Number(descInfo?.valor) || 0), subtotalSC);
     const totalSC = parseFloat((subtotalSC - descontoSC).toFixed(2));
+    const gorjetaSC = Math.min(Math.max(0, Number(gorjInfo?.valor) || 0), totalSC);
     const registro = {
       id: Date.now(),
       mesa: mesa.id,
@@ -4772,7 +4830,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       descontoTipo: descontoSC > 0 ? (descInfo?.tipo || "") : "",
       descontoInfo: descontoSC > 0 ? (descInfo?.texto || "") : "",
       total: totalSC,
-      ...resumoPagamento(pagamentos, totalSC),
+      gorjeta: gorjetaSC,
+      gorjetaTipo: gorjetaSC > 0 ? (gorjInfo?.tipo || "") : "",
+      gorjetaInfo: gorjetaSC > 0 ? (gorjInfo?.texto || "") : "",
+      ...resumoPagamento(pagamentos, totalSC + gorjetaSC),
       abertura: scFechando.abertura||mesa.abertura,
       fechamento: new Date().toISOString(),
     };
@@ -4822,7 +4883,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setDivSalao(1);
   }
 
-  async function fecharMesa(pagamentos, descInfo){
+  async function fecharMesa(pagamentos, descInfo, gorjInfo){
     if (fechandoRef.current) return; // evita venda duplicada por duplo clique
     fechandoRef.current = true;
     // Fecha todas as comandas de uma vez
@@ -4831,6 +4892,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const subtotalMesa = totMesaCompleta(mesa);
     const descontoMesa = Math.min(Math.max(0, Number(descInfo?.valor) || 0), subtotalMesa);
     const totalMesa = parseFloat((subtotalMesa - descontoMesa).toFixed(2));
+    const gorjetaMesa = Math.min(Math.max(0, Number(gorjInfo?.valor) || 0), totalMesa);
     const registro = {
       id: Date.now(), mesa: mesa.id,
       cliente: (mesa.subComandas||[]).map(s=>s.cliente).filter(Boolean).join(", ")||"—",
@@ -4841,7 +4903,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       descontoTipo: descontoMesa > 0 ? (descInfo?.tipo || "") : "",
       descontoInfo: descontoMesa > 0 ? (descInfo?.texto || "") : "",
       total: totalMesa,
-      ...resumoPagamento(pagamentos, totalMesa),
+      gorjeta: gorjetaMesa,
+      gorjetaTipo: gorjetaMesa > 0 ? (gorjInfo?.tipo || "") : "",
+      gorjetaInfo: gorjetaMesa > 0 ? (gorjInfo?.texto || "") : "",
+      ...resumoPagamento(pagamentos, totalMesa + gorjetaMesa),
       abertura:mesa.abertura, fechamento:new Date().toISOString(),
     };
     try {
@@ -5017,14 +5082,18 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   // TELA FECHAR
   if(telaSalao==="fechar") {
     const fecharUma = mesa.subComandas.length > 1; // se há múltiplas, fecha só a ativa
+    // Ordem do cálculo: itens → desconto → comanda → gorjeta → o que o cliente paga
     const subtotalFechar = fecharUma ? totalSCAtual : totalAcumulado;
     const desc = calcDesconto(subtotalFechar);
-    const totalFechar = parseFloat((subtotalFechar - desc.valor).toFixed(2));
+    const totalComanda = parseFloat((subtotalFechar - desc.valor).toFixed(2));   // isto é venda
+    const gor = calcGorjeta(totalComanda);
+    const totalFechar = parseFloat((totalComanda + gor.valor).toFixed(2));       // isto é o que entra no caixa
     const descontoInfo = { valor: desc.valor, tipo: desc.valor > 0 ? descModo : "", texto: desc.texto };
+    const gorjetaInfo = { valor: gor.valor, tipo: gor.valor > 0 ? gorjModo : "", texto: gor.texto };
     const pagInfo = montarPagamentos(totalFechar);
     const pagOk = !pagDividido || (pagInfo.pagamentos.length > 0 && Math.abs(pagInfo.falta) <= 0.02);
     const pagTexto = descrevePagamento(pagInfo.pagamentos, pagSalao);
-    const podeConfirmar = pagOk && !desc.erro && totalFechar > 0;
+    const podeConfirmar = pagOk && !desc.erro && !gor.erro && totalComanda > 0;
     const todosItensFechar = fecharUma
       ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
       : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
@@ -5052,7 +5121,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             </div>
           ))}
           <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,fontSize:16,fontWeight:800,color:"#7b1a0a"}}>
-            <span>Total</span><span>{fmtR(totalFechar)}</span>
+            <span>Total</span><span>{fmtR(totalComanda)}</span>
           </div>
         </div>
         <div style={card2}>
@@ -5123,7 +5192,61 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 <span>Desconto {desc.texto ? `(${desc.texto})` : ""}</span><span>− {fmtR(desc.valor)}</span>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:800,color:"#7b1a0a",paddingTop:6}}>
+                <span>Total da comanda</span><span>{fmtR(totalComanda)}</span>
+              </div>
+            </div>
+          )}
+        </div>
+        {/* Gorjeta — não é venda, é dinheiro da equipe */}
+        <div style={card2}>
+          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🙏 Gorjeta</div>
+          <div style={{display:"flex",gap:6,marginBottom:gorjModo==="nenhum"?0:10}}>
+            {[["nenhum","Sem"],["percentual","%"],["valor","R$"],["recebido","Recebido"]].map(([k,l])=>(
+              <button key={k} onClick={()=>{ setGorjModo(k); setGorjValor(""); }}
+                style={{flex:1,padding:"8px 2px",borderRadius:10,border:`2px solid ${gorjModo===k?"#065f46":"#e0e0e0"}`,background:gorjModo===k?"#d1fae5":"#fff",fontWeight:gorjModo===k?700:500,fontSize:12,cursor:"pointer",color:gorjModo===k?"#065f46":"#555"}}>{l}</button>
+            ))}
+          </div>
+
+          {gorjModo !== "nenhum" && (
+            <>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <input inputMode="decimal" value={gorjValor}
+                  placeholder={gorjModo==="percentual" ? "10" : gorjModo==="valor" ? "0,00" : fmtR(totalComanda).replace("R$ ","")}
+                  onChange={e=>setGorjValor(gorjModo==="percentual" ? e.target.value.replace(/[^\d,.]/g,"") : mascaraMoeda(e.target.value))}
+                  style={{flex:1,minWidth:0,padding:"10px 12px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:16,outline:"none",boxSizing:"border-box",color:"#333"}} />
+                {gorjModo === "percentual" && (
+                  <button onClick={()=>setGorjValor("10")}
+                    style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"10px 12px",fontSize:12,cursor:"pointer",color:"#555",fontWeight:700,whiteSpace:"nowrap"}}>10%</button>
+                )}
+              </div>
+              <div style={{fontSize:11,color:"#999",marginTop:6}}>
+                {gorjModo==="percentual" ? "Percentual sobre o total da comanda"
+                  : gorjModo==="valor" ? "Quanto o cliente deu a mais"
+                  : "Quanto o cliente mandou no total — o que passar da conta vira gorjeta"}
+              </div>
+            </>
+          )}
+
+          {gor.erro && (
+            <div style={{marginTop:8,background:"#fee2e2",color:"#991b1b",borderRadius:9,padding:"8px 11px",fontSize:12,fontWeight:600,lineHeight:1.4}}>
+              {gor.erro}
+            </div>
+          )}
+
+          {gor.valor > 0 && !gor.erro && (
+            <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #f0f0f0",fontSize:13}}>
+              <div style={{display:"flex",justifyContent:"space-between",color:"#666",padding:"2px 0"}}>
+                <span>Total da comanda</span><span>{fmtR(totalComanda)}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",color:"#065f46",fontWeight:700,padding:"2px 0"}}>
+                <span>Gorjeta {gor.texto ? `(${gor.texto})` : ""}</span><span>+ {fmtR(gor.valor)}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:800,color:"#7b1a0a",paddingTop:6}}>
                 <span>A pagar</span><span>{fmtR(totalFechar)}</span>
+              </div>
+              <div style={{fontSize:10.5,color:"#999",marginTop:6,lineHeight:1.5}}>
+                A gorjeta <strong>não entra no faturamento</strong> nem na nota fiscal — ela aparece
+                separada no fechamento do dia e no relatório do garçom.
               </div>
             </div>
           )}
@@ -5186,7 +5309,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               subtotal: subtotalFechar,
               desconto: desc.valor,
               descontoInfo: desc.texto,
-              total: totalFechar,
+              gorjeta: gor.valor,
+              gorjetaInfo: gor.texto,
+              total: totalComanda,
               pagamento: pagInfo.pagamentos.length === 1 ? pagInfo.pagamentos[0].tipo : "misto",
               pagamentoTexto: pagTexto,
               abertura: abertura,
@@ -5229,7 +5354,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               ${todosItensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
               ${desc.valor > 0 ? `<div class="linha"><span>Subtotal</span><span>R$ ${subtotalFechar.toFixed(2)}</span></div>
               <div class="linha"><span>Desconto${desc.texto?' ('+desc.texto+')':''}</span><span>− R$ ${desc.valor.toFixed(2)}</span></div>` : ''}
-              <div class="total"><span>TOTAL</span><span>R$ ${totalFechar.toFixed(2)}</span></div>
+              <div class="total"><span>TOTAL</span><span>R$ ${totalComanda.toFixed(2)}</span></div>
+              ${gor.valor > 0 ? `<div class="linha"><span>Gorjeta${gor.texto?' ('+gor.texto+')':''}</span><span>+ R$ ${gor.valor.toFixed(2)}</span></div>
+              <div class="total"><span>A PAGAR</span><span>R$ ${totalFechar.toFixed(2)}</span></div>` : ''}
               <div class="info" style="margin-top:12px">Pagamento: ${pagTexto}</div>
               <div class="rodape">Obrigado pela visita! 🍢</div>
               <br><button onclick="window.print()">🖨️ Imprimir</button>
@@ -5238,7 +5365,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             setTimeout(()=>win.print(),500);
           }} style={{background:T.grayLL,color:T.gray,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"12px 0",fontWeight:600,fontSize:14,cursor:"pointer",flex:1}}>🖨️ Imprimir</button>
           <button disabled={!podeConfirmar}
-            onClick={()=>fecharUma?fecharComanda(scIdx,pagInfo.pagamentos,descontoInfo):fecharMesa(pagInfo.pagamentos,descontoInfo)}
+            onClick={()=>fecharUma?fecharComanda(scIdx,pagInfo.pagamentos,descontoInfo,gorjetaInfo):fecharMesa(pagInfo.pagamentos,descontoInfo,gorjetaInfo)}
             style={{...BP2(podeConfirmar?"linear-gradient(135deg,#065f46,#10b981)":"#ccc"),flex:2,cursor:podeConfirmar?"pointer":"not-allowed"}}>
             ✅ Confirmar — {fmtR(totalFechar)}
           </button>

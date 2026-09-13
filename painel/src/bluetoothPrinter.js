@@ -349,7 +349,7 @@ class ImpressoraBT {
 
   // ── IMPRIMIR RECIBO/COMANDA P/ CAIXA ──
   // Para conferência no caixa: itens COM preços, TOTAL, forma de pagamento
-  async imprimirRecibo({ mesa, cliente, garcom, itens, total, subtotal, desconto, descontoInfo, pagamento, pagamentos, pagamentoTexto, abertura, fechamento }) {
+  async imprimirRecibo({ mesa, cliente, garcom, itens, total, subtotal, desconto, descontoInfo, gorjeta, gorjetaInfo, pagamento, pagamentos, pagamentoTexto, abertura, fechamento }) {
     const ab = abertura ? new Date(abertura) : new Date();
     const fe = fechamento ? new Date(fechamento) : new Date();
     const cmds = [
@@ -389,6 +389,12 @@ class ImpressoraBT {
     }
     cmds.push(NL);
     cmds.push(ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
+    // Gorjeta sai DEPOIS do total: o cliente ve o que e conta e o que e extra
+    if (Number(gorjeta) > 0) {
+      const rot = gorjetaInfo ? `Gorjeta (${removerAcentos(String(gorjetaInfo))})` : "Gorjeta";
+      cmds.push(ALIGN_RIGHT, texto(`${rot}  +R$ ${Number(gorjeta).toFixed(2)}`), NL);
+      cmds.push(BOLD_ON, texto(`A PAGAR R$ ${((Number(total)||0) + Number(gorjeta)).toFixed(2)}`), NL, BOLD_OFF);
+    }
     // Comanda dividida: cada forma sai na sua linha, com o valor que coube
     const nomePg = { pix:"PIX", cartao:"Cartao", dinheiro:"Dinheiro", misto:"Misto" };
     if (Array.isArray(pagamentos) && pagamentos.length > 1) {

@@ -225,6 +225,13 @@ const VendaSalaoSchema = new mongoose.Schema({
   desconto:      { type: Number, default: 0, min: 0 },   // em reais
   descontoTipo:  { type: String, default: "", enum: ["", "percentual", "valor", "total"] },
   descontoInfo:  { type: String, default: "" },          // "10%", "arredondado para R$ 50,00"
+  // ── Gorjeta ──
+  // NAO e receita de venda: nao entra no faturamento nem na nota fiscal.
+  // E dinheiro que entrou e pertence a equipe. Fica separado justamente para
+  // o caixa fechar: total + gorjeta = o que o cliente pagou de fato.
+  gorjeta:      { type: Number, default: 0, min: 0 },
+  gorjetaTipo:  { type: String, default: "", enum: ["", "percentual", "valor", "recebido"] },
+  gorjetaInfo:  { type: String, default: "" },   // "10%", "recebeu R$ 60,00"
   // Resumo (compatibilidade com o historico antigo): a forma unica, ou "misto"
   pagamento: { type: String, required: true, enum: ["pix", "cartao", "dinheiro", "misto"] },
   // Detalhe: a comanda pode ser dividida (metade dinheiro, metade pix)
@@ -302,7 +309,10 @@ const FechamentoDiaSchema = new mongoose.Schema({
     cartao:   { type: Number, default: 0 },
     dinheiro: { type: Number, default: 0 },
   },
-  porGarcom: Array,   // [{ nome, vendas, total }]
+  // Gorjeta nao e faturamento, mas ENTRA no dinheiro recebido. Guardar
+  // separado e o que explica porPagamento ser maior que totalSalao.
+  totalGorjetas:   { type: Number, default: 0 },
+  porGarcom: Array,   // [{ nome, vendas, total, gorjeta }]
   obs: String,
   criadoPor: String,
 });
@@ -1553,12 +1563,33 @@ function normalizarDesconto(body) {
   };
 }
 
+// A gorjeta entra DEPOIS do desconto e nao mexe no total da venda.
+// O teto de 100% do valor da comanda existe para pegar dedo errado: digitar
+// 500 no lugar de 5 furaria o caixa no sentido contrario.
+function normalizarGorjeta(body) {
+  const total = Number(body.total) || 0;   // ja liquido de desconto
+  const gorjeta = Number(body.gorjeta) || 0;
+
+  if (gorjeta < 0) return { erro: "Gorjeta negativa" };
+  if (gorjeta > total) {
+    return { erro: "Gorjeta (R$ " + gorjeta.toFixed(2) + ") maior que a propria comanda (R$ " + total.toFixed(2) + "). Confira o valor." };
+  }
+  const tipos = ["percentual", "valor", "recebido"];
+  return {
+    gorjeta: parseFloat(gorjeta.toFixed(2)),
+    gorjetaTipo: gorjeta > 0 && tipos.includes(body.gorjetaTipo) ? body.gorjetaTipo : "",
+    gorjetaInfo: gorjeta > 0 ? String(body.gorjetaInfo || "").slice(0, 60) : "",
+  };
+}
+
 const FORMAS_PAGAMENTO = ["pix", "cartao", "dinheiro"];
 
 // Aceita o formato antigo (pagamento: "pix") e o novo (pagamentos: [{tipo, valor}]).
 // Devolve { pagamento, pagamentos } ou { erro }.
 function normalizarPagamento(body) {
-  const total = Number(body.total) || 0;
+  // O cliente paga a comanda MAIS a gorjeta — e e isso que o caixa confere
+  // contra a maquininha e o extrato do pix.
+  const total = (Number(body.total) || 0) + (Number(body.gorjeta) || 0);
   const lista = Array.isArray(body.pagamentos) ? body.pagamentos : null;
 
   if (!lista || !lista.length) {
@@ -1577,7 +1608,13 @@ function normalizarPagamento(body) {
   // Tolerancia de 2 centavos: divisao por 3 nao fecha exato
   const soma = limpa.reduce((acc, p) => acc + p.valor, 0);
   if (Math.abs(soma - total) > 0.02) {
-    return { erro: "A soma dos pagamentos (R$ " + soma.toFixed(2) + ") nao bate com o total (R$ " + total.toFixed(2) + ")" };
+    // Com gorjeta, dizer so "o total" confunde: o caixa olha a comanda e acha
+    // que bate. Mostra a conta inteira.
+    const gorj = Number(body.gorjeta) || 0;
+    const detalhe = gorj > 0
+      ? "comanda R$ " + (Number(body.total) || 0).toFixed(2) + " + gorjeta R$ " + gorj.toFixed(2) + " = R$ " + total.toFixed(2)
+      : "R$ " + total.toFixed(2);
+    return { erro: "A soma dos pagamentos (R$ " + soma.toFixed(2) + ") nao bate com o valor a pagar (" + detalhe + ")" };
   }
 
   // Dois lancamentos na mesma forma viram um
@@ -1598,12 +1635,15 @@ app.post("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (re
   const desc = normalizarDesconto(req.body);
   if (desc.erro) return res.status(400).json({ erro: desc.erro });
 
+  const gor = normalizarGorjeta(req.body);
+  if (gor.erro) return res.status(400).json({ erro: gor.erro });
+
   const pag = normalizarPagamento(req.body);
   if (pag.erro) return res.status(400).json({ erro: pag.erro });
 
   try {
     const venda = await VendaSalaoDB.create({
-      ...req.body, ...desc,
+      ...req.body, ...desc, ...gor,
       pagamento: pag.pagamento, pagamentos: pag.pagamentos,
     });
     // Baixa automática no estoque
@@ -1948,9 +1988,10 @@ app.get("/garcons/relatorio", authMiddleware(["dono"]), async (req, res) => {
     vendas.forEach(v => {
       const nome = v.garcom && v.garcom !== "—" ? v.garcom : null;
       if (!nome) return;
-      if (!porGarcom[nome]) porGarcom[nome] = { nome, vendas: 0, total: 0, mesas: new Set(), itens: {} };
+      if (!porGarcom[nome]) porGarcom[nome] = { nome, vendas: 0, total: 0, gorjeta: 0, mesas: new Set(), itens: {} };
       porGarcom[nome].vendas += 1;
       porGarcom[nome].total += v.total || 0;
+      porGarcom[nome].gorjeta += Number(v.gorjeta) || 0;
       porGarcom[nome].mesas.add(v.mesa);
       (v.itens || []).forEach(it => {
         porGarcom[nome].itens[it.nome] = (porGarcom[nome].itens[it.nome] || 0) + (it.qty || 1);
@@ -1961,6 +2002,7 @@ app.get("/garcons/relatorio", authMiddleware(["dono"]), async (req, res) => {
       nome: g.nome,
       vendas: g.vendas,
       total: parseFloat(g.total.toFixed(2)),
+      gorjeta: parseFloat(g.gorjeta.toFixed(2)),
       mesas: g.mesas.size,
       ticketMedio: g.vendas > 0 ? parseFloat((g.total / g.vendas).toFixed(2)) : 0,
       itemMaisVendido: Object.entries(g.itens).sort((a,b)=>b[1]-a[1])[0]?.[0] || "—",
@@ -1990,6 +2032,7 @@ app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) 
     // Vendas salão hoje
     const vendasHoje = await VendaSalaoDB.find({ fechamento: { $gte: hoje, $lt: amanha } }).lean();
     const totalSalao = vendasHoje.reduce((s, v) => s + (v.total || 0), 0);
+    const totalGorjetas = vendasHoje.reduce((s, v) => s + (Number(v.gorjeta) || 0), 0);
 
     // Por forma de pagamento
     // Comanda dividida entra em cada forma pelo valor que coube a ela
@@ -2008,10 +2051,12 @@ app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) 
     const gMap = {};
     vendasHoje.forEach(v => {
       const g = v.garcom && v.garcom !== "—" ? v.garcom : "Sem garçom";
-      if (!gMap[g]) gMap[g] = { nome: g, vendas: 0, total: 0 };
+      if (!gMap[g]) gMap[g] = { nome: g, vendas: 0, total: 0, gorjeta: 0 };
       gMap[g].vendas += 1;
       gMap[g].total += v.total || 0;
+      gMap[g].gorjeta += Number(v.gorjeta) || 0;
     });
+    Object.values(gMap).forEach(g => { g.gorjeta = parseFloat(g.gorjeta.toFixed(2)); });
     const porGarcom = Object.values(gMap).sort((a, b) => b.total - a.total);
 
     const fechamento = await FechamentoDB.create({
@@ -2021,6 +2066,7 @@ app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) 
       totalGeral: parseFloat((totalDelivery + totalSalao).toFixed(2)),
       pedidosDelivery: pedidosHoje.length,
       vendasSalao: vendasHoje.length,
+      totalGorjetas: parseFloat(totalGorjetas.toFixed(2)),
       porPagamento: {
         pix: parseFloat(porPagamento.pix.toFixed(2)),
         cartao: parseFloat(porPagamento.cartao.toFixed(2)),
