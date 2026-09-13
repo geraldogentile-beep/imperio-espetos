@@ -1244,7 +1244,7 @@ app.get("/qrcode", authMiddleware(["dono"]), (req, res) => {
 });
 
 // ── AUTH API ─────────────────────────────────────────────────
-// Le os PINs de dono/caixa (env vars como base, ConfigDB sobrescreve)
+// Le os dois PINs fixos (env vars como base, ConfigDB sobrescreve)
 // Mongoose enfileira comandos quando o banco esta fora e so desiste depois de
 // 10s. Numa tela de login isso vira "erro de conexao" para quem esta no caixa.
 // Perguntar o estado da conexao antes evita a espera.
@@ -1252,13 +1252,19 @@ function mongoPronto() {
   return mongoose.connection.readyState === 1;
 }
 
+// Sao dois logins, so. A casa decidiu assim em 13/09/2026:
+//   9999 -> adm, que e a mesma pessoa do caixa
+//   5678 -> garcom, compartilhado por toda a equipe de salao
+// Nao existe mais "PIN do caixa" como papel separado.
 async function getPinsAdmin() {
-  let pins = { dono: process.env.PIN_DONO || "9999", caixa: process.env.PIN_CAIXA || "5678" };
+  let pins = { dono: process.env.PIN_DONO || "9999", garcom: process.env.PIN_GARCOM || "5678" };
   if (!mongoPronto()) return pins;   // banco fora: usa os PINs do .env na hora
   try {
     const cfg = await ConfigDB.findOne({ chave: "pins" });
     if (cfg?.valor) pins = { ...pins, ...cfg.valor };
   } catch (e) { console.error("Erro ao buscar pins do DB (usando env vars):", e.message); }
+  // PIN de caixa gravado antes da mudanca nao vale mais como login proprio
+  delete pins.caixa;
   return pins;
 }
 
@@ -1266,20 +1272,22 @@ app.post("/auth/login", loginLimiter, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN deve ter 4 dígitos" });
 
-  // Verifica PINs de dono/caixa primeiro (funciona mesmo sem MongoDB)
+  // Os dois PINs fixos primeiro: funcionam mesmo com o MongoDB fora
   const pins = await getPinsAdmin();
 
   if (pin === pins.dono) {
     const token = gerarToken({ role: "dono" });
     return res.json({ token, role: "dono" });
   }
-  if (pin === pins.caixa) {
-    const token = gerarToken({ role: "caixa" });
-    return res.json({ token, role: "caixa" });
+  if (pin === pins.garcom) {
+    // Login de salao compartilhado: sem nome, porque e a equipe toda
+    const token = gerarToken({ role: "garcom" });
+    return res.json({ token, role: "garcom" });
   }
 
-  // Verifica garçom no banco
-  if (!mongoPronto()) return res.status(503).json({ erro: "Banco de dados indisponível. Entre com o PIN do dono ou do caixa." });
+  // Garcom com PIN proprio, se a casa cadastrar algum. Continua valendo:
+  // serve para o relatorio por garcom, que o login compartilhado nao da.
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco de dados indisponível. Use o PIN do administrador ou o do salão." });
   try {
     const garcom = await GarcomDB.findOne({ pin, ativo: true }).lean();
     if (garcom) {
@@ -1292,21 +1300,28 @@ app.post("/auth/login", loginLimiter, async (req, res) => {
 });
 
 app.put("/auth/pins", authMiddleware(["dono"]), async (req, res) => {
-  const { dono, caixa } = req.body;
-  if (dono && !/^\d{4}$/.test(dono)) return res.status(400).json({ erro: "PIN do dono deve ter 4 dígitos" });
-  if (caixa && !/^\d{4}$/.test(caixa)) return res.status(400).json({ erro: "PIN do caixa deve ter 4 dígitos" });
+  const { dono, garcom } = req.body;
+  if (dono && !/^\d{4}$/.test(dono)) return res.status(400).json({ erro: "PIN do administrador deve ter 4 dígitos" });
+  if (garcom && !/^\d{4}$/.test(garcom)) return res.status(400).json({ erro: "PIN do salão deve ter 4 dígitos" });
+  // Iguais, o login de salao nunca seria alcancado: o do adm casa primeiro
+  const novoDono = dono || (await getPinsAdmin()).dono;
+  const novoGarcom = garcom || (await getPinsAdmin()).garcom;
+  if (novoDono === novoGarcom) {
+    return res.status(400).json({ erro: "Os dois PINs não podem ser iguais." });
+  }
   try {
     const atual = await ConfigDB.findOne({ chave: "pins" });
     const pins = atual?.valor || {};
     if (dono) pins.dono = dono;
-    if (caixa) pins.caixa = caixa;
+    if (garcom) pins.garcom = garcom;
+    delete pins.caixa;   // papel removido
     await ConfigDB.updateOne({ chave: "pins" }, { valor: pins }, { upsert: true });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
 // ── PEDIDOS API ───────────────────────────────────────────────
-app.get("/pedidos", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.get("/pedidos", authMiddleware(["dono", "garcom"]), async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -1318,7 +1333,7 @@ app.get("/pedidos", authMiddleware(["dono", "caixa", "garcom"]), async (req, res
   }
 });
 
-app.patch("/pedidos/:id/status", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.patch("/pedidos/:id/status", authMiddleware(["dono", "garcom"]), async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
   if (!["novo","preparando","entrega","entregue","cancelado"].includes(status)) return res.status(400).json({ erro: "Status inválido" });
@@ -1342,7 +1357,7 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono", "caixa", "garcom"]), as
 });
 
 // ── EDITAR PEDIDO (itens) ─────────────────────────────────────
-app.put("/pedidos/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.put("/pedidos/:id", authMiddleware(["dono"]), async (req, res) => {
   const { id } = req.params;
   const { itens, obs } = req.body;
   if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
@@ -1388,7 +1403,7 @@ app.put("/pedidos/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
 });
 
 // ── WHATSAPP STATUS API ───────────────────────────────────────
-app.get("/whatsapp/status", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json({ status: whatsappStatus }));
+app.get("/whatsapp/status", authMiddleware(["dono", "garcom"]), (req, res) => res.json({ status: whatsappStatus }));
 
 // GET /whatsapp/qr — o QR em JSON, para o painel poder ficar consultando
 app.get("/whatsapp/qr", authMiddleware(["dono"]), (req, res) => {
@@ -1498,7 +1513,7 @@ app.get("/fidelidade", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── CARDÁPIO API ──────────────────────────────────────────────
-app.get("/cardapio", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json(CARDAPIO));
+app.get("/cardapio", authMiddleware(["dono", "garcom"]), (req, res) => res.json(CARDAPIO));
 app.post("/cardapio", authMiddleware(["dono"]), async (req, res) => {
   const { categoria, nome, preco, tempoPreparo, obs } = req.body;
   if (!categoria || !nome || !preco) return res.status(400).json({ erro: "categoria, nome e preco obrigatórios" });
@@ -1570,7 +1585,7 @@ app.delete("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── CONFIG API ────────────────────────────────────────────────
-app.get("/config", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => res.json(CONFIG));
+app.get("/config", authMiddleware(["dono", "garcom"]), (req, res) => res.json(CONFIG));
 async function salvarConfig() { try { await ConfigDB.updateOne({ chave: "config" }, { valor: CONFIG }, { upsert: true }); } catch (e) { console.error("Erro ao salvar config:", e.message); } }
 // ── Validadores de config ────────────────────────────────────
 function numOr(valor, atual, { min = 0, max = Infinity } = {}) {
@@ -1652,7 +1667,7 @@ app.put("/config/avaliacao", authMiddleware(["dono"]), async (req, res) => { CON
 app.get("/config/status-loja", (req, res) => res.json({ aberto: estaAberto(), proximaAbertura: proximaAbertura() }));
 
 // ── MODO EVENTO (preços promocionais durante eventos) ────────
-app.get("/modo-evento", authMiddleware(["dono", "caixa", "garcom"]), (req, res) => {
+app.get("/modo-evento", authMiddleware(["dono", "garcom"]), (req, res) => {
   res.json({ ...CONFIG.modoEvento, ativoAgora: estaEmModoEvento() });
 });
 app.put("/modo-evento", authMiddleware(["dono"]), async (req, res) => {
@@ -1684,7 +1699,7 @@ app.patch("/cardapio/:id/preco-promocional", authMiddleware(["dono"]), async (re
 });
 
 // ── VENDAS SALÃO API ─────────────────────────────────────────
-app.get("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.get("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) => {
   try {
     const hoje = new Date(); hoje.setHours(0,0,0,0);
     const lista = await VendaSalaoDB.find({ fechamento: { $gte: hoje } }).sort({ fechamento: -1 }).lean();
@@ -1777,7 +1792,7 @@ function normalizarPagamento(body) {
   return { pagamento: agrupado.length === 1 ? agrupado[0].tipo : "misto", pagamentos: agrupado };
 }
 
-app.post("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.post("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) => {
   const { itens, total } = req.body;
   if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
   if (!total || total <= 0) return res.status(400).json({ erro: "Total inválido" });
@@ -1806,7 +1821,7 @@ app.post("/vendas-salao", authMiddleware(["dono", "caixa", "garcom"]), async (re
 // So o que costuma sair errado no balcao: forma de pagamento, desconto,
 // gorjeta, mesa e nome. ITENS ficam de fora de proposito: mexer neles exige
 // refazer a baixa de estoque, e nesse caso o certo e excluir e lancar de novo.
-app.put("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.put("/vendas-salao/:id", authMiddleware(["dono"]), async (req, res) => {
   const { motivo } = req.body || {};
   // Banco fora e id malformado sao coisas diferentes: engolir os dois no
   // mesmo catch faria uma queda do Mongo aparecer como "id invalido".
@@ -1883,7 +1898,7 @@ app.put("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, res)
   }
 });
 
-app.delete("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.delete("/vendas-salao/:id", authMiddleware(["dono"]), async (req, res) => {
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel. Tente de novo em instantes." });
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id invalido" });
   try {
@@ -1899,7 +1914,7 @@ app.delete("/vendas-salao/:id", authMiddleware(["dono", "caixa"]), async (req, r
   }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
-app.get("/vendas-salao/historico", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.get("/vendas-salao/historico", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
     const filtro = {};
@@ -2176,8 +2191,8 @@ app.post("/garcons", authMiddleware(["dono"]), async (req, res) => {
   try {
     // Impede escalacao de privilegio: garcom com PIN de dono/caixa logaria como admin
     const pinsAdmin = await getPinsAdmin();
-    if (pin === pinsAdmin.dono || pin === pinsAdmin.caixa) {
-      return res.status(400).json({ erro: "Esse PIN esta reservado para dono/caixa. Escolha outro." });
+    if (pin === pinsAdmin.dono || pin === pinsAdmin.garcom) {
+      return res.status(400).json({ erro: "Esse PIN ja e do administrador ou do salao. Escolha outro." });
     }
     const existe = await GarcomDB.findOne({ pin });
     if (existe) return res.status(400).json({ erro: "Esse PIN já está em uso por outro garçom" });
@@ -2198,8 +2213,8 @@ app.put("/garcons/:id", authMiddleware(["dono"]), async (req, res) => {
       if (!/^\d{4}$/.test(pin)) return res.status(400).json({ erro: "PIN inválido" });
       // Impede escalacao de privilegio via troca de PIN
       const pinsAdmin = await getPinsAdmin();
-      if (pin === pinsAdmin.dono || pin === pinsAdmin.caixa) {
-        return res.status(400).json({ erro: "Esse PIN esta reservado para dono/caixa. Escolha outro." });
+      if (pin === pinsAdmin.dono || pin === pinsAdmin.garcom) {
+        return res.status(400).json({ erro: "Esse PIN ja e do administrador ou do salao. Escolha outro." });
       }
       const existe = await GarcomDB.findOne({ pin, _id: { $ne: req.params.id } });
       if (existe) return res.status(400).json({ erro: "PIN já em uso" });
@@ -2256,7 +2271,7 @@ app.get("/garcons/relatorio", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── FECHAMENTO DO DIA API ─────────────────────────────────────
-app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { obs, criadoPor } = req.body;
     const hoje = new Date();
@@ -2324,14 +2339,14 @@ app.post("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) 
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
-app.get("/fechamento-dia", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.get("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
   try {
     const lista = await FechamentoDB.find().sort({ data: -1 }).limit(90).lean();
     res.json(lista);
   } catch { res.json([]); }
 });
 
-app.get("/fechamento-dia/:dataStr", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.get("/fechamento-dia/:dataStr", authMiddleware(["dono"]), async (req, res) => {
   try {
     const f = await FechamentoDB.findOne({ dataStr: req.params.dataStr }).lean();
     if (!f) return res.status(404).json({ erro: "Fechamento não encontrado" });
@@ -2731,7 +2746,7 @@ function pendenciasFiscais(cfg) {
   return faltando;
 }
 
-app.get("/config/fiscal/status", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.get("/config/fiscal/status", authMiddleware(["dono"]), async (req, res) => {
   const cfg = await getConfigFiscal();
   const faltando = pendenciasFiscais(cfg);
   res.json({
@@ -3193,7 +3208,7 @@ async function emitirUmaNota({ vendaId, pedidoId, cpfCliente, cfg, usuario }) {
 }
 
 // POST /notas/emitir  { vendaId } ou { pedidoId }, cpfCliente opcional
-app.post("/notas/emitir", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.post("/notas/emitir", authMiddleware(["dono"]), async (req, res) => {
   const { vendaId, pedidoId, cpfCliente } = req.body || {};
   if (!vendaId && !pedidoId) return res.status(400).json({ erro: "Informe vendaId ou pedidoId" });
 
@@ -3215,7 +3230,7 @@ app.post("/notas/emitir", authMiddleware(["dono", "caixa"]), async (req, res) =>
 // identificado", que e o caso de quem so quer regularizar o movimento do dia.
 const LOTE_MAX = 100;
 
-app.post("/notas/emitir-lote", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.post("/notas/emitir-lote", authMiddleware(["dono"]), async (req, res) => {
   const { vendaIds } = req.body || {};
   if (!Array.isArray(vendaIds) || !vendaIds.length) {
     return res.status(400).json({ erro: "Informe vendaIds (lista de comandas)" });
@@ -3263,7 +3278,7 @@ app.post("/notas/emitir-lote", authMiddleware(["dono", "caixa"]), async (req, re
 });
 
 // GET /notas — listagem com filtros
-app.get("/notas", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.get("/notas", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { status, de, ate, page = 1, limit = 100 } = req.query;
     const filtro = {};
@@ -3287,7 +3302,7 @@ app.get("/notas", authMiddleware(["dono", "caixa"]), async (req, res) => {
 // GET /notas/resumo — faturamento total vs total com nota emitida.
 // Os dois números ficam lado a lado de propósito: no Simples Nacional o
 // imposto incide sobre a receita bruta total, não sobre a soma das notas.
-app.get("/notas/resumo", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.get("/notas/resumo", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
     const ini = de ? new Date(de) : new Date(new Date().setHours(0, 0, 0, 0));
@@ -3384,7 +3399,7 @@ app.post("/reset/dados-teste", authMiddleware(["dono"]), async (req, res) => {
 // seu salão no localStorage e eles nunca se falavam.
 
 // GET /mesas — o estado do salão no dia operacional de hoje
-app.get("/mesas", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.get("/mesas", authMiddleware(["dono", "garcom"]), async (req, res) => {
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
   try {
     const lista = await MesaSalaoDB.find({ dataStr: diaOperacional() })
@@ -3403,7 +3418,7 @@ app.get("/mesas", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) 
 // versao = a que o aparelho tinha quando comecou a editar. Se o servidor ja
 // estiver adiante, recusa e devolve o estado atual — assim dois garcons na
 // mesma mesa nao apagam o lancamento um do outro.
-app.put("/mesas/:mesaId", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.put("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) => {
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
   const mesaId = parseInt(req.params.mesaId);
   if (!Number.isFinite(mesaId)) return res.status(400).json({ erro: "Mesa invalida" });
@@ -3457,7 +3472,7 @@ app.put("/mesas/:mesaId", authMiddleware(["dono", "caixa", "garcom"]), async (re
 });
 
 // DELETE /mesas — zera o salao do dia (usado pelo "zerar salão" do painel)
-app.delete("/mesas", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.delete("/mesas", authMiddleware(["dono"]), async (req, res) => {
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
   try {
     const r = await MesaSalaoDB.deleteMany({ dataStr: diaOperacional() });
@@ -3483,7 +3498,7 @@ const CLAIM_TIMEOUT_MS = 60 * 1000;   // job travado em "processando" volta para
 const FILA_MAX_TENTATIVAS = 3;
 
 // POST /impressao — garçom (ou qualquer um sem impressora) põe na fila
-app.post("/impressao", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.post("/impressao", authMiddleware(["dono", "garcom"]), async (req, res) => {
   const { tipo, dados } = req.body || {};
   if (!["cozinha", "recibo", "delivery"].includes(tipo)) {
     return res.status(400).json({ erro: "tipo deve ser cozinha, recibo ou delivery" });
@@ -3506,7 +3521,7 @@ app.post("/impressao", authMiddleware(["dono", "caixa", "garcom"]), async (req, 
 
 // POST /impressao/reservar — a estação pega os próximos jobs para imprimir.
 // Reserva de forma atômica para dois aparelhos-estação não imprimirem o mesmo.
-app.post("/impressao/reservar", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.post("/impressao/reservar", authMiddleware(["dono", "garcom"]), async (req, res) => {
   if (!mongoPronto()) return res.json({ jobs: [] });
   const limite = Math.min(parseInt(req.body?.limite) || 5, 20);
   const estacao = req.user?.nome || req.user?.role || "estacao";
@@ -3536,7 +3551,7 @@ app.post("/impressao/reservar", authMiddleware(["dono", "caixa", "garcom"]), asy
 });
 
 // POST /impressao/:id/concluir  { ok, erro }
-app.post("/impressao/:id/concluir", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.post("/impressao/:id/concluir", authMiddleware(["dono", "garcom"]), async (req, res) => {
   const { ok, erro } = req.body || {};
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
   try {
@@ -3563,7 +3578,7 @@ app.post("/impressao/:id/concluir", authMiddleware(["dono", "caixa", "garcom"]),
 });
 
 // GET /impressao/status — quanto tem esperando (badge no painel)
-app.get("/impressao/status", authMiddleware(["dono", "caixa", "garcom"]), async (req, res) => {
+app.get("/impressao/status", authMiddleware(["dono", "garcom"]), async (req, res) => {
   if (!mongoPronto()) return res.json({ pendentes: 0, erros: 0 });
   try {
     const [pendentes, erros] = await Promise.all([
@@ -3575,7 +3590,7 @@ app.get("/impressao/status", authMiddleware(["dono", "caixa", "garcom"]), async 
 });
 
 // DELETE /impressao/erros — limpa o que falhou de vez
-app.delete("/impressao/erros", authMiddleware(["dono", "caixa"]), async (req, res) => {
+app.delete("/impressao/erros", authMiddleware(["dono"]), async (req, res) => {
   try {
     const r = await ImpressaoDB.deleteMany({ status: "erro" });
     res.json({ ok: true, removidos: r.deletedCount });

@@ -255,12 +255,13 @@ export default function App() {
     </>
   );
 
-  // Garçom e caixa vão direto para o salão
-  if (login.role === "garcom" || login.role === "caixa") {
+  // Garçom vai direto para o salão. O adm (que é o caixa) entra no painel
+  // completo — não existe mais um login de caixa separado.
+  if (login.role === "garcom") {
     return (
       <PainelPedidos
         abrirSalao={login.role}
-        garcomLogado={login.role === "garcom" ? { nome: login.nome, id: login.id } : null}
+        garcomLogado={login.nome ? { nome: login.nome, id: login.id } : null}
         onSair={() => { clearToken(); setLogin(null); }}
       />
     );
