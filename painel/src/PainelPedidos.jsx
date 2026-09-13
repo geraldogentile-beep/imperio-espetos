@@ -4713,7 +4713,7 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
   );
 }
 
-function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada }) {
   // ── MODO EVENTO (preços promocionais) ──
   const modoEvento = configExterna?.modoEvento || {};
   const emModoEvento = (() => {
@@ -4871,7 +4871,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   function msgSalao(txt,cor="#10b981"){setToastSalao({txt,cor,ts:Date.now()});setTimeout(()=>setToastSalao(null),4000);}
   const mesaRaw = mesas.find(m=>m.id===sel);
   const mesa = mesaRaw ? migrarMesa(mesaRaw) : null;
-  function upd(m){setMesas(p=>p.map(x=>x.id===m.id?m:x));}
+  // Toda edicao de mesa passa por aqui. Avisar o sync e o que separa
+  // "o usuario mudou" de "meu cache esta velho".
+  function upd(m){ onMesaEditada?.(m.id); setMesas(p=>p.map(x=>x.id===m.id?m:x)); }
 
   // Sub-comanda ativa (com segurança para índice fora do range)
   const scIdx = Math.min(selSC, (mesa?.subComandas?.length||1)-1);
@@ -6258,44 +6260,54 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   }, [sincronizarSalao]);
 
   // ── SINCRONIZAÇÃO DAS MESAS ENTRE APARELHOS ─────────────────
-  // Antes cada aparelho tinha o seu salão no localStorage e eles nunca se
-  // falavam: o garçom lançava no celular dele e o caixa nunca via. Agora o
-  // servidor guarda o estado da mesa e todos os aparelhos convergem para ele.
-  const versaoMesa   = useRef({});   // mesaId -> versao conhecida do servidor
-  const enviadoMesa  = useRef({});   // mesaId -> JSON do que ja foi aceito
-  const pendenteMesa = useRef(new Set());  // mesas com mudanca local nao enviada
+  // O servidor guarda o estado da mesa; cada aparelho puxa e empurra.
+  //
+  // A regra que sustenta tudo: este aparelho só envia mesa que o USUÁRIO
+  // daqui alterou. "Diferente do servidor" não é o mesmo que "eu mudei" —
+  // um aparelho que abre o app com localStorage de ontem tem 18 mesas
+  // diferentes do servidor, e se empurrar isso apaga o que o garçom acabou
+  // de lançar. Por isso a marcação vem do upd() da tela, não de comparar JSON.
+  const versaoMesa   = useRef({});          // mesaId -> versao conhecida do servidor
+  const enviadoMesa  = useRef({});          // mesaId -> JSON ja aceito pelo servidor
+  const sujasMesa    = useRef(new Set());   // mesas alteradas AQUI, ainda nao enviadas
+  const enviandoMesa = useRef(new Set());   // envio em voo, para o merge nao atropelar
+  const mesasRef     = useRef(mesasSalao);  // estado atual sem depender de closure
   const syncMesasPronto = useRef(false);
   const [conflitoMesa, setConflitoMesa] = useState(null);
 
-  // Mesa intocada nao precisa existir no servidor — evita criar 18 documentos
-  // por dia num salao vazio.
-  const mesaVazia = useCallback((m) => {
-    const mm = migrarMesa(m);
-    if (mm.status !== "livre" || mm.garcom || mm.obs) return false;
-    return (mm.subComandas || []).every(sc =>
-      !(sc.itens || []).length && !(sc.rodadas || []).length && !sc.cliente);
-  }, []);
+  useEffect(() => { mesasRef.current = mesasSalao; }, [mesasSalao]);
+
+  // Chamado pela tela do salão a cada edição. É o único jeito de uma mesa
+  // entrar na fila de envio.
+  const marcarMesaEditada = useCallback((id) => { sujasMesa.current.add(id); }, []);
 
   const aplicarMesasDoServidor = useCallback((lista) => {
     if (!lista?.length) return;
-    setMesasSalao(prev => {
-      let mudou = false;
-      const novas = prev.map(local => {
-        const remota = lista.find(r => r.mesaId === local.id);
-        if (!remota) return local;
-        // Nao sobrescreve mesa que este aparelho esta editando e ainda nao mandou
-        if (pendenteMesa.current.has(local.id)) return local;
-        if (versaoMesa.current[local.id] === remota.versao) return local;
-        versaoMesa.current[local.id] = remota.versao;
-        enviadoMesa.current[local.id] = JSON.stringify(remota.dados);
-        mudou = true;
-        return migrarMesa(remota.dados);
-      });
-      return mudou ? novas : prev;
-    });
+
+    // Decide ANTES do setMesasSalao: o atualizador do React precisa ser puro.
+    // Mexer nas refs lá dentro fazia a segunda chamada do React ver tudo como
+    // "já aplicado" e descartar a atualização inteira.
+    const aplicar = [];
+    for (const remota of lista) {
+      // Não atropela mesa que este aparelho mexeu e ainda não sincronizou
+      if (sujasMesa.current.has(remota.mesaId)) continue;
+      if (enviandoMesa.current.has(remota.mesaId)) continue;
+      if (versaoMesa.current[remota.mesaId] === remota.versao) continue;
+      aplicar.push(remota);
+    }
+    if (!aplicar.length) return;
+
+    for (const r of aplicar) {
+      versaoMesa.current[r.mesaId] = r.versao;
+      enviadoMesa.current[r.mesaId] = JSON.stringify(r.dados);
+    }
+    setMesasSalao(prev => prev.map(local => {
+      const r = aplicar.find(x => x.mesaId === local.id);
+      return r ? migrarMesa(r.dados) : local;
+    }));
   }, []);
 
-  // Puxa o salão do servidor a cada 5s
+  // Puxa o salão do servidor
   useEffect(() => {
     let vivo = true;
     async function puxar() {
@@ -6312,50 +6324,60 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     return () => { vivo = false; clearInterval(t); };
   }, [aplicarMesasDoServidor]);
 
-  // Manda para o servidor o que mudou aqui
+  // Empurra o que foi alterado aqui. Roda em intervalo e lê o estado por ref:
+  // efeito preso a [mesasSalao] capturava um retrato antigo e chegava a mandar
+  // a mesa vazia do cache por cima do pedido que o servidor ja tinha.
   useEffect(() => {
-    // So depois do primeiro GET: senao o aparelho empurra o proprio
-    // localStorage por cima do que ja esta no servidor.
-    if (!syncMesasPronto.current) return;
+    let vivo = true;
+    let ocupado = false;
 
-    const t = setTimeout(async () => {
-      for (const mesa of mesasSalao) {
-        const atual = JSON.stringify(mesa);
-        if (enviadoMesa.current[mesa.id] === atual) continue;
-        if (enviadoMesa.current[mesa.id] === undefined && mesaVazia(mesa)) continue;
+    async function empurrar() {
+      if (!vivo || ocupado || !syncMesasPronto.current) return;
+      if (!sujasMesa.current.size) return;
+      ocupado = true;
+      try {
+        for (const id of [...sujasMesa.current]) {
+          const mesa = mesasRef.current.find(m => m.id === id);
+          if (!mesa) { sujasMesa.current.delete(id); continue; }
 
-        pendenteMesa.current.add(mesa.id);
-        try {
-          const r = await authFetch(BACKEND_URL + "/mesas/" + mesa.id, {
-            method: "PUT", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ dados: mesa, versao: versaoMesa.current[mesa.id] }),
-          });
-          const d = await r.json().catch(() => ({}));
+          const atual = JSON.stringify(mesa);
+          if (enviadoMesa.current[id] === atual) { sujasMesa.current.delete(id); continue; }
 
-          if (r.status === 409) {
-            // Outro aparelho mexeu nessa mesa: o servidor manda, nao este celular
-            versaoMesa.current[mesa.id] = d.versao;
-            enviadoMesa.current[mesa.id] = JSON.stringify(d.dados);
-            pendenteMesa.current.delete(mesa.id);
-            if (d.dados) {
-              setMesasSalao(prev => prev.map(x => x.id === mesa.id ? migrarMesa(d.dados) : x));
-              setConflitoMesa({ mesa: mesa.id, porQuem: d.porQuem || "outro aparelho" });
-              setTimeout(() => setConflitoMesa(null), 6000);
+          sujasMesa.current.delete(id);
+          enviandoMesa.current.add(id);
+          try {
+            const r = await authFetch(BACKEND_URL + "/mesas/" + id, {
+              method: "PUT", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ dados: mesa, versao: versaoMesa.current[id] }),
+            });
+            const d = await r.json().catch(() => ({}));
+
+            if (r.status === 409) {
+              // Outro aparelho passou na frente: o servidor manda
+              versaoMesa.current[id] = d.versao;
+              if (d.dados) {
+                enviadoMesa.current[id] = JSON.stringify(d.dados);
+                setMesasSalao(prev => prev.map(x => x.id === id ? migrarMesa(d.dados) : x));
+                setConflitoMesa({ mesa: id, porQuem: d.porQuem || "outro aparelho" });
+                setTimeout(() => setConflitoMesa(null), 6000);
+              }
+            } else if (r.ok) {
+              versaoMesa.current[id] = d.versao;
+              enviadoMesa.current[id] = atual;
+            } else {
+              sujasMesa.current.add(id);   // erro do servidor: tenta de novo
             }
-            continue;
+          } catch {
+            sujasMesa.current.add(id);     // sem rede: tenta de novo
           }
+          enviandoMesa.current.delete(id);
+        }
+      } finally { ocupado = false; }
+    }
 
-          if (r.ok) {
-            versaoMesa.current[mesa.id] = d.versao;
-            enviadoMesa.current[mesa.id] = atual;
-          }
-        } catch { /* sem rede: fica pendente e tenta na proxima mudanca */ }
-        pendenteMesa.current.delete(mesa.id);
-      }
-    }, 700);   // junta rajada de cliques no + antes de mandar
-
-    return () => clearTimeout(t);
-  }, [mesasSalao, mesaVazia]);
+    const t = setInterval(empurrar, 1200);
+    return () => { vivo = false; clearInterval(t); };
+  }, []);
 
   // Reconexão automática da impressora Bluetooth
   // - Tenta 1x ao carregar (após 1.5s)
@@ -6751,7 +6773,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} />}
           {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
         </div>
