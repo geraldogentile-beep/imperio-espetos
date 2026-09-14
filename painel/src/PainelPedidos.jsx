@@ -5291,7 +5291,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           🎉 {modoEvento.nome || "Modo Evento"} ATIVO — preços promocionais aplicados
         </div>
       )}
-      <div style={{padding:"10px 14px 80px",display:"flex",flexDirection:"column",gap:8}}>
+      {/* Grade em vez de lista: no celular dao 2 colunas, no PC 5 ou 6. A dona
+          reclamou da distancia entre o nome e o preco (a linha ocupava a tela
+          inteira) e do tanto que o garcom rolava para achar o item. */}
+      <div style={{padding:"10px 14px 80px",display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))",gap:8,alignItems:"start"}}>
         {cardapio.filter(filtrarCardapio).map(item=>{
           const variacoes = Array.isArray(item.variacoes) ? item.variacoes : [];
           const temVariacao = variacoes.length > 0;
@@ -5313,58 +5316,61 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             : null;
 
           return(
-            <div key={item.id} style={{...card2,marginBottom:0,border:`2px solid ${qtdTotal?"#7b1a0a":temPromo?"#f59e0b":"transparent"}`}}>
-              <div style={{display:"flex",alignItems:"center",gap:10}}>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:700,fontSize:14}}>{item.nome}</div>
-                  <div style={{fontSize:12,color:"#888"}}>
-                    {temVariacao ? faixa
-                      : temPromo ? <><span style={{textDecoration:"line-through",marginRight:6}}>{fmtR(item.preco)}</span><span style={{color:"#f59e0b",fontWeight:700}}>🎉 {fmtR(precoExibido)}</span></>
-                      : fmtR(precoExibido)}
-                  </div>
-                </div>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  {temVariacao ? (
-                    <>
-                      <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{qtdTotal}</span>
-                      <button onClick={()=>setVarAberta(aberto?null:item.id)}
-                        style={{padding:"7px 12px",borderRadius:20,border:"none",background:aberto?"#f0f0f0":"#7b1a0a",color:aberto?"#555":"#fff",fontWeight:700,fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>
-                        {aberto ? "Fechar" : "Escolher"}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button onClick={()=>naSimples&&chgQty(chaveItem(item),-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:naSimples?"#fee2e2":"#f0f0f0",color:naSimples?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:naSimples?"pointer":"default"}}>−</button>
-                      <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{qtdTotal}</span>
-                      <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
-                    </>
-                  )}
-                </div>
+            <div key={item.id} style={{
+              background:"#fff",borderRadius:12,padding:"10px 10px 8px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",
+              border:`2px solid ${qtdTotal?"#7b1a0a":temPromo?"#f59e0b":"transparent"}`,
+              display:"flex",flexDirection:"column",gap:6,
+              // Com a escolha de carne aberta, o cartao toma a linha inteira
+              ...(temVariacao && aberto ? {gridColumn:"1/-1"} : {}),
+            }}>
+              <div style={{fontWeight:700,fontSize:13,lineHeight:1.25,color:"#1a1a1a",minHeight:"2.5em",
+                display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{item.nome}</div>
+              <div style={{fontSize:12,fontWeight:700,color:"#7b1a0a"}}>
+                {temVariacao ? faixa
+                  : temPromo ? <><span style={{textDecoration:"line-through",color:"#999",fontWeight:500,marginRight:6}}>{fmtR(item.preco)}</span><span style={{color:"#f59e0b"}}>🎉 {fmtR(precoExibido)}</span></>
+                  : fmtR(precoExibido)}
               </div>
+              {temVariacao ? (
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontWeight:800,fontSize:15,minWidth:18,textAlign:"center"}}>{qtdTotal}</span>
+                  <button onClick={()=>setVarAberta(aberto?null:item.id)}
+                    style={{flex:1,padding:"6px 8px",borderRadius:20,border:"none",background:aberto?"#f0f0f0":"#7b1a0a",color:aberto?"#555":"#fff",fontWeight:700,fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>
+                    {aberto ? "Fechar" : "Escolher"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
+                  <button onClick={()=>naSimples&&chgQty(chaveItem(item),-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:naSimples?"#fee2e2":"#f0f0f0",color:naSimples?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:naSimples?"pointer":"default"}}>−</button>
+                  <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{qtdTotal}</span>
+                  <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
+                </div>
+              )}
 
-              {/* Escolha da carne */}
+              {/* Escolha da carne: as opcoes tambem vao em colunas */}
               {temVariacao && aberto && (
-                <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #e8e8e8",display:"flex",flexDirection:"column",gap:6}}>
-                  <div style={{fontSize:11,color:"#888",fontWeight:700,textTransform:"uppercase"}}>
+                <div style={{marginTop:4,paddingTop:8,borderTop:"1px dashed #e8e8e8"}}>
+                  <div style={{fontSize:11,color:"#888",fontWeight:700,textTransform:"uppercase",marginBottom:6}}>
                     {item.variacaoRotulo || "Escolha"}
                   </div>
-                  {variacoes.map(v=>{
-                    const linha = sc.itens.find(i=>i.id===item.id && i.variacao===v.nome);
-                    const qtd = linha ? linha.qty||1 : 0;
-                    return (
-                      <div key={v.nome} style={{display:"flex",alignItems:"center",gap:8,background:qtd?"#fef0ed":"#faf9f8",borderRadius:10,padding:"7px 10px"}}>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:13,fontWeight:qtd?700:500,color:"#333"}}>{v.nome}</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))",gap:6}}>
+                    {variacoes.map(v=>{
+                      const linha = sc.itens.find(i=>i.id===item.id && i.variacao===v.nome);
+                      const qtd = linha ? linha.qty||1 : 0;
+                      return (
+                        <div key={v.nome} style={{display:"flex",flexDirection:"column",gap:4,background:qtd?"#fef0ed":"#faf9f8",borderRadius:10,padding:"8px 10px",border:`1.5px solid ${qtd?"#7b1a0a":"transparent"}`}}>
+                          <div style={{fontSize:13,fontWeight:qtd?700:500,color:"#333",lineHeight:1.2}}>{v.nome}</div>
                           <div style={{fontSize:12,color:"#7b1a0a",fontWeight:700}}>{fmtR(Number(v.preco)||0)}</div>
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
+                            <button onClick={()=>qtd&&chgQty(chaveItem({id:item.id,variacao:v.nome}),-1)}
+                              style={{width:28,height:28,borderRadius:"50%",border:"none",background:qtd?"#fee2e2":"#f0f0f0",color:qtd?"#ef4444":"#ccc",fontWeight:800,fontSize:16,cursor:qtd?"pointer":"default"}}>−</button>
+                            <span style={{fontWeight:800,fontSize:15,minWidth:18,textAlign:"center"}}>{qtd}</span>
+                            <button onClick={()=>addItem(item,v)}
+                              style={{width:28,height:28,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:16,cursor:"pointer"}}>+</button>
+                          </div>
                         </div>
-                        <button onClick={()=>qtd&&chgQty(chaveItem({id:item.id,variacao:v.nome}),-1)}
-                          style={{width:28,height:28,borderRadius:"50%",border:"none",background:qtd?"#fee2e2":"#f0f0f0",color:qtd?"#ef4444":"#ccc",fontWeight:800,fontSize:16,cursor:qtd?"pointer":"default"}}>−</button>
-                        <span style={{fontWeight:800,fontSize:15,minWidth:18,textAlign:"center"}}>{qtd}</span>
-                        <button onClick={()=>addItem(item,v)}
-                          style={{width:28,height:28,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:16,cursor:"pointer"}}>+</button>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
