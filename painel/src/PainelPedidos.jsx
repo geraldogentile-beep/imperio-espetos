@@ -607,8 +607,11 @@ function Cardapio({ cardapio, onReload }) {
           <button key={cat} onClick={() => setFiltro(cat)} style={{ whiteSpace: "nowrap", padding: "5px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: filtro === cat ? 700 : 500, background: filtro === cat ? "#7b1a0a" : "#f0f0f0", color: filtro === cat ? "#fff" : "#555" }}>{cat === "todos" ? "📋 Todos" : cat}</button>
         ))}
       </div>
+      {/* Grade de cartoes: no PC a linha ocupava 960px, com o nome numa ponta e
+          o preco na outra. Em edicao o cartao toma a linha inteira. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 10, alignItems: "start" }}>
       {itens.map(item => (
-        <div key={item.id} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", opacity: item.ativo ? 1 : 0.55 }}>
+        <div key={item.id} style={{ background: "#fff", borderRadius: 14, padding: "12px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", opacity: item.ativo ? 1 : 0.55, gridColumn: editando?.id === item.id ? "1/-1" : "auto" }}>
           {editando?.id === item.id ? (
             <div>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#7b1a0a", marginBottom: 10 }}>✏️ Editando: {item.nome}</div>
@@ -699,27 +702,28 @@ function Cardapio({ cardapio, onReload }) {
               </div>
             </div>
           ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, color: "#1a1a1a" }}>{item.nome}</span>
-                  {!item.ativo && <span style={{ background: "#fee2e2", color: "#ef4444", borderRadius: 10, padding: "1px 8px", fontSize: 11, fontWeight: 700 }}>Em falta</span>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 700, fontSize: 14, color: "#1a1a1a", lineHeight: 1.25 }}>{item.nome}</span>
+                {!item.ativo && <span style={{ background: "#fee2e2", color: "#ef4444", borderRadius: 10, padding: "1px 8px", fontSize: 11, fontWeight: 700 }}>Em falta</span>}
+              </div>
+              <div style={{ fontSize: 12, color: "#888" }}>{item.categoria}{item.obs && " · " + item.obs}{" · ⏱️ " + item.tempoPreparo + "min"}</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 2 }}>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {item.preco.toFixed(2)}</div>
+                  {item.precoPromocional > 0 && <div style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>🎉 R$ {item.precoPromocional.toFixed(2)}</div>}
                 </div>
-                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{item.categoria}{item.obs && " · " + item.obs}{" · ⏱️ " + item.tempoPreparo + "min"}</div>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", flexShrink: 0 }}>
-                <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {item.preco.toFixed(2)}</div>
-                {item.precoPromocional > 0 && <div style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>🎉 R$ {item.precoPromocional.toFixed(2)}</div>}
-              </div>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => toggleAtivo(item)} style={{ background: item.ativo ? "#d1fae5" : "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{item.ativo ? "✅" : "❌"}</button>
-                <button onClick={() => setEditando({ ...item })} style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
-                <button onClick={() => deletarItem(item.id)} style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>🗑️</button>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button onClick={() => toggleAtivo(item)} title={item.ativo ? "Marcar em falta" : "Voltar a vender"} style={{ background: item.ativo ? "#d1fae5" : "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{item.ativo ? "✅" : "❌"}</button>
+                  <button onClick={() => setEditando({ ...item })} title="Editar" style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
+                  <button onClick={() => deletarItem(item.id)} title="Excluir" style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>🗑️</button>
+                </div>
               </div>
             </div>
           )}
         </div>
       ))}
+      </div>
     </div>
   );
 }
