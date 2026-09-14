@@ -4635,6 +4635,8 @@ function migrarMesa(m) {
   return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
 }
 function fmtR(v) { return "R$ "+v.toFixed(2); }
+// O que uma mesa perde quando volta a ficar livre sem passar pelo initMesa
+const MESA_LIBERADA = { status:"livre", abertura:null, garcom:"", solicitadoPor:null, solicitadoEm:null };
 
 // O dia do salao vira as 06:00, nao a meia-noite: a casa fecha 00:00 e uma
 // mesa aberta 23:40 nao pode sumir na virada. Mesma regra no servidor.
@@ -4688,6 +4690,20 @@ function descrevePagamento(pagamentos, pagamentoSimples) {
   if (pagamentos.length === 1) return NOME_PAG[pagamentos[0].tipo] || pagamentos[0].tipo;
   return pagamentos.map(p => `${NOME_PAG[p.tipo] || p.tipo} ${fmtR(p.valor)}`).join(" + ");
 }
+// O faturamento nasce escondido: a tela do caixa fica de frente para o salao e
+// quem passa ve o numero. O olhinho mostra ate a proxima recarga — a escolha
+// nao e guardada de proposito, senao voltava a ficar aberto o dia inteiro.
+function BotaoOlho({ aberto, onClick }) {
+  const rotulo = aberto ? "Esconder valor" : "Mostrar valor";
+  return (
+    <button type="button" onClick={e => { e.stopPropagation(); onClick(); }} title={rotulo} aria-label={rotulo}
+      style={{ background: "transparent", border: "none", cursor: "pointer", padding: 0, fontSize: 14, lineHeight: 1, opacity: 0.85 }}>
+      {aberto ? "🙈" : "👁️"}
+    </button>
+  );
+}
+const VALOR_OCULTO = "R$ ••••";
+
 function tempoAberto(abertura) {
   if(!abertura) return null;
   const m = Math.floor((Date.now()-new Date(abertura))/60000);
@@ -4801,6 +4817,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const setMesas = setMesasSalao;
   const faturado = faturadoSalao;
   const setFaturado = setFaturadoSalao;
+  const [verFat, setVerFat] = useState(false);   // faturamento escondido ate clicar no olhinho
   const sel = selSalao;
   const setSel = setSelSalao;
   const telaSalao = telaSalaoGlobal;
@@ -4959,7 +4976,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   function chgQty(chave,d){
     const itens=sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+d}:i).filter(i=>i.qty>0);
     const allEmpty = mesa.subComandas.every((s,i)=>i===scIdx?itens.length===0:s.itens.length===0&&(s.rodadas||[]).length===0);
-    upd({...mesa, status:allEmpty?"livre":mesa.status,
+    // Mesa que ficou sem nada volta a "livre" de verdade: sem hora de abertura
+    // nem garcom. Antes so o status mudava e o cronometro seguia contando —
+    // a mesa 6 apareceu "Livre" com 2h51min no mapa do adm.
+    upd({...mesa, ...(allEmpty ? MESA_LIBERADA : {}),
          subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
   }
 
@@ -5113,7 +5133,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       upd(initMesa(mesa.id-1));
       setSel(null); setTelaSalao("mapa");
     } else {
-      upd({...mesa, subComandas:novasSCs, status:novoStatus, solicitadoPor:null, solicitadoEm:null});
+      upd({...mesa, subComandas:novasSCs, status:novoStatus, solicitadoPor:null, solicitadoEm:null,
+           ...(novoStatus==="livre" ? MESA_LIBERADA : {})});
       setSelSC(Math.min(idxSC, novasSCs.length-1));
       setTelaSalao("comanda");
     }
@@ -5861,8 +5882,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{fontWeight:800,fontSize:18}}>🍽️ Mapa do Salão</div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,opacity:0.7}}>Faturamento</div>
-            <div style={{fontWeight:800,fontSize:18,color:T.amber}}>{fmtR(fat)}</div>
+            <div style={{fontSize:11,opacity:0.7,display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>Faturamento <BotaoOlho aberto={verFat} onClick={()=>setVerFat(v=>!v)} /></div>
+            <div style={{fontWeight:800,fontSize:18,color:T.amber}}>{verFat?fmtR(fat):VALOR_OCULTO}</div>
           </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
@@ -5950,7 +5971,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               <div style={{fontSize:8,background:s.bg,color:s.c,borderRadius:10,padding:"1px 5px",marginTop:3,fontWeight:700,display:"inline-block"}}>{s.l}</div>
               {m.status!=="livre"&&<div style={{fontSize:11,fontWeight:800,color:"#7b1a0a",marginTop:3}}>{fmtR(totM)}</div>}
               {m.status!=="livre"&&(m.subComandas||[]).length>1&&<div style={{fontSize:9,color:"#8b5cf6",fontWeight:700,marginTop:1}}>{(m.subComandas||[]).length} comandas</div>}
-              {m.abertura&&<div style={{fontSize:9,color:((Date.now()-new Date(m.abertura))/60000)>90?"#ef4444":"#aaa",marginTop:1}}>⏱️{tempoAberto(m.abertura)}</div>}
+              {m.status!=="livre"&&m.abertura&&<div style={{fontSize:9,color:((Date.now()-new Date(m.abertura))/60000)>90?"#ef4444":"#aaa",marginTop:1}}>⏱️{tempoAberto(m.abertura)}</div>}
               {nomeCliente&&<div style={{fontSize:9,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nomeCliente}</div>}
             </div>
           );
@@ -6169,6 +6190,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [avaliacoes, setAvaliacoes] = useState(MOCK_AVALIACOES);
   const [garcons, setGarcons] = useState([]);
   const [aba, setAba] = useState(abrirSalao ? "salao" : "pedidos");
+  const [verFaturamento, setVerFaturamento] = useState(false);   // olhinho do cabecalho
   const [maisAberto, setMaisAberto] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [filtro, setFiltro] = useState("todos");
@@ -6687,9 +6709,11 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 10, color: T.gray, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 600 }}>Faturamento hoje</div>
-              <div className="serif-title" style={{ fontWeight: 700, fontSize: 24, color: T.wine, lineHeight: 1.1 }}>R$ {totalHoje.toFixed(2)}</div>
-              <div style={{ fontSize: 10, color: T.gray, marginTop: 3 }}>🛵 R$ {totalDeliveryHoje.toFixed(2)} · 🍽️ R$ {totalSalaoHoje.toFixed(2)}</div>
+              <div style={{ fontSize: 10, color: T.gray, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
+                Faturamento hoje <BotaoOlho aberto={verFaturamento} onClick={() => setVerFaturamento(v => !v)} />
+              </div>
+              <div className="serif-title" style={{ fontWeight: 700, fontSize: 24, color: T.wine, lineHeight: 1.1 }}>{verFaturamento ? "R$ " + totalHoje.toFixed(2) : VALOR_OCULTO}</div>
+              <div style={{ fontSize: 10, color: T.gray, marginTop: 3 }}>{verFaturamento ? `🛵 R$ ${totalDeliveryHoje.toFixed(2)} · 🍽️ R$ ${totalSalaoHoje.toFixed(2)}` : "🛵 •••• · 🍽️ ••••"}</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
               <span style={{ background: statusLoja.aberto ? T.greenL : T.redL, color: statusLoja.aberto ? T.green : T.red, borderRadius: 20, padding: "3px 12px", fontWeight: 600, fontSize: 11, border: `1px solid ${statusLoja.aberto ? T.green+"30" : T.red+"30"}` }}>
