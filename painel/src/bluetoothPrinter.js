@@ -349,7 +349,7 @@ class ImpressoraBT {
 
   // ── IMPRIMIR RECIBO/COMANDA P/ CAIXA ──
   // Para conferência no caixa: itens COM preços, TOTAL, forma de pagamento
-  async imprimirRecibo({ mesa, cliente, garcom, itens, total, subtotal, desconto, descontoInfo, gorjeta, gorjetaInfo, pagamento, pagamentos, pagamentoTexto, abertura, fechamento }) {
+  async imprimirRecibo({ mesa, cliente, garcom, itens, total, subtotal, desconto, descontoInfo, gorjeta, gorjetaInfo, pagamento, pagamentos, pagamentoTexto, abertura, fechamento, recebidoDinheiro, troco }) {
     const ab = abertura ? new Date(abertura) : new Date();
     const fe = fechamento ? new Date(fechamento) : new Date();
     const cmds = [
@@ -405,6 +405,11 @@ class ImpressoraBT {
     } else if (pagamentoTexto || pagamento) {
       const pgNome = pagamentoTexto || nomePg[pagamento] || pagamento;
       cmds.push(ALIGN_LEFT, NL, texto(`Pagamento: ${removerAcentos(String(pgNome))}`), NL);
+    }
+    // Troco: o caixa confere na hora e o cliente tambem
+    if (Number(recebidoDinheiro) > 0) {
+      cmds.push(ALIGN_RIGHT, texto(`Recebido em dinheiro R$ ${Number(recebidoDinheiro).toFixed(2)}`), NL);
+      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`TROCO R$ ${(Number(troco) || 0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
     }
     cmds.push(NL, NL, ALIGN_CENTER);
     cmds.push(texto("Obrigado pela visita!"), NL);

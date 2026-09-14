@@ -4871,6 +4871,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   // Comanda paga em mais de uma forma (metade dinheiro, metade pix)
   const [pagDividido, setPagDividido] = useState(false);
   const [valoresPag, setValoresPag] = useState({ pix: "", cartao: "", dinheiro: "" });
+  // Troco: o operador informa quanto o cliente entregou em dinheiro e o
+  // sistema mostra o que devolver. So aparece quando ha dinheiro no pagamento.
+  const [recebidoDin, setRecebidoDin] = useState("");
 
   // Desconto no fechamento. Tres jeitos de dizer a mesma coisa:
   //   percentual -> "10% no pix"
@@ -4957,6 +4960,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   function limparPagamento() {
     setPagDividido(false);
     setValoresPag({ pix: "", cartao: "", dinheiro: "" });
+    setRecebidoDin("");
     setDescModo("nenhum");
     setDescValor("");
     setGorjModo("nenhum");
@@ -4973,6 +4977,26 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       .filter(p => p.valor > 0);
     const soma = lista.reduce((acc, p) => acc + p.valor, 0);
     return { pagamentos: lista, falta: parseFloat((total - soma).toFixed(2)) };
+  }
+
+  // Quanto da comanda foi em dinheiro, quanto o cliente entregou e o troco.
+  // "falta" > 0 quer dizer que o operador digitou menos que a parte em
+  // dinheiro — quase sempre dedo errado, entao a comanda nao fecha assim.
+  function calcTroco(pagamentos) {
+    const emDinheiro = (pagamentos || []).filter(p => p.tipo === "dinheiro").reduce((s, p) => s + (Number(p.valor) || 0), 0);
+    const recebido = parseMoedaGlobal(recebidoDin);
+    if (emDinheiro <= 0 || recebido <= 0) return { emDinheiro, recebido: 0, troco: 0, falta: 0 };
+    const dif = parseFloat((recebido - emDinheiro).toFixed(2));
+    return { emDinheiro, recebido, troco: Math.max(0, dif), falta: Math.max(0, -dif) };
+  }
+  // O que vai junto da venda (recibo e conferencia do caixa)
+  function infoTroco(pagamentos) {
+    const t = calcTroco(pagamentos);
+    return t.recebido > 0 && t.falta === 0 ? { recebidoDinheiro: t.recebido, troco: t.troco } : {};
+  }
+  function textoTroco(pagamentos) {
+    const t = calcTroco(pagamentos);
+    return t.recebido > 0 && t.falta === 0 && t.troco > 0 ? ` · Troco ${fmtR(t.troco)}` : "";
   }
   const [divSalao, setDivSalao] = useState(1);
   const [selSC, setSelSC] = useState(0); // índice da sub-comanda ativa
@@ -5136,6 +5160,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       gorjetaTipo: gorjetaSC > 0 ? (gorjInfo?.tipo || "") : "",
       gorjetaInfo: gorjetaSC > 0 ? (gorjInfo?.texto || "") : "",
       ...resumoPagamento(pagamentos, totalSC + gorjetaSC),
+      ...infoTroco(pagamentos),
       abertura: scFechando.abertura||mesa.abertura,
       fechamento: new Date().toISOString(),
     };
@@ -5181,7 +5206,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       setSelSC(Math.min(idxSC, novasSCs.length-1));
       setTelaSalao("comanda");
     }
-    msgSalao(`✅ ${scFechando.label} fechada! ${fmtR(totalSC)}`);
+    msgSalao(`✅ ${scFechando.label} fechada! ${fmtR(totalSC)}${textoTroco(pagamentos)}`);
     fechandoRef.current = false;
     setDivSalao(1);
   }
@@ -5210,6 +5235,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       gorjetaTipo: gorjetaMesa > 0 ? (gorjInfo?.tipo || "") : "",
       gorjetaInfo: gorjetaMesa > 0 ? (gorjInfo?.texto || "") : "",
       ...resumoPagamento(pagamentos, totalMesa + gorjetaMesa),
+      ...infoTroco(pagamentos),
       abertura:mesa.abertura, fechamento:new Date().toISOString(),
     };
     try {
@@ -5237,7 +5263,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
     }
 
-    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} — ${descrevePagamento(pagamentos, pagSalao)}`);
+    msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} — ${descrevePagamento(pagamentos, pagSalao)}${textoTroco(pagamentos)}`);
     upd(mesaZerada(mesa));
     limparPagamento();
     setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
@@ -5402,7 +5428,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const pagInfo = montarPagamentos(totalFechar);
     const pagOk = !pagDividido || (pagInfo.pagamentos.length > 0 && Math.abs(pagInfo.falta) <= 0.02);
     const pagTexto = descrevePagamento(pagInfo.pagamentos, pagSalao);
-    const podeConfirmar = pagOk && !desc.erro && !gor.erro && totalComanda > 0;
+    const trocoInfo = calcTroco(pagInfo.pagamentos);
+    const podeConfirmar = pagOk && !desc.erro && !gor.erro && totalComanda > 0 && trocoInfo.falta === 0;
     const todosItensFechar = fecharUma
       ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
       : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
@@ -5606,6 +5633,32 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               </div>
             </div>
           )}
+
+          {/* Troco: "conta de 45, pagou com 50" -> o sistema diz "troco R$ 5" */}
+          {trocoInfo.emDinheiro > 0 && (
+            <div style={{marginTop:10,paddingTop:10,borderTop:"1px dashed #eee"}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#888",textTransform:"uppercase",marginBottom:6}}>💵 Cliente entregou em dinheiro</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <input inputMode="decimal" value={recebidoDin} placeholder={trocoInfo.emDinheiro.toFixed(2).replace(".",",")}
+                  onChange={e=>setRecebidoDin(mascaraMoeda(e.target.value))}
+                  style={{flex:1,minWidth:70,padding:"9px 10px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:16,fontWeight:700,outline:"none",boxSizing:"border-box",color:"#333"}} />
+                {[trocoInfo.emDinheiro, 20, 50, 100, 200].filter((v,i,a)=>v>=trocoInfo.emDinheiro && a.indexOf(v)===i).slice(0,4).map((v,i)=>(
+                  <button key={v} onClick={()=>setRecebidoDin(mascaraMoeda(String(Math.round(v*100))))}
+                    style={{background:i===0?"#fef0ed":"#f0f0f0",border:"none",borderRadius:8,padding:"9px 7px",fontSize:11,cursor:"pointer",color:i===0?"#7b1a0a":"#555",fontWeight:700,flexShrink:0,whiteSpace:"nowrap"}}>
+                    {i===0 ? "exato" : "R$ "+v}
+                  </button>
+                ))}
+              </div>
+              <div style={{marginTop:8,borderRadius:10,padding:"10px 12px",textAlign:"center",fontWeight:800,
+                fontSize: trocoInfo.recebido>0 && trocoInfo.falta===0 ? 18 : 13,
+                background: trocoInfo.recebido<=0 ? "#f8f8f8" : trocoInfo.falta>0 ? "#fef3c7" : "#d1fae5",
+                color: trocoInfo.recebido<=0 ? "#999" : trocoInfo.falta>0 ? "#92400e" : "#065f46"}}>
+                {trocoInfo.recebido<=0 ? "Informe quanto o cliente entregou para ver o troco"
+                  : trocoInfo.falta>0 ? `Faltam ${fmtR(trocoInfo.falta)} — entregou menos que os ${fmtR(trocoInfo.emDinheiro)} em dinheiro`
+                  : trocoInfo.troco>0 ? `Troco: ${fmtR(trocoInfo.troco)}` : "✅ Valor exato, sem troco"}
+              </div>
+            </div>
+          )}
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={async()=>{
@@ -5627,6 +5680,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               total: totalComanda,
               pagamento: pagInfo.pagamentos.length === 1 ? pagInfo.pagamentos[0].tipo : "misto",
               pagamentoTexto: pagTexto,
+              recebidoDinheiro: trocoInfo.recebido>0&&trocoInfo.falta===0 ? trocoInfo.recebido : 0,
+              troco: trocoInfo.recebido>0&&trocoInfo.falta===0 ? trocoInfo.troco : 0,
               abertura: abertura,
               fechamento: new Date().toISOString(),
             };

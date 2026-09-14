@@ -250,6 +250,10 @@ const VendaSalaoSchema = new mongoose.Schema({
     }],
     default: [],
   },
+  // Troco: quanto o cliente entregou em dinheiro e quanto voltou. Sai no
+  // recibo e ajuda a conferir a gaveta. Zero quando nao foi informado.
+  recebidoDinheiro: { type: Number, default: 0, min: 0 },
+  troco:            { type: Number, default: 0, min: 0 },
   abertura: Date,
   fechamento: { type: Date, default: Date.now },
   // ── Trilha de edicao ──
@@ -1872,6 +1876,21 @@ function normalizarPagamento(body) {
   return { pagamento: agrupado.length === 1 ? agrupado[0].tipo : "misto", pagamentos: agrupado };
 }
 
+// Troco: o cliente entregou X em dinheiro; a parte em dinheiro da comanda e
+// Y; troco = X - Y. O servidor refaz a conta. Entregar menos que a parte em
+// dinheiro nao fecha: e dedo errado no caixa.
+function normalizarTroco(body, pagamentos) {
+  const recebido = Number(body.recebidoDinheiro) || 0;
+  if (recebido <= 0) return { recebidoDinheiro: 0, troco: 0 };
+  if (recebido > 100000) return { erro: "Valor recebido em dinheiro fora do razoavel" };
+  const emDinheiro = (pagamentos || []).filter(p => p.tipo === "dinheiro").reduce((s, p) => s + (Number(p.valor) || 0), 0);
+  if (emDinheiro <= 0) return { recebidoDinheiro: 0, troco: 0 };   // sem dinheiro na comanda, nao ha troco
+  if (recebido + 0.005 < emDinheiro) {
+    return { erro: "Recebido em dinheiro (R$ " + recebido.toFixed(2) + ") menor que a parte em dinheiro (R$ " + emDinheiro.toFixed(2) + ")" };
+  }
+  return { recebidoDinheiro: parseFloat(recebido.toFixed(2)), troco: parseFloat((recebido - emDinheiro).toFixed(2)) };
+}
+
 app.post("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) => {
   const { itens, total } = req.body;
   if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
@@ -1886,10 +1905,14 @@ app.post("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) =
   const pag = normalizarPagamento(req.body);
   if (pag.erro) return res.status(400).json({ erro: pag.erro });
 
+  const trc = normalizarTroco(req.body, pag.pagamentos);
+  if (trc.erro) return res.status(400).json({ erro: trc.erro });
+
   try {
     const venda = await VendaSalaoDB.create({
       ...req.body, ...desc, ...gor,
       pagamento: pag.pagamento, pagamentos: pag.pagamentos,
+      recebidoDinheiro: trc.recebidoDinheiro, troco: trc.troco,
     });
     // Baixa automática no estoque
     await baixarEstoqueVenda(req.body.itens, String(venda._id));
