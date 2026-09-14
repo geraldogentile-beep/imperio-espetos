@@ -144,6 +144,13 @@ const PedidoSchema = new mongoose.Schema({
   tempoPreparo: { type: Number, min: 0 },
   status: { type: String, default: "novo", enum: ["novo", "preparando", "entrega", "entregue", "cancelado"] },
   horario: { type: Date, default: Date.now },
+  // Forma de pagamento do delivery. O bot nao pergunta ao cliente; quem marca
+  // e o caixa, no cartao do pedido. Sem isso o Pix do delivery ficava fora
+  // da soma por forma de pagamento no fechamento.
+  pagamento: { type: String, default: "" },   // "", pix, cartao ou dinheiro
+  // Quando virou "entregue". E isso que decide em que caixa o pedido entra:
+  // pedido feito antes do "Fechar caixa" e entregue depois vai para o proximo.
+  entregueEm: Date,
 }, { timestamps: true });
 
 const CupomSchema = new mongoose.Schema({
@@ -323,11 +330,14 @@ const FechamentoDiaSchema = new mongoose.Schema({
   totalGeral:      { type: Number, default: 0 },
   pedidosDelivery: { type: Number, default: 0 },
   vendasSalao:     { type: Number, default: 0 },
-  porPagamento: {  // salão por forma de pagamento
+  porPagamento: {  // salão + delivery, por forma de pagamento
     pix:      { type: Number, default: 0 },
     cartao:   { type: Number, default: 0 },
     dinheiro: { type: Number, default: 0 },
   },
+  // Delivery entregue sem forma marcada no cartao: fica aqui para a soma
+  // continuar batendo com o total, em vez de sumir da conta.
+  deliverySemForma: { type: Number, default: 0 },
   // Gorjeta nao e faturamento, mas ENTRA no dinheiro recebido. Guardar
   // separado e o que explica porPagamento ser maior que totalSalao.
   totalGorjetas:   { type: Number, default: 0 },
@@ -1384,7 +1394,8 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono", "garcom"]), async (req,
   if (!["novo","preparando","entrega","entregue","cancelado"].includes(status)) return res.status(400).json({ erro: "Status inválido" });
   let pedido = pedidos.find(p => p.id === id);
   try {
-    const atualizado = await PedidoDB.findOneAndUpdate({ id }, { status }, { new: true }).lean();
+    const mudanca = status === "entregue" ? { status, entregueEm: new Date() } : { status };
+    const atualizado = await PedidoDB.findOneAndUpdate({ id }, mudanca, { new: true }).lean();
     if (atualizado) pedido = atualizado;
   } catch (e) { console.error("Erro ao atualizar pedido:", e.message); }
   if (!pedido) return res.status(404).json({ erro: "Pedido não encontrado" });
@@ -1399,6 +1410,25 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono", "garcom"]), async (req,
   }
   if (status === "cancelado" && timersAvaliacao.has(id)) { clearTimeout(timersAvaliacao.get(id)); timersAvaliacao.delete(id); }
   res.json(pedido);
+});
+
+// Forma de pagamento do delivery, marcada pelo caixa no cartao do pedido.
+// Vazio desmarca. So isso leva o pedido para a soma por forma no fechamento.
+app.patch("/pedidos/:id/pagamento", authMiddleware(["dono", "garcom"]), async (req, res) => {
+  const { id } = req.params;
+  const pagamento = String(req.body?.pagamento ?? "");
+  if (pagamento !== "" && !FORMAS_PAGAMENTO.includes(pagamento)) {
+    return res.status(400).json({ erro: "Forma de pagamento invalida: " + pagamento });
+  }
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco de dados indisponivel" });
+  try {
+    const atualizado = await PedidoDB.findOneAndUpdate({ id }, { pagamento }, { new: true }).lean();
+    if (!atualizado) return res.status(404).json({ erro: "Pedido não encontrado" });
+    res.json(atualizado);
+  } catch (e) {
+    console.error("Erro ao marcar pagamento:", e.message);
+    res.status(500).json({ erro: "Erro ao marcar pagamento" });
+  }
 });
 
 // ── EDITAR PEDIDO (itens) ─────────────────────────────────────
@@ -2332,8 +2362,12 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
 
 
 
-    // Pedidos delivery entregues hoje
-    const pedidosHoje = await PedidoDB.find({ status: "entregue", horario: { $gte: hoje, $lt: amanha } }).lean();
+    // Pedidos delivery entregues neste periodo. Conta pelo momento da entrega;
+    // pedido antigo (sem entregueEm) conta pelo horario em que foi feito.
+    const pedidosHoje = await PedidoDB.find({ status: "entregue", $or: [
+      { entregueEm: { $gte: hoje, $lt: amanha } },
+      { entregueEm: null, horario: { $gte: hoje, $lt: amanha } },
+    ] }).lean();
     const totalDelivery = pedidosHoje.reduce((s, p) => s + (p.total || 0), 0);
 
     // Vendas salão hoje
@@ -2352,6 +2386,14 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
         if (!FORMAS_PAGAMENTO.includes(p.tipo)) return;
         porPagamento[p.tipo] += Number(p.valor) || 0;
       });
+    });
+    // Delivery entra pela forma que o caixa marcou no cartao. Sem marcacao,
+    // vai para deliverySemForma: a conta continua fechando e a dona ve o que
+    // ficou faltando marcar.
+    let deliverySemForma = 0;
+    pedidosHoje.forEach(p => {
+      if (FORMAS_PAGAMENTO.includes(p.pagamento)) porPagamento[p.pagamento] += p.total || 0;
+      else deliverySemForma += p.total || 0;
     });
 
     // Por garçom
@@ -2389,6 +2431,7 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
         cartao: parseFloat(porPagamento.cartao.toFixed(2)),
         dinheiro: parseFloat(porPagamento.dinheiro.toFixed(2)),
       },
+      deliverySemForma: parseFloat(deliverySemForma.toFixed(2)),
       porGarcom,
       obs: obs || "",
       criadoPor: criadoPor || "admin",

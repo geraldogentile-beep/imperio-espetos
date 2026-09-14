@@ -43,6 +43,13 @@ const STATUS_CONFIG = {
 };
 
 function isMesmosDias(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
+// Momento em que o pedido "fechou" para o caixa: a entrega. Pedido feito antes
+// do "Fechar caixa" e entregue depois entra no caixa seguinte. Pedido antigo,
+// sem entregueEm, conta pelo horario em que foi feito.
+function momentoEntrega(p) { return new Date(p.entregueEm || p.horario); }
+// O bot nao pergunta a forma de pagamento; o caixa marca no cartao do pedido.
+const FORMAS_DELIVERY = [["pix", "🟢 Pix"], ["cartao", "💳 Cartão"], ["dinheiro", "💵 Dinheiro"]];
+const rotuloForma = k => (FORMAS_DELIVERY.find(([f]) => f === k) || [])[1] || "";
 
 const MOCK_PEDIDOS    = [];
 const MOCK_CARDAPIO   = [];
@@ -3209,7 +3216,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
 }
 
 // ── FECHAMENTO DO DIA ─────────────────────────────────────────
-function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mesasSalao, onFechou }) {
+function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mesasSalao, onFechou, periodo }) {
   const [historico, setHistorico] = useState([]);
   const [loading, setLoading] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
@@ -3228,19 +3235,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 
   // Desde quando o caixa esta aberto. Sem isso a dona olha os numeros da tela
   // sem saber que pedaco do movimento eles cobrem.
-  const [periodo, setPeriodo] = useState(null);
-  useEffect(()=>{
-    let vivo = true;
-    async function lerPeriodo(){
-      try {
-        const r = await authFetch(backendUrl + "/caixa/periodo");
-        if (r.ok && vivo) setPeriodo(await r.json());
-      } catch {}
-    }
-    lerPeriodo();
-    const t = setInterval(lerPeriodo, 30000);
-    return ()=>{ vivo=false; clearInterval(t); };
-  },[backendUrl]);
+  // (o periodo vem do painel principal, que tambem usa ele na aba Pedidos)
 
   useEffect(()=>{ carregar(); },[]);
 
@@ -3248,7 +3243,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   // igual ao servidor: o periodo vai do ultimo fechamento ate agora, e so
   // muda quando alguem aperta o botao — nunca sozinho no relogio.
   const hoje = periodo?.inicio ? new Date(periodo.inicio) : inicioDoExpediente();
-  const pedidosHoje = pedidos.filter(p=>p.status==="entregue"&&new Date(p.horario)>=hoje);
+  const pedidosHoje = pedidos.filter(p=>p.status==="entregue"&&momentoEntrega(p)>=hoje);
   const totalDelivery = pedidosHoje.reduce((s,p)=>s+(p.total||0),0);
   const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
   const totalGeral = totalDelivery + totalSalaoHoje;
@@ -3279,6 +3274,14 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
       if (porPag[pt.tipo] === undefined) return;
       porPag[pt.tipo] += Number(pt.valor) || 0;
     });
+  });
+  // Delivery entra pela forma marcada no cartao do pedido. Sem marcacao vai
+  // para "sem forma informada": a soma continua batendo com o total e a dona
+  // ve o que falta marcar. (O Pix de R$ 42 do delivery ficava fora daqui.)
+  let deliverySemForma = 0;
+  pedidosHoje.forEach(p=>{
+    if (porPag[p.pagamento] !== undefined) porPag[p.pagamento] += p.total||0;
+    else deliverySemForma += p.total||0;
   });
 
   async function fecharDia() {
@@ -3328,6 +3331,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   ${f.porPagamento?.pix>0?`<div class="linha"><span>🟢 Pix</span><span>R$ ${f.porPagamento.pix.toFixed(2)}</span></div>`:""}
   ${f.porPagamento?.cartao>0?`<div class="linha"><span>💳 Cartão</span><span>R$ ${f.porPagamento.cartao.toFixed(2)}</span></div>`:""}
   ${f.porPagamento?.dinheiro>0?`<div class="linha"><span>💵 Dinheiro</span><span>R$ ${f.porPagamento.dinheiro.toFixed(2)}</span></div>`:""}
+  ${f.deliverySemForma>0?`<div class="linha"><span>🛵 Delivery sem forma informada</span><span>R$ ${f.deliverySemForma.toFixed(2)}</span></div>`:""}
   ${f.totalGorjetas>0?`<div class="linha"><span>🙏 Gorjetas (inclusas acima)</span><span>R$ ${f.totalGorjetas.toFixed(2)}</span></div>
   <div style="font-size:10px;color:#888;margin-top:2px">Gorjeta nao e faturamento — entrou no caixa, mas nao foi venda.</div>`:""}
   ${f.porGarcom?.length>0?`
@@ -3382,14 +3386,15 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
       </div>
 
       {/* Formas de pagamento e garçons do dia */}
-      {(porGarcom.length>0||Object.values(porPag).some(v=>v>0))&&(
+      {(porGarcom.length>0||Object.values(porPag).some(v=>v>0)||deliverySemForma>0)&&(
         <div style={{display:"flex",gap:10}}>
-          {Object.values(porPag).some(v=>v>0)&&(
+          {(Object.values(porPag).some(v=>v>0)||deliverySemForma>0)&&(
             <div style={{flex:1,background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
               <div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Pagamentos</div>
               {porPag.pix>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>🟢 Pix</span><span style={{fontWeight:700}}>R$ {porPag.pix.toFixed(2)}</span></div>}
               {porPag.cartao>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💳 Cartão</span><span style={{fontWeight:700}}>R$ {porPag.cartao.toFixed(2)}</span></div>}
               {porPag.dinheiro>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💵 Dinheiro</span><span style={{fontWeight:700}}>R$ {porPag.dinheiro.toFixed(2)}</span></div>}
+              {deliverySemForma>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",color:"#b45309"}} title="Marque a forma de pagamento no cartão do pedido, na aba Pedidos"><span>🛵 Delivery sem forma informada</span><span style={{fontWeight:700}}>R$ {deliverySemForma.toFixed(2)}</span></div>}
               {gorjetasSalao>0&&(
                 <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #f0f0f0"}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",color:"#065f46"}}>
@@ -3473,6 +3478,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
                     <div style={{fontWeight:700,fontSize:13}}>R$ {f.totalSalao.toFixed(2)}</div>
                   </div>
                 </div>
+                {f.deliverySemForma>0&&<div style={{fontSize:11,color:"#b45309",marginBottom:6}}>🛵 Delivery sem forma de pagamento informada: R$ {f.deliverySemForma.toFixed(2)}</div>}
                 {f.porGarcom?.length>0&&(
                   <div style={{marginBottom:6}}>
                     <div style={{fontSize:10,color:"#888",marginBottom:4}}>Por garçom</div>
@@ -4405,7 +4411,7 @@ function Clientes({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
 }
 
 // ── CARD PEDIDO ───────────────────────────────────────────────
-function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit, cardapio, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
+function PedidoCard({ pedido, onStatus, onPagamento, expanded, onToggle, atualizando, onEdit, cardapio, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
   const total = totalPedido(pedido, taxaEntrega);
   const sc = STATUS_CONFIG[pedido.status] || STATUS_CONFIG.novo;
   const nxt = { novo: "preparando", preparando: "entrega", entrega: "entregue" }[pedido.status];
@@ -4464,6 +4470,7 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit,
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: editMode ? T.blue : T.wine }}>R$ {editMode ? editTotal.toFixed(2) : total.toFixed(2)}</div>
           <div style={{ fontSize: 11, color: T.gray, marginTop: 1 }}>⏱️ {pedido.tempoPreparo || "—"}min</div>
+          {pedido.pagamento && <div style={{ fontSize: 11, color: T.gray, marginTop: 1 }}>{rotuloForma(pedido.pagamento)}</div>}
         </div>
         <div style={{ color: T.grayL, fontSize: 16, flexShrink: 0 }}>{expanded ? "▴" : "▾"}</div>
       </div>
@@ -4552,6 +4559,23 @@ function PedidoCard({ pedido, onStatus, expanded, onToggle, atualizando, onEdit,
               {podeEditar && <button onClick={iniciarEdicao} style={{ background: T.white, color: T.blue, border: `1.5px solid ${T.blue}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>✏️ Editar</button>}
               {nxt && <button onClick={() => onStatus(pedido.id, nxt)} disabled={atualizando} style={{ flex: 1, minWidth: 140, background: atualizando ? T.grayL : `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily:"'DM Sans',sans-serif" }}>{STATUS_CONFIG[nxt].icon} {STATUS_CONFIG[nxt].label}</button>}
               <button onClick={() => onStatus(pedido.id, "cancelado")} disabled={atualizando} style={{ background: T.white, color: T.red, border: `1.5px solid ${T.red}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>❌ Cancelar</button>
+            </div>
+          )}
+          {/* O bot nao pergunta como o cliente vai pagar. O caixa marca aqui; e
+              isso que leva o delivery para a soma por forma no fechamento. */}
+          {!editMode && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 10, fontSize: 12, color: T.gray }}>
+              <span style={{ fontWeight: 600 }}>💰 Pagamento:</span>
+              {FORMAS_DELIVERY.map(([k, l]) => {
+                const ativo = pedido.pagamento === k;
+                return (
+                  <button key={k} onClick={() => onPagamento && onPagamento(pedido.id, ativo ? "" : k)} disabled={atualizando || !onPagamento}
+                    style={{ background: ativo ? T.wine : T.white, color: ativo ? T.white : T.dark, border: `1.5px solid ${ativo ? T.wine : T.grayL}`, borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
+                    {l}
+                  </button>
+                );
+              })}
+              {!pedido.pagamento && <span style={{ fontSize: 11, color: T.amber }}>sem forma informada</span>}
             </div>
           )}
         </div>
@@ -6209,6 +6233,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [maisAberto, setMaisAberto] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [filtro, setFiltro] = useState("todos");
+  const [verFechados, setVerFechados] = useState(false);   // pedidos de caixas ja fechados
   const [atualizando, setAtualizando] = useState({});
   const [conexao, setConexao] = useState("offline");
   const [ultimaAtt, setUltimaAtt] = useState(null);
@@ -6338,6 +6363,24 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     const t = setInterval(sincronizarSalao, 60000); // 1min: vendas nao mudam tao rapido
     return () => clearInterval(t);
   }, [sincronizarSalao]);
+
+  // Desde quando o caixa esta aberto. Vale para a aba Pedidos (o que ja foi
+  // para um caixa fechado sai da lista de trabalho), para o "Faturamento
+  // hoje" e para a tela de Fechamento — todos com o mesmo corte.
+  const [periodoCaixa, setPeriodoCaixa] = useState(null);
+  const lerPeriodoCaixa = useCallback(async () => {
+    try {
+      const r = await authFetch(BACKEND_URL + "/caixa/periodo");
+      if (r.ok) setPeriodoCaixa(await r.json());
+    } catch {}
+  }, []);
+  useEffect(() => {
+    lerPeriodoCaixa();
+    const t = setInterval(lerPeriodoCaixa, 30000);
+    return () => clearInterval(t);
+  }, [lerPeriodoCaixa]);
+  const inicioCaixa = periodoCaixa?.inicio ? new Date(periodoCaixa.inicio) : inicioDoExpediente();
+  const aoFecharCaixa = useCallback(() => { sincronizarSalao(); lerPeriodoCaixa(); }, [sincronizarSalao, lerPeriodoCaixa]);
 
   // ── SINCRONIZAÇÃO DAS MESAS ENTRE APARELHOS ─────────────────
   // O servidor guarda o estado da mesa; cada aparelho puxa e empurra.
@@ -6624,9 +6667,27 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
         return;
       }
       const at = await r.json();
-      setPedidos(prev => prev.map(p => p.id === id ? { ...p, status: at.status } : p));
+      setPedidos(prev => prev.map(p => p.id === id ? { ...p, status: at.status, entregueEm: at.entregueEm || p.entregueEm } : p));
     } catch {
       alert("❌ Erro de conexão ao atualizar status. Tente novamente.");
+    } finally {
+      setAtualizando(prev => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const updatePagamento = async (id, pagamento) => {
+    setAtualizando(prev => ({ ...prev, [id]: true }));
+    try {
+      const r = await authFetch(BACKEND_URL + "/pedidos/" + id + "/pagamento", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pagamento }) });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert("❌ Erro ao marcar pagamento: " + (err.erro || `código ${r.status}`));
+        return;
+      }
+      const at = await r.json();
+      setPedidos(prev => prev.map(p => p.id === id ? { ...p, pagamento: at.pagamento } : p));
+    } catch {
+      alert("❌ Erro de conexão ao marcar pagamento. Tente novamente.");
     } finally {
       setAtualizando(prev => ({ ...prev, [id]: false }));
     }
@@ -6672,12 +6733,19 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const taxaEntrega = Number(config?.taxaEntrega);
   const taxaEntregaOk = Number.isFinite(taxaEntrega) ? taxaEntrega : TAXA_ENTREGA_PADRAO;
 
-  const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidos.filter(p => p.status === s).length; return a; }, {});
-  const totalDeliveryHoje = pedidos.filter(p => p.status === "entregue" && isMesmosDias(p.horario, new Date())).reduce((s, p) => s + totalPedido(p, taxaEntregaOk), 0);
+  // Pedido entregue ou cancelado antes do ultimo "Fechar caixa" ja foi
+  // conferido: sai da lista de trabalho e fica em Relatorios e Fechamento.
+  const jaFechado = p => (p.status === "entregue" || p.status === "cancelado") && momentoEntrega(p) < inicioCaixa;
+  const pedidosAtivos = pedidos.filter(p => !jaFechado(p));
+  const qtdFechados = pedidos.length - pedidosAtivos.length;
+  const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidosAtivos.filter(p => p.status === s).length; return a; }, {});
+  // Mesmo corte da tela de Fechamento: o que foi entregue neste caixa
+  const totalDeliveryHoje = pedidosAtivos.filter(p => p.status === "entregue").reduce((s, p) => s + totalPedido(p, taxaEntregaOk), 0);
   const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
   const totalHoje = totalDeliveryHoje + totalSalaoHoje;
   const novos = counts["novo"] || 0;
-  const pf = (filtro === "todos" ? pedidos : pedidos.filter(p => p.status === filtro)).sort((a, b) => new Date(b.horario) - new Date(a.horario));
+  const basePedidos = verFechados ? pedidos : pedidosAtivos;
+  const pf = (filtro === "todos" ? basePedidos : basePedidos.filter(p => p.status === filtro)).sort((a, b) => new Date(b.horario) - new Date(a.horario));
   const mediaAv = avaliacoes.length > 0 ? (avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length).toFixed(1) : null;
   const cc = { conectando: { cor: "#f59e0b", txt: "conectando..." }, online: { cor: "#10b981", txt: "atualizado às " + (ultimaAtt ? horaFmt(ultimaAtt) : "") }, offline: { cor: "#f59e0b", txt: "modo demonstração" } }[conexao];
 
@@ -6842,13 +6910,20 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
                     <div className="serif-title" style={{ fontSize: 22, color: T.dark, fontWeight: 700, marginBottom: 6 }}>Nenhum pedido por aqui</div>
                     <div style={{ fontSize: 14, color: T.gray }}>{filtro === "todos" ? "Os pedidos aparecerão aqui assim que chegarem pelo WhatsApp" : `Nenhum pedido com status "${STATUS_CONFIG[filtro]?.label || filtro}"`}</div>
                   </div>
-                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} onEdit={editPedido} cardapio={cardapio} taxaEntrega={taxaEntregaOk} atualizando={!!atualizando[p.id]} />)
+                : pf.map(p => <PedidoCard key={p.id} pedido={p} expanded={expanded === p.id} onToggle={() => setExpanded(expanded === p.id ? null : p.id)} onStatus={updateStatus} onPagamento={updatePagamento} onEdit={editPedido} cardapio={cardapio} taxaEntrega={taxaEntregaOk} atualizando={!!atualizando[p.id]} />)
               }
+              {qtdFechados > 0 && (
+                <div style={{ gridColumn: "1/-1", textAlign: "center", fontSize: 12, color: T.gray, padding: "4px 0 12px" }}>
+                  🔒 {qtdFechados} pedido{qtdFechados !== 1 ? "s" : ""} de caixa já fechado{qtdFechados !== 1 ? "s" : ""}
+                  {" "}<button onClick={() => setVerFechados(v => !v)} style={{ background: "transparent", border: "none", color: T.wine, fontWeight: 700, cursor: "pointer", fontSize: 12, padding: 0, textDecoration: "underline", fontFamily: "'DM Sans',sans-serif" }}>{verFechados ? "ocultar" : "mostrar"}</button>
+                  {" "}· o histórico completo fica em Relatórios e Fechamento
+                </div>
+              )}
             </div>
           )}
 
           {aba === "relatorios"  && <Relatorios pedidos={pedidos} taxaEntrega={taxaEntregaOk} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
-          {aba === "fechamento"  && <FechamentoDia backendUrl={BACKEND_URL} pedidos={pedidos} historicoSalao={historicoSalao} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} onFechou={sincronizarSalao} />}
+          {aba === "fechamento"  && <FechamentoDia backendUrl={BACKEND_URL} pedidos={pedidos} historicoSalao={historicoSalao} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} onFechou={aoFecharCaixa} periodo={periodoCaixa} />}
           {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} cardapio={cardapio} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} taxaEntrega={taxaEntregaOk} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
