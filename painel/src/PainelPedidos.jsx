@@ -4629,7 +4629,22 @@ const MESAS_ESPECIAIS_BASE = [
   initMesaEspecial(901, "Funcionários", "funcionarios", "👥"),
   initMesaEspecial(902, "Caixa Direto", "caixa_direto", "🛒"),
 ];
+// Devolve tipo/nome/icone a uma mesa especial que os perdeu. Ao fechar a
+// ultima comanda de "Funcionarios" o painel gravava initMesa(900): a 901
+// virou mesa comum, foi para o servidor, e todo aparelho passou a mostra-la
+// no meio das outras — e a cada recarga o inicializador repunha as especiais
+// e as antigas sobravam como comuns (901,902,901,902,...).
+function restaurarIdentidade(m) {
+  if (!m || m.tipo) return m;
+  const base = MESAS_ESPECIAIS_BASE.find(e => e.id === m.id);
+  return base ? { ...m, nome: base.nome, tipo: base.tipo, icon: base.icon } : m;
+}
+// Mesa zerada de verdade, preservando o que ela e
+function mesaZerada(m) {
+  return m.tipo ? initMesaEspecial(m.id, m.nome, m.tipo, m.icon) : initMesa(m.id - 1);
+}
 function migrarMesa(m) {
+  m = restaurarIdentidade(m);
   if (m.subComandas) return m;
   // migra formato antigo (itens/rodadas/cliente no nível da mesa)
   return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
@@ -5130,7 +5145,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const novoStatus = novasSCs.length===0||novasSCs.every(s=>s.itens.length===0&&(s.rodadas||[]).length===0)?"livre":"ocupada";
     if(novasSCs.length===0) {
       // Mesa totalmente liberada
-      upd(initMesa(mesa.id-1));
+      upd(mesaZerada(mesa));
       setSel(null); setTelaSalao("mapa");
     } else {
       upd({...mesa, subComandas:novasSCs, status:novoStatus, solicitadoPor:null, solicitadoEm:null,
@@ -5195,7 +5210,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     }
 
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} — ${descrevePagamento(pagamentos, pagSalao)}`);
-    upd(initMesa(mesa.id-1));
+    upd(mesaZerada(mesa));
     limparPagamento();
     setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
     fechandoRef.current = false;
@@ -6212,15 +6227,14 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       }
       const saved = localStorage.getItem("imperio_mesas_salao");
       if (!saved) return [...MESAS_ESPECIAIS_BASE, ...regulares];
-      const parsed = JSON.parse(saved).map(migrarMesa);
-      // Garante que as mesas especiais sempre existem
-      const temFunc = parsed.some(m=>m.tipo==="funcionarios");
-      const temCaixa = parsed.some(m=>m.tipo==="caixa_direto");
-      const especiais = [
-        temFunc ? parsed.find(m=>m.tipo==="funcionarios") : MESAS_ESPECIAIS_BASE[0],
-        temCaixa ? parsed.find(m=>m.tipo==="caixa_direto") : MESAS_ESPECIAIS_BASE[1],
-      ];
-      const comuns = parsed.filter(m=>!m.tipo);
+      const parsed = JSON.parse(saved).map(migrarMesa);   // migrarMesa devolve o tipo das especiais
+      // Uma especial de cada tipo (se houver repetida, fica a que tem movimento)
+      // e as comuns sem id repetido: o cache pode vir sujo de versoes antigas.
+      const especiais = MESAS_ESPECIAIS_BASE.map(base =>
+        parsed.filter(m => m.tipo === base.tipo).sort((a, b) => (a.status === "livre") - (b.status === "livre"))[0] || base
+      );
+      const vistos = new Set();
+      const comuns = parsed.filter(m => !m.tipo && !vistos.has(m.id) && vistos.add(m.id));
       return [...especiais, ...comuns];
     } catch { return [...MESAS_ESPECIAIS_BASE, ...Array.from({length:16},(_,i)=>initMesa(i))]; }
   });
