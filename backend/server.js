@@ -1748,10 +1748,13 @@ app.get("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) =>
   try {
     // Vai ate quando fecharem o caixa. Se a dona chegar as 10h para conferir a
     // noite passada, os numeros ainda estao aqui.
+    // Banco fora do ar NAO e "lista vazia": o painel troca a lista dele pela
+    // nossa, e um [] aqui zeraria o caixa na tela ate o banco voltar.
+    if (!mongoPronto()) return res.status(503).json({ erro: "Banco de dados indisponivel" });
     const { inicio } = await periodoAbertoDoCaixa();
     const lista = await VendaSalaoDB.find({ fechamento: { $gte: inicio } }).sort({ fechamento: -1 }).lean();
     res.json(lista);
-  } catch { res.json([]); }
+  } catch (e) { res.status(503).json({ erro: "Falha ao consultar vendas: " + e.message }); }
 });
 // Confere que subtotal - desconto = total. Sem isso da para mandar um total
 // menor que os itens e o faturamento do dia nao fecha com a comanda.

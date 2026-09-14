@@ -3209,7 +3209,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
 }
 
 // ── FECHAMENTO DO DIA ─────────────────────────────────────────
-function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mesasSalao }) {
+function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mesasSalao, onFechou }) {
   const [historico, setHistorico] = useState([]);
   const [loading, setLoading] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
@@ -3287,9 +3287,12 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
       const r = await authFetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs})});
       const data = await r.json();
       if(!r.ok) return showMsg(data.erro||"Erro ao fechar o dia.","erro");
-      showMsg("✅ Fechamento do dia realizado com sucesso!");
+      showMsg("✅ Caixa fechado. Os numeros da tela recomecam do zero.");
       setConfirmando(false); setObs("");
       carregar();
+      // Puxa o periodo novo na hora: sem isso a tela ficava com os numeros
+      // velhos ate a proxima sincronizacao, e parecia que nao tinha fechado.
+      if (onFechou) onFechou();
     } catch { showMsg("Erro de conexão.","erro"); }
     setLoading(false);
   }
@@ -3852,7 +3855,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {/* Resumo */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Metrica icon="🧾" label="Vendas hoje" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "mesas fechadas"} cor="#7b1a0a" />
+            <Metrica icon="🧾" label="Vendas do caixa" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "desde o ultimo fechamento"} cor="#7b1a0a" />
             <Metrica icon="💰" label="Total salão" valor={"R$ " + (faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0)).toFixed(2)} cor="#10b981" />
             <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(historicoSalao.map(v=>v.garcom).filter(g=>g!=="—"))].length || "—"} cor="#3b82f6" />
           </div>
@@ -4652,6 +4655,28 @@ function diaOperacional(d = new Date()) {
 // Duas carnes diferentes do mesmo prato sao linhas SEPARADAS na comanda.
 // Antes o agrupamento era so por id, entao "Lanche (picanha)" e
 // "Lanche (kafta)" viravam a mesma linha e um dos precos se perdia.
+// Une a lista de vendas do servidor com a que esta em memoria neste aparelho.
+//
+// O servidor e a verdade: ele devolve exatamente o periodo aberto do caixa.
+// A regra antiga tratava toda venda local que o servidor nao devolvia como
+// "pendente de envio" e a guardava para sempre. Como a mesa so fecha depois
+// do POST dar certo, nunca existiu venda pendente de verdade — o que ficava
+// ali era venda de ONTEM (ou de um caixa ja fechado). Resultado na tela:
+// "Salao R$ 115" ao lado de "Pagamentos R$ 892".
+//
+// So se preserva o que fechou nos ultimos instantes: a venda pode ter
+// entrado no banco depois que esta consulta saiu do aparelho.
+const JANELA_VENDA_RECENTE_MS = 2 * 60 * 1000;
+function mesclarVendasServidor(locais, servidor, agora = Date.now()) {
+  const ids = new Set(servidor.map(v => String(v._id)));
+  const limite = agora - JANELA_VENDA_RECENTE_MS;
+  const recemFechadas = (locais || []).filter(v =>
+    !ids.has(String(v._id)) && new Date(v.fechamento).getTime() >= limite
+  );
+  const porFechamento = (a, b) => new Date(a.fechamento) - new Date(b.fechamento);
+  return [...servidor, ...recemFechadas].sort(porFechamento);
+}
+
 function chaveItem(it) { return String(it?.id) + "|" + (it?.variacao || ""); }
 
 const FORMAS_PAG = [["pix","🟢 Pix"],["cartao","💳 Cartão"],["dinheiro","💵 Dinheiro"]];
@@ -6266,12 +6291,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       if (!r.ok) return;
       const vendasServidor = await r.json();
       if (!Array.isArray(vendasServidor)) return;
-      setHistoricoSalao(prev => {
-        // Mantem vendas locais que ainda nao chegaram no servidor (POST falhou/offline)
-        const idsServidor = new Set(vendasServidor.map(v => String(v._id)));
-        const pendentesLocais = prev.filter(v => !v._id || !idsServidor.has(String(v._id)));
-        return [...vendasServidor, ...pendentesLocais];
-      });
+      setHistoricoSalao(prev => mesclarVendasServidor(prev, vendasServidor));
       const totalServidor = vendasServidor.reduce((s, v) => s + (Number(v.total) || 0), 0);
       setFaturadoSalao(totalServidor);
     } catch (e) { console.warn("Falha ao sincronizar vendas do salao:", e.message); }
@@ -6790,7 +6810,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           )}
 
           {aba === "relatorios"  && <Relatorios pedidos={pedidos} taxaEntrega={taxaEntregaOk} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} setMesasSalaoRel={setMesasSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} setFaturadoSalaoRel={setFaturadoSalao} />}
-          {aba === "fechamento"  && <FechamentoDia backendUrl={BACKEND_URL} pedidos={pedidos} historicoSalao={historicoSalao} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} />}
+          {aba === "fechamento"  && <FechamentoDia backendUrl={BACKEND_URL} pedidos={pedidos} historicoSalao={historicoSalao} faturadoSalao={faturadoSalao} mesasSalao={mesasSalao} onFechou={sincronizarSalao} />}
           {aba === "estoque"     && <Estoque backendUrl={BACKEND_URL} cardapio={cardapio} />}
           {aba === "clientes"    && <Clientes pedidos={pedidos} taxaEntrega={taxaEntregaOk} />}
           {aba === "cardapio"    && <Cardapio cardapio={cardapio} onReload={fetchAll} />}
