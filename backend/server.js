@@ -1385,7 +1385,8 @@ app.put("/auth/pins", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── PEDIDOS API ───────────────────────────────────────────────
-app.get("/pedidos", authMiddleware(["dono", "garcom"]), async (req, res) => {
+// Pedidos de delivery (nome, endereco, valor) sao do caixa, nao do salao.
+app.get("/pedidos", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -1397,7 +1398,7 @@ app.get("/pedidos", authMiddleware(["dono", "garcom"]), async (req, res) => {
   }
 });
 
-app.patch("/pedidos/:id/status", authMiddleware(["dono", "garcom"]), async (req, res) => {
+app.patch("/pedidos/:id/status", authMiddleware(["dono"]), async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
   if (!["novo","preparando","entrega","entregue","cancelado"].includes(status)) return res.status(400).json({ erro: "Status inválido" });
@@ -1423,7 +1424,7 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono", "garcom"]), async (req,
 
 // Forma de pagamento do delivery, marcada pelo caixa no cartao do pedido.
 // Vazio desmarca. So isso leva o pedido para a soma por forma no fechamento.
-app.patch("/pedidos/:id/pagamento", authMiddleware(["dono", "garcom"]), async (req, res) => {
+app.patch("/pedidos/:id/pagamento", authMiddleware(["dono"]), async (req, res) => {
   const { id } = req.params;
   const pagamento = String(req.body?.pagamento ?? "");
   if (pagamento !== "" && !FORMAS_PAGAMENTO.includes(pagamento)) {
@@ -1783,7 +1784,8 @@ app.patch("/cardapio/:id/preco-promocional", authMiddleware(["dono"]), async (re
 });
 
 // ── VENDAS SALÃO API ─────────────────────────────────────────
-app.get("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) => {
+// Vendas e faturamento sao do dono. O login do salao (5678) nao recebe.
+app.get("/vendas-salao", authMiddleware(["dono"]), async (req, res) => {
   try {
     // Vai ate quando fecharem o caixa. Se a dona chegar as 10h para conferir a
     // noite passada, os numeros ainda estao aqui.
@@ -1896,7 +1898,7 @@ function normalizarTroco(body, pagamentos) {
   return { recebidoDinheiro: parseFloat(recebido.toFixed(2)), troco: parseFloat((recebido - emDinheiro).toFixed(2)) };
 }
 
-app.post("/vendas-salao", authMiddleware(["dono", "garcom"]), async (req, res) => {
+app.post("/vendas-salao", authMiddleware(["dono"]), async (req, res) => {
   const { itens, total } = req.body;
   if (!itens?.length) return res.status(400).json({ erro: "Itens são obrigatórios" });
   if (!total || total <= 0) return res.status(400).json({ erro: "Total inválido" });
@@ -2471,7 +2473,7 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
 
 // GET /caixa/periodo — desde quando o caixa esta aberto. O painel mostra
 // isso para nao restar duvida sobre o que os numeros da tela cobrem.
-app.get("/caixa/periodo", authMiddleware(["dono", "garcom"]), async (req, res) => {
+app.get("/caixa/periodo", authMiddleware(["dono"]), async (req, res) => {
   const { inicio, ultimo } = await periodoAbertoDoCaixa();
   res.json({
     inicio,

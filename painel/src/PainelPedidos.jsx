@@ -6002,10 +6002,14 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{fontSize:11,opacity:0.7,textTransform:"uppercase"}}>{isDono?"👑 Dono":perfil==="caixa"?"💁‍♀️ Caixa":garcomLogado?`🧑‍🍳 ${garcomLogado.nome}`:"🧑‍🍳 Garçom"}</div>
             <div style={{fontWeight:800,fontSize:18}}>🍽️ Mapa do Salão</div>
           </div>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:11,opacity:0.7,display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>Faturamento <BotaoOlho aberto={verFat} onClick={()=>setVerFat(v=>!v)} /></div>
-            <div style={{fontWeight:800,fontSize:18,color:T.amber}}>{verFat?fmtR(fat):VALOR_OCULTO}</div>
-          </div>
+          {/* Faturamento e do dono. O garcom nao ve nem o olhinho: a dona
+              pegou garcom olhando o numero no celular. */}
+          {isDono && (
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:11,opacity:0.7,display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>Faturamento <BotaoOlho aberto={verFat} onClick={()=>setVerFat(v=>!v)} /></div>
+              <div style={{fontWeight:800,fontSize:18,color:T.amber}}>{verFat?fmtR(fat):VALOR_OCULTO}</div>
+            </div>
+          )}
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <div style={{background:"rgba(255,255,255,0.15)",borderRadius:10,padding:"5px 12px"}}>
@@ -6345,7 +6349,18 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       return [...especiais, ...comuns];
     } catch { return [...MESAS_ESPECIAIS_BASE, ...Array.from({length:16},(_,i)=>initMesa(i))]; }
   });
+  // No app do garcom (login 5678) as vendas e o faturamento NAO existem:
+  // nem em memoria, nem no localStorage do celular. Limpa o que uma versao
+  // anterior possa ter deixado la.
+  const semFaturamento = !!abrirSalao;
+  if (semFaturamento) {
+    try {
+      ["imperio_historico_salao", "imperio_faturado_salao", "imperio_historico_dia", "imperio_faturado_dia"]
+        .forEach(k => localStorage.removeItem(k));
+    } catch {}
+  }
   const [historicoSalao, setHistoricoSalao] = useState(() => {
+    if (semFaturamento) return [];
     try {
       // Sem virada automatica: o periodo vai ate alguem fechar o caixa. Isto
       // aqui e so cache para a tela nao abrir vazia — o servidor corrige em
@@ -6356,6 +6371,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   });
 
   const [faturadoSalao, setFaturadoSalao] = useState(() => {
+    if (semFaturamento) return 0;
     try {
       // Idem: cache do periodo aberto, nao um contador que zera na virada
       return parseFloat(localStorage.getItem("imperio_faturado_salao") || "0");
@@ -6429,6 +6445,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   // Sincroniza o historico do salao com o servidor (fonte da verdade).
   // O localStorage passa a ser apenas cache offline/otimista.
   const sincronizarSalao = useCallback(async () => {
+    if (semFaturamento) return;   // o servidor tambem recusa, mas nem pede
     try {
       const r = await authFetch(BACKEND_URL + "/vendas-salao");
       if (!r.ok) return;
@@ -6451,6 +6468,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   // hoje" e para a tela de Fechamento — todos com o mesmo corte.
   const [periodoCaixa, setPeriodoCaixa] = useState(null);
   const lerPeriodoCaixa = useCallback(async () => {
+    if (semFaturamento) return;
     try {
       const r = await authFetch(BACKEND_URL + "/caixa/periodo");
       if (r.ok) setPeriodoCaixa(await r.json());
@@ -6676,14 +6694,17 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   const fetchAll = useCallback(async () => {
     try {
+      // O app do garcom so precisa de cardapio e configuracao. Pedidos de
+      // delivery (com nome, endereco e valor) sao do caixa.
+      const pular = () => Promise.resolve({ ok: false, json: async () => null });
       const [rp, rc, rcu, ra, rcfg, rs, rg] = await Promise.all([
-        authFetch(BACKEND_URL + "/pedidos"),
+        semFaturamento ? pular() : authFetch(BACKEND_URL + "/pedidos"),
         authFetch(BACKEND_URL + "/cardapio"),
-        authFetch(BACKEND_URL + "/cupons"),
-        authFetch(BACKEND_URL + "/avaliacoes"),
+        semFaturamento ? pular() : authFetch(BACKEND_URL + "/cupons"),
+        semFaturamento ? pular() : authFetch(BACKEND_URL + "/avaliacoes"),
         authFetch(BACKEND_URL + "/config"),
         authFetch(BACKEND_URL + "/config/status-loja"),
-        authFetch(BACKEND_URL + "/garcons"),
+        semFaturamento ? pular() : authFetch(BACKEND_URL + "/garcons"),
       ]);
       if (rp.ok) {
         const data = await rp.json();
@@ -6735,8 +6756,8 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 30000); return () => clearInterval(t); }, []);
 
   // Persiste dados do salão no localStorage
-  useEffect(() => { try { localStorage.setItem("imperio_faturado_salao", String(faturadoSalao)); } catch {} }, [faturadoSalao]);
-  useEffect(() => { try { localStorage.setItem("imperio_historico_salao", JSON.stringify(historicoSalao)); localStorage.setItem("imperio_historico_dia", diaOperacional()); } catch {} }, [historicoSalao]);
+  useEffect(() => { if (semFaturamento) return; try { localStorage.setItem("imperio_faturado_salao", String(faturadoSalao)); } catch {} }, [faturadoSalao, semFaturamento]);
+  useEffect(() => { if (semFaturamento) return; try { localStorage.setItem("imperio_historico_salao", JSON.stringify(historicoSalao)); localStorage.setItem("imperio_historico_dia", diaOperacional()); } catch {} }, [historicoSalao, semFaturamento]);
   useEffect(() => { try { localStorage.setItem("imperio_mesas_salao", JSON.stringify(mesasSalao)); } catch {} }, [mesasSalao]);
 
   const updateStatus = async (id, novoStatus) => {
