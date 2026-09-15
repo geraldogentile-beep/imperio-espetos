@@ -534,7 +534,10 @@ function Cardapio({ cardapio, onReload }) {
   const [novoItem, setNovoItem] = useState({ categoria: "", nome: "", preco: "", tempoPreparo: 10, obs: "" });
 
   const categorias = ["todos", ...new Set(cardapio.map(i => i.categoria))];
-  const itens = cardapio.filter(i => filtro === "todos" || i.categoria === filtro).filter(i => i.nome.toLowerCase().includes(busca.toLowerCase()));
+  const itens = ordenarCardapio(
+    cardapio.filter(i => filtro === "todos" || i.categoria === filtro).filter(i => i.nome.toLowerCase().includes(busca.toLowerCase())),
+    categorias
+  );
   const inputStyle = { width: "100%", padding: "7px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
 
   async function toggleAtivo(item) {
@@ -4457,7 +4460,7 @@ function PedidoCard({ pedido, onStatus, onPagamento, expanded, onToggle, atualiz
   const editSubtotal = editItens.reduce((s, i) => s + i.qty * i.preco, 0);
   const editTotal = editSubtotal + (Number(taxaEntrega) || 0) - (pedido.desconto || 0);
 
-  const cardapioFiltrado = (cardapio || []).filter(c => c.ativo !== false && c.nome.toLowerCase().includes(buscaItem.toLowerCase()));
+  const cardapioFiltrado = ordenarCardapio((cardapio || []).filter(c => c.ativo !== false && c.nome.toLowerCase().includes(buscaItem.toLowerCase())));
 
   return (
     <div className="card-hover fade-in" style={{ background: T.white, borderRadius: T.radius, boxShadow: isNovo ? `0 0 0 1.5px ${T.amber}, 0 4px 16px rgba(212,132,42,0.12)` : T.shadow, overflow: "hidden", opacity: atualizando ? 0.6 : 1, transition: "all 0.25s ease", border: `1px solid ${editMode ? T.blue+"40" : isNovo ? "transparent" : T.grayL}` }}>
@@ -4723,6 +4726,15 @@ function mesclarVendasServidor(locais, servidor, agora = Date.now()) {
 }
 
 function chaveItem(it) { return String(it?.id) + "|" + (it?.variacao || ""); }
+
+// Itens em ordem alfabetica dentro de cada categoria. Antes a ordem era a de
+// cadastro: cada item novo entrava no fim e o garcom perdia a referencia.
+// Em "Todos" as categorias seguem a ordem das abas, e dentro delas o nome.
+const compNome = (a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
+function ordenarCardapio(lista, ordemCats = []) {
+  const idx = (c) => { const i = ordemCats.indexOf(c); return i < 0 ? 999 : i; };
+  return [...lista].sort((a, b) => (idx(a.cat || a.categoria) - idx(b.cat || b.categoria)) || compNome(a, b));
+}
 
 const FORMAS_PAG = [["pix","🟢 Pix"],["cartao","💳 Cartão"],["dinheiro","💵 Dinheiro"]];
 const NOME_PAG = { pix: "Pix", cartao: "Cartão", dinheiro: "Dinheiro", misto: "Misto" };
@@ -5325,7 +5337,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           reclamou da distancia entre o nome e o preco (a linha ocupava a tela
           inteira) e do tanto que o garcom rolava para achar o item. */}
       <div style={{padding:"10px 14px 80px",display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))",gap:8,alignItems:"start"}}>
-        {cardapio.filter(filtrarCardapio).map(item=>{
+        {ordenarCardapio(cardapio.filter(filtrarCardapio), cats).map(item=>{
           const variacoes = Array.isArray(item.variacoes) ? item.variacoes : [];
           const temVariacao = variacoes.length > 0;
           const precoExibido = precoItem(item);
