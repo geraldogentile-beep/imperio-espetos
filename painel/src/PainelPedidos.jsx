@@ -5137,7 +5137,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     Horário: <strong>${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</strong>
   </div>
   <hr>
-  ${ticket.obs ? `<div class="obs">⚠️ OBS: ${ticket.obs}</div>` : ""}
   ${rodada.itens.map(it=>`
     <div class="item"><span class="qty">${it.qty||1}x</span><span>${it.nome}</span></div>
   `).join('')}
