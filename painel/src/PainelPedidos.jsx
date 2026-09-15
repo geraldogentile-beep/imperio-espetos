@@ -4656,6 +4656,9 @@ function initMesaEspecial(id, nome, tipo, icon) {
   return {id, nome, tipo, icon, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
           subComandas:[initSubComanda(1)]};
 }
+// Mesas fixas do salao. Acima disso sao mesas extras do dia: existem no
+// servidor (um registro por mesa) e por isso aparecem em todos os aparelhos.
+const MESAS_BASE = 16;
 const MESAS_ESPECIAIS_BASE = [
   initMesaEspecial(901, "Funcionários", "funcionarios", "👥"),
   initMesaEspecial(902, "Caixa Direto", "caixa_direto", "🛒"),
@@ -4839,7 +4842,7 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
   );
 }
 
-function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada, onMesaRemovida }) {
   // ── MODO EVENTO (preços promocionais) ──
   const modoEvento = configExterna?.modoEvento || {};
   const emModoEvento = (() => {
@@ -6022,8 +6025,23 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           </div>}
           <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
             {isDono&&<>
-              <button onClick={()=>{const comuns=mesas.filter(m=>!m.tipo);const n=comuns.length+1;setMesas(p=>[...p,initMesa(n-1)]);msgSalao("✅ Mesa "+n+" adicionada!");}} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
-              <button onClick={()=>{const comuns=mesas.filter(m=>!m.tipo);const u=comuns[comuns.length-1];if(!u||u.status!=="livre"){msgSalao("❌ Só é possível remover mesa livre!","#ef4444");return;}setMesas(p=>p.filter(m=>m.id!==u.id));msgSalao("Mesa "+u.id+" removida.","#f59e0b");}} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>− Mesa</button>
+              <button onClick={()=>{
+                // A mesa nova vai para o servidor como qualquer edicao: e assim
+                // que ela aparece no PC do caixa e nos outros celulares.
+                const comuns=mesas.filter(m=>!m.tipo);
+                const n=Math.max(MESAS_BASE,...comuns.map(m=>m.id))+1;
+                setMesas(p=>[...p,initMesa(n-1)]);
+                onMesaEditada?.(n);
+                msgSalao("✅ Mesa "+n+" adicionada!");
+              }} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Mesa</button>
+              <button onClick={()=>{
+                const comuns=mesas.filter(m=>!m.tipo);
+                const u=comuns[comuns.length-1];
+                if(!u||u.id<=MESAS_BASE){msgSalao(`As ${MESAS_BASE} mesas fixas não podem ser removidas.`,"#f59e0b");return;}
+                if(u.status!=="livre"){msgSalao("❌ Só é possível remover mesa livre!","#ef4444");return;}
+                if(onMesaRemovida) onMesaRemovida(u.id); else setMesas(p=>p.filter(m=>m.id!==u.id));
+                msgSalao("Mesa "+u.id+" removida.","#f59e0b");
+              }} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 12px",fontWeight:700,fontSize:13,cursor:"pointer"}}>− Mesa</button>
             </>}
             {!isDono&&<button onClick={()=>{if(onSairApp)onSairApp();else setPerfil(null);}} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"rgba(255,255,255,0.8)",borderRadius:8,padding:"5px 10px",fontSize:12,cursor:"pointer",fontWeight:600}}>🔒 Sair</button>}
           </div>
@@ -6331,7 +6349,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     try {
       const lastDay = localStorage.getItem("imperio_mesas_dia");
       const hoje = diaOperacional();
-      const regulares = Array.from({length:16},(_,i)=>initMesa(i));
+      const regulares = Array.from({length:MESAS_BASE},(_,i)=>initMesa(i));
       if (lastDay !== hoje) {
         localStorage.setItem("imperio_mesas_dia", hoje);
         return [...MESAS_ESPECIAIS_BASE, ...regulares];
@@ -6347,7 +6365,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       const vistos = new Set();
       const comuns = parsed.filter(m => !m.tipo && !vistos.has(m.id) && vistos.add(m.id));
       return [...especiais, ...comuns];
-    } catch { return [...MESAS_ESPECIAIS_BASE, ...Array.from({length:16},(_,i)=>initMesa(i))]; }
+    } catch { return [...MESAS_ESPECIAIS_BASE, ...Array.from({length:MESAS_BASE},(_,i)=>initMesa(i))]; }
   });
   // No app do garcom (login 5678) as vendas e o faturamento NAO existem:
   // nem em memoria, nem no localStorage do celular. Limpa o que uma versao
@@ -6503,6 +6521,20 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   // Chamado pela tela do salão a cada edição. É o único jeito de uma mesa
   // entrar na fila de envio.
   const marcarMesaEditada = useCallback((id) => { sujasMesa.current.add(id); }, []);
+  const removidasMesa = useRef(new Set());   // extras removidas AQUI, ate o servidor confirmar
+
+  // Remover mesa extra: some daqui e do servidor; os outros aparelhos
+  // deixam de ve-la no proximo poll.
+  const removerMesaExtra = useCallback(async (id) => {
+    removidasMesa.current.add(id);
+    sujasMesa.current.delete(id);
+    delete versaoMesa.current[id];
+    delete enviadoMesa.current[id];
+    setMesasSalao(prev => prev.filter(m => m.id !== id));
+    try { await authFetch(BACKEND_URL + "/mesas/" + id, { method: "DELETE" }); } catch {}
+    // Um poll que saiu antes do DELETE ainda pode trazer a mesa: segura um pouco
+    setTimeout(() => removidasMesa.current.delete(id), 15000);
+  }, []);
 
   const aplicarMesasDoServidor = useCallback((lista) => {
     if (!lista?.length) return;
@@ -6518,16 +6550,33 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       if (versaoMesa.current[remota.mesaId] === remota.versao) continue;
       aplicar.push(remota);
     }
-    if (!aplicar.length) return;
+    // Mesa extra criada em OUTRO aparelho: nao existe aqui ainda, entra.
+    // Antes o merge so atualizava mesa que este aparelho ja conhecia, e a
+    // mesa 17 aberta pelo garcom nunca aparecia no PC do caixa.
+    const locais = new Set(mesasRef.current.map(m => m.id));
+    const novas = lista.filter(r => !r.dados?.tipo && !locais.has(r.mesaId) && !removidasMesa.current.has(r.mesaId));
+    // Mesa extra que sumiu do servidor (removida em outro aparelho): sai daqui.
+    const noServidor = new Set(lista.map(r => r.mesaId));
+    const sumidas = new Set(mesasRef.current
+      .filter(m => !m.tipo && m.id > MESAS_BASE && !noServidor.has(m.id) && !sujasMesa.current.has(m.id) && !enviandoMesa.current.has(m.id))
+      .map(m => m.id));
+    if (!aplicar.length && !novas.length && !sumidas.size) return;
 
-    for (const r of aplicar) {
+    for (const r of [...aplicar, ...novas]) {
       versaoMesa.current[r.mesaId] = r.versao;
       enviadoMesa.current[r.mesaId] = JSON.stringify(r.dados);
     }
-    setMesasSalao(prev => prev.map(local => {
-      const r = aplicar.find(x => x.mesaId === local.id);
-      return r ? migrarMesa(r.dados) : local;
-    }));
+    for (const id of sumidas) { delete versaoMesa.current[id]; delete enviadoMesa.current[id]; }
+    setMesasSalao(prev => {
+      const base = prev
+        .filter(local => !sumidas.has(local.id))
+        .map(local => { const r = aplicar.find(x => x.mesaId === local.id); return r ? migrarMesa(r.dados) : local; });
+      const extras = novas.filter(r => !base.some(m => m.id === r.mesaId)).map(r => migrarMesa(r.dados));
+      if (!extras.length) return base;
+      // Especiais primeiro, depois as comuns por numero
+      const comuns = [...base.filter(m => !m.tipo), ...extras].sort((a, b) => a.id - b.id);
+      return [...base.filter(m => m.tipo), ...comuns];
+    });
   }, []);
 
   // Puxa o salão do servidor
@@ -7033,7 +7082,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} onMesaRemovida={removerMesaExtra} />}
           {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
         </div>

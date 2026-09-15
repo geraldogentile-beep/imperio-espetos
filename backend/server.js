@@ -3618,6 +3618,25 @@ app.put("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) =
 });
 
 // DELETE /mesas — zera o salao do dia (usado pelo "zerar salão" do painel)
+// Remove UMA mesa extra do dia (a 17, a 18...). So se estiver livre: mesa com
+// pedido nao some por engano. Os outros aparelhos param de ve-la no poll.
+app.delete("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  const mesaId = parseInt(req.params.mesaId);
+  if (!Number.isFinite(mesaId)) return res.status(400).json({ erro: "Mesa invalida" });
+  try {
+    const atual = await MesaSalaoDB.findOne({ dataStr: diaOperacional(), mesaId }).lean();
+    if (atual && atual.dados?.status && atual.dados.status !== "livre") {
+      return res.status(409).json({ erro: "Mesa " + mesaId + " esta ocupada; feche a comanda antes de remover" });
+    }
+    const r = await MesaSalaoDB.deleteOne({ dataStr: diaOperacional(), mesaId });
+    res.json({ ok: true, removida: r.deletedCount });
+  } catch (e) {
+    console.error("Erro ao remover mesa:", e.message);
+    res.status(500).json({ erro: "Erro ao remover a mesa" });
+  }
+});
+
 app.delete("/mesas", authMiddleware(["dono"]), async (req, res) => {
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
   try {
