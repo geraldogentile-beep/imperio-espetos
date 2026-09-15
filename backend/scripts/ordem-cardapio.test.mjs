@@ -53,8 +53,8 @@ console.log("\n=== nao mexe na lista original ===");
   const linhas = texto.split("\n").filter(l => l.startsWith("  • ")).map(l => l.slice(4).split(":")[0]);
   console.log("\n=== bot do WhatsApp: mesma ordem ===");
   const ok2 = (c, m) => { console.log((c ? "  OK   " : "  FALHA") + "  " + m); if (!c) process.exitCode = 1; };
-  ok2(texto.indexOf("Tradicionais:") < texto.indexOf("Especiais:") && texto.indexOf("Especiais:") < texto.indexOf("Água:"), "categorias na ordem do cadastro");
-  ok2(linhas.slice(0, 3).join(",") === "Alcatra,Coração,Frango", `Tradicionais: ${linhas.slice(0, 3).join(", ")}`);
+  ok2(texto.indexOf("Especiais:") < texto.indexOf("Tradicionais:") && texto.indexOf("Tradicionais:") < texto.indexOf("Água:"), "categorias na ordem do cadastro (Especiais vem primeiro na lista de teste)");
+  ok2(linhas[0] === "Picanha" && linhas.slice(1, 4).join(",") === "Alcatra,Coração,Frango", `Tradicionais: ${linhas.slice(1, 4).join(", ")}`);
   ok2(linhas.slice(4, 7).join(",") === "água com gás,Água sem gás,Água tônica", `Água: ${linhas.slice(4, 7).join(", ")}`);
 }
 
