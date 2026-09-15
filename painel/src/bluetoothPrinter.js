@@ -265,7 +265,7 @@ class ImpressoraBT {
   // ── IMPRIMIR COMANDA DA COZINHA ──
   // Foco: cozinha/churrasqueira ver O QUE preparar.
   // SEM preços, SEM totais, SEM nome do estabelecimento.
-  async imprimirComanda({ mesa, label, garcom, cliente, itens, hora }) {
+  async imprimirComanda({ mesa, label, garcom, cliente, itens, hora, obs }) {
     const agora = hora ? new Date(hora) : new Date();
     const cmds = [
       INIT,
@@ -284,12 +284,17 @@ class ImpressoraBT {
     if (garcom && garcom !== "—") cmds.push(texto(`Garcom: ${garcom}`), NL);
     cmds.push(texto(`Hora: ${agora.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}`), NL);
     cmds.push(NL, texto("--------------------------------"), NL, NL);
+    // Observacao da mesa em destaque, ANTES e DEPOIS dos itens: a cozinha
+    // le o ticket de cima e a churrasqueira de baixo.
+    const linhaObs = () => { if (obs) cmds.push(BOLD_ON, texto(`>> OBS: ${obs}`), NL, BOLD_OFF, NL); };
+    linhaObs();
     // Itens em altura dobrada pra cozinha ler de longe
     for (const it of (itens || [])) {
       cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`${it.qty||1}x ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
       if (it.obs) cmds.push(texto(`   obs: ${it.obs}`), NL);
       cmds.push(NL);
     }
+    linhaObs();
     cmds.push(texto("--------------------------------"), NL);
     cmds.push(ALIGN_CENTER, texto("--- fim ---"), NL);
     cmds.push(FEED(4), CUT);

@@ -5083,6 +5083,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       cliente: sc.cliente,
       itens: rodada.itens,
       hora: rodada.hora,
+      // A observacao da mesa ("sem cebola", "bem passado") nao chegava na
+      // cozinha: ficava so na tela. Vai em todo ticket desta mesa.
+      obs: (mesa.obs || "").trim(),
     };
 
     // 1) Impressora aqui neste aparelho: imprime direto
@@ -5119,6 +5122,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   .item{display:flex;gap:6px;font-size:15px;font-weight:700;padding:5px 0;border-bottom:1px dashed #ccc}
   .qty{font-size:18px;font-weight:900;min-width:28px}
   .rodape{text-align:center;font-size:11px;color:#888;margin-top:14px}
+  .obs{border:2px solid #000;padding:6px 8px;margin:8px 0;font-size:14px;font-weight:700}
   @media print{button{display:none}}
 </style>
 </head>
@@ -5133,9 +5137,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     Horário: <strong>${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</strong>
   </div>
   <hr>
+  ${ticket.obs ? `<div class="obs">⚠️ OBS: ${ticket.obs}</div>` : ""}
   ${rodada.itens.map(it=>`
     <div class="item"><span class="qty">${it.qty||1}x</span><span>${it.nome}</span></div>
   `).join('')}
+  ${ticket.obs ? `<div class="obs">⚠️ OBS: ${ticket.obs}</div>` : ""}
   <div class="rodape">— Fim do pedido —</div>
   <br><button onclick="window.print()" style="width:100%;padding:10px;font-size:14px;cursor:pointer">🖨️ Imprimir</button>
 </body></html>`);
