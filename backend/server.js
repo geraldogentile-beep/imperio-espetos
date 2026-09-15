@@ -6,7 +6,7 @@ import 'dotenv/config';
 
 import express from "express";
 import fetch from "node-fetch";
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -550,6 +550,18 @@ let sock = null;
 let qrCodeBase64 = null;
 let whatsappStatus = "disconnected"; // disconnected | qr | connected
 let authDir = "./auth_info";
+// Cache simples (get/set/del/flushAll) no formato que o Baileys espera para
+// o contador de reenvios. Guarda por 1h e limpa sozinho.
+function criarCacheRetry() {
+  const m = new Map();
+  const TTL = 60 * 60 * 1000;
+  return {
+    get: (k) => { const e = m.get(k); if (!e) return undefined; if (Date.now() > e.ate) { m.delete(k); return undefined; } return e.v; },
+    set: (k, v) => { m.set(k, { v, ate: Date.now() + TTL }); return true; },
+    del: (k) => m.delete(k),
+    flushAll: () => m.clear(),
+  };
+}
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
@@ -1216,11 +1228,20 @@ async function conectarWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
 
+    // Chaves do Signal em cache na memoria, por cima dos arquivos do auth_info.
+    // Sem isso, cada mensagem le e grava chave direto no disco; com 26
+    // reinicios num dia a loja de chaves saiu de sincronia com os celulares
+    // e o bot passou a receber tudo como "Bad MAC" / "Key used already":
+    // conectado, mas sem conseguir ler o que o cliente escreveu.
+    const logBaileys = pino({ level: "silent" });
     sock = makeWASocket({
     version,
-    auth: state,
+    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logBaileys) },
+    // Quando uma mensagem nao descriptografa, o Baileys pede reenvio ao
+    // celular do cliente; este contador limita as tentativas por mensagem.
+    msgRetryCounterCache: criarCacheRetry(),
     printQRInTerminal: false,
-    logger: pino({ level: "silent" }),
+    logger: logBaileys,
     browser: ["Imperio Espetos", "Chrome", "1.0.0"],
     });
 
