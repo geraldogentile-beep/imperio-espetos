@@ -43,3 +43,20 @@ console.log("\n=== nao mexe na lista original ===");
 }
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);
 process.exit(falhas === 0 ? 0 : 1);
+
+// ── O cardapio que o bot manda no WhatsApp segue a mesma ordem ──
+{
+  const srv = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
+  const a = srv.indexOf("function cardapioTexto()");
+  const b = srv.indexOf("function buildSystemPrompt");
+  const cardapioTexto = new Function("CARDAPIO", "estaEmModoEvento", "precoAtual",
+    srv.slice(a, b) + "\nreturn cardapioTexto;"
+  )(lista.map(i => ({ ...i, ativo: true, preco: 10 })), () => false, (i) => i.preco);
+  const texto = cardapioTexto();
+  const linhas = texto.split("\n").filter(l => l.startsWith("  • ")).map(l => l.slice(4).split(":")[0]);
+  console.log("\n=== bot do WhatsApp: mesma ordem ===");
+  const ok2 = (c, m) => { console.log((c ? "  OK   " : "  FALHA") + "  " + m); if (!c) process.exitCode = 1; };
+  ok2(texto.indexOf("Tradicionais:") < texto.indexOf("Especiais:") && texto.indexOf("Especiais:") < texto.indexOf("Água:"), "categorias na ordem do cadastro");
+  ok2(linhas.slice(0, 3).join(",") === "Alcatra,Coração,Frango", `Tradicionais: ${linhas.slice(0, 3).join(", ")}`);
+  ok2(linhas.slice(4, 7).join(",") === "água com gás,Água sem gás,Água tônica", `Água: ${linhas.slice(4, 7).join(", ")}`);
+}

@@ -780,7 +780,12 @@ function formatMsg(tpl, pedido) {
 }
 
 function cardapioTexto() {
-  const ativos = CARDAPIO.filter(i => i.ativo);
+  // Ordem alfabetica dentro de cada categoria (mesma regra do painel); as
+  // categorias ficam na ordem em que aparecem no cadastro.
+  const ordemCat = [...new Set(CARDAPIO.map(i => i.categoria))];
+  const ativos = CARDAPIO.filter(i => i.ativo).sort((a, b) =>
+    (ordemCat.indexOf(a.categoria) - ordemCat.indexOf(b.categoria)) ||
+    String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR", { sensitivity: "base" }));
   const emEvento = estaEmModoEvento();
   return Object.entries(
     ativos.reduce((acc, item) => {
