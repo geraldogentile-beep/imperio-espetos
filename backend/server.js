@@ -221,6 +221,10 @@ const CardapioSchema = new mongoose.Schema({
 
 const VendaSalaoSchema = new mongoose.Schema({
   mesa: { type: Number, required: true, min: 0 },
+  // De qual comanda veio. Antes o painel mandava e o schema descartava.
+  subComanda: { type: String, default: "" },
+  // Cliente pagou so parte da comanda; o resto ficou aberto na mesa
+  parcial: { type: Boolean, default: false },
   cliente: String,
   garcom: String,
   garcomId: String,

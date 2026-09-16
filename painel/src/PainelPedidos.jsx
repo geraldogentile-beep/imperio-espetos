@@ -4186,7 +4186,10 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                           style={{ width: 20, height: 20, accentColor: "#7b1a0a", flexShrink: 0, cursor: "pointer" }} />
                       )}
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>Mesa {v.mesa} {v.cliente !== "—" ? `— ${v.cliente}` : ""}</div>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>
+                        Mesa {v.mesa} {v.cliente && v.cliente !== "—" ? `— ${v.cliente}` : ""}
+                        {v.parcial && <span style={{ marginLeft: 6, background: "#ecfeff", color: "#0e7490", borderRadius: 8, padding: "1px 7px", fontSize: 10, fontWeight: 700 }}>parcial</span>}
+                      </div>
                       <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
                         👤 {v.garcom} · {new Date(v.fechamento).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
                         {v.abertura && ` · ⏱️ ${Math.round((new Date(v.fechamento)-new Date(v.abertura))/60000)}min`}
@@ -4909,6 +4912,39 @@ function mesclarVendasServidor(locais, servidor, agora = Date.now()) {
 
 function chaveItem(it) { return String(it?.id) + "|" + (it?.variacao || ""); }
 
+// Soma linhas iguais (mesmo item e mesma variacao) numa lista so
+function juntarItens(lista) {
+  return (lista || []).reduce((acc, it) => {
+    const ex = acc.find(i => chaveItem(i) === chaveItem(it));
+    if (ex) ex.qty += (it.qty || 1);
+    else acc.push({ ...it, qty: it.qty || 1 });
+    return acc;
+  }, []);
+}
+
+// Pagamento parcial: tira da mesa so as quantidades pagas. Comeca pelas
+// rodadas mais antigas (o que ja foi servido) e so depois mexe no que ainda
+// nao foi para a cozinha. Nao muda nada fora das comandas escolhidas.
+function removerItensPagos(mesa, indices, pagos) {
+  const falta = {};
+  (pagos || []).forEach(p => { const k = chaveItem(p); falta[k] = (falta[k] || 0) + (p.qty || 1); });
+  const tirar = (lista) => (lista || [])
+    .map(it => {
+      const k = chaveItem(it), q = it.qty || 1;
+      const t = Math.min(q, falta[k] || 0);
+      if (t > 0) falta[k] -= t;
+      return { ...it, qty: q - t };
+    })
+    .filter(it => it.qty > 0);
+  const subComandas = (mesa.subComandas || []).map((sc, i) => {
+    if (!indices.includes(i)) return sc;
+    const rodadas = (sc.rodadas || []).map(r => ({ ...r, itens: tirar(r.itens) })).filter(r => r.itens.length);
+    const itens = tirar(sc.itens);
+    return { ...sc, rodadas, itens };
+  });
+  return { ...mesa, subComandas };
+}
+
 // Itens em ordem alfabetica dentro de cada categoria. Antes a ordem era a de
 // cadastro: cada item novo entrava no fim e o garcom perdia a referencia.
 // Em "Todos" as categorias seguem a ordem das abas, e dentro delas o nome.
@@ -5211,6 +5247,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
   function limparPagamento() {
     setFecharTudo(false);
+    setParcialAtivo(false);
+    setSelParcial({});
     setPagDividido(false);
     setLinhasPag([]);
     setRecebidoDin("");
@@ -5256,6 +5294,14 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   // botao "Fechar mesa inteira" fechava tudo na hora, sem passar pelo
   // pagamento: ia como pix e sem desconto, gorjeta nem divisao.
   const [fecharTudo, setFecharTudo] = useState(false);
+  // Pagamento de parte da comanda: quantidade escolhida de cada item
+  const [parcialAtivo, setParcialAtivo] = useState(false);
+  const [selParcial, setSelParcial] = useState({});   // chaveItem -> quantidade a pagar agora
+  // Sair da tela de fechar sem pagar volta tudo ao padrao (so a comanda
+  // ativa, sem selecao). Antes o "mesa inteira" ficava marcado.
+  useEffect(() => {
+    if (telaSalaoGlobal !== "fechar") { setFecharTudo(false); setParcialAtivo(false); setSelParcial({}); }
+  }, [telaSalaoGlobal]);
   const [selSC, setSelSC] = useState(0); // índice da sub-comanda ativa
   const fechandoRef = useRef(false); // trava contra duplo clique em fechar mesa/comanda
   const [toastSalao, setToastSalao] = useState(null);
@@ -5472,6 +5518,59 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setDivSalao(1);
   }
 
+  // Registra a venda so dos itens escolhidos e deixa o resto aberto na mesa
+  async function fecharParcial({ itensSel, indices, rotulo, pagamentos, descInfo, gorjInfo }) {
+    if (fechandoRef.current) return;
+    fechandoRef.current = true;
+    const subtotal = parseFloat(totMesa(itensSel).toFixed(2));
+    const desconto = Math.min(Math.max(0, Number(descInfo?.valor) || 0), subtotal);
+    const total = parseFloat((subtotal - desconto).toFixed(2));
+    const gorjeta = Math.min(Math.max(0, Number(gorjInfo?.valor) || 0), total);
+    const registro = {
+      id: Date.now(), mesa: mesa.id,
+      subComanda: rotulo + " (parcial)", parcial: true,
+      cliente: indices.map(i => mesa.subComandas[i]?.cliente).filter(Boolean).join(", ") || "—",
+      garcom: garcomLogado?.nome || mesa.garcom || "—", garcomId: garcomLogado?.id || null,
+      itens: itensSel,
+      subtotal, desconto,
+      descontoTipo: desconto > 0 ? (descInfo?.tipo || "") : "",
+      descontoInfo: desconto > 0 ? (descInfo?.texto || "") : "",
+      total, gorjeta,
+      gorjetaTipo: gorjeta > 0 ? (gorjInfo?.tipo || "") : "",
+      gorjetaInfo: gorjeta > 0 ? (gorjInfo?.texto || "") : "",
+      ...resumoPagamento(pagamentos, total + gorjeta),
+      ...infoTroco(pagamentos),
+      abertura: mesa.abertura, fechamento: new Date().toISOString(),
+    };
+    try {
+      const res = await authFetch(BACKEND_URL + "/vendas-salao", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(registro) });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        msgSalao(`❌ Nao foi possivel registrar o pagamento: ${err.erro || res.status}`, "#ef4444");
+        fechandoRef.current = false;
+        return;
+      }
+      registro._id = (await res.json())._id;
+    } catch (e) {
+      msgSalao("❌ Sem conexao com o servidor. Nada foi pago.", "#ef4444");
+      fechandoRef.current = false;
+      return;
+    }
+    if (setHistoricoSalao) setHistoricoSalao(h => [...h, registro]);
+    setFaturado(f => f + total);
+
+    // So depois da venda gravada a mesa perde os itens pagos
+    const novaMesa = removerItensPagos(mesa, indices, itensSel);
+    upd(novaMesa);
+    setUltimaVenda(registro);
+    imprimirComprovante(registro, false);
+    limparPagamento();
+    msgSalao(`✅ Pago ${fmtR(total)}. Continua aberto na mesa: ${fmtR(totMesaCompleta(novaMesa))}`);
+    setTelaSalao("comanda");
+    fechandoRef.current = false;
+    setDivSalao(1);
+  }
+
   async function fecharMesa(pagamentos, descInfo, gorjInfo){
     if (fechandoRef.current) return; // evita venda duplicada por duplo clique
     fechandoRef.current = true;
@@ -5679,8 +5778,20 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     // Com varias comandas, o padrao e pagar so a ativa; o caixa pode juntar
     // todas numa conta so quando os clientes decidem dividir de outro jeito.
     const fecharUma = mesa.subComandas.length > 1 && !fecharTudo;
+    const indicesEscopo = fecharUma ? [scIdx] : (mesa.subComandas || []).map((_, i) => i);
+    const todosItensFechar = juntarItens(indicesEscopo.flatMap(i => {
+      const s = mesa.subComandas[i] || {};
+      return [...(s.rodadas || []).flatMap(r => r.itens || []), ...(s.itens || [])];
+    }));
+    // Com a selecao ligada, so entra o que foi marcado
+    const itensFechar = parcialAtivo
+      ? todosItensFechar.map(it => ({ ...it, qty: Math.min(selParcial[chaveItem(it)] || 0, it.qty) })).filter(it => it.qty > 0)
+      : todosItensFechar;
+    const pagandoTudo = !parcialAtivo || todosItensFechar.every(it => (selParcial[chaveItem(it)] || 0) >= it.qty);
+    const valorEscopo = parseFloat(totMesa(todosItensFechar).toFixed(2));
+    const valorSelecionado = parseFloat(totMesa(itensFechar).toFixed(2));
     // Ordem do cálculo: itens → desconto → comanda → gorjeta → o que o cliente paga
-    const subtotalFechar = fecharUma ? totalSCAtual : totalAcumulado;
+    const subtotalFechar = parcialAtivo ? valorSelecionado : (fecharUma ? totalSCAtual : totalAcumulado);
     const desc = calcDesconto(subtotalFechar);
     const totalComanda = parseFloat((subtotalFechar - desc.valor).toFixed(2));   // isto é venda
     const gor = calcGorjeta(totalComanda);
@@ -5696,9 +5807,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     // R$ 0,05 — com pix + dinheiro o painel dizia "fecha certo" e mesmo
     // assim o botao ficava cinza.
     const podeConfirmar = pagOk && !desc.erro && !gor.erro && totalComanda > 0;
-    const todosItensFechar = fecharUma
-      ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
-      : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
     return (
     <div style={{background:T.cream,minHeight:"100%"}}>
       <div style={H2}>
@@ -5736,14 +5844,58 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           </div>
         )}
         <div style={card2}>
-          <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"}}>🧾 Resumo</div>
-          {todosItensFechar.map((it,i)=>(
-            <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px dashed #f0f0f0",fontSize:13}}>
-              <span>{it.qty}x {it.nome}</span><span style={{fontWeight:600}}>{fmtR(it.qty*it.preco)}</span>
-            </div>
-          ))}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8}}>
+            <div style={{fontWeight:700,fontSize:12,color:"#888",textTransform:"uppercase"}}>🧾 Resumo</div>
+            {/* Cliente que paga so parte: escolhe os itens dele */}
+            <button onClick={()=>{ setParcialAtivo(a=>!a); setSelParcial({}); }}
+              style={{background:parcialAtivo?"#0e7490":"#ecfeff",color:parcialAtivo?"#fff":"#0e7490",border:`1.5px solid ${parcialAtivo?"#0e7490":"#a5f3fc"}`,borderRadius:8,padding:"6px 11px",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+              {parcialAtivo ? "↩ Pagar tudo" : "☑️ Pagar só alguns itens"}
+            </button>
+          </div>
+
+          {!parcialAtivo ? (
+            todosItensFechar.map((it,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px dashed #f0f0f0",fontSize:13}}>
+                <span>{it.qty}x {it.nome}</span><span style={{fontWeight:600}}>{fmtR(it.qty*it.preco)}</span>
+              </div>
+            ))
+          ) : (
+            <>
+              <div style={{fontSize:11,color:"#0e7490",marginBottom:8,lineHeight:1.4}}>
+                Marque o que este cliente está pagando agora. O resto continua aberto na mesa.
+              </div>
+              {todosItensFechar.map(it=>{
+                const k = chaveItem(it);
+                const n = Math.min(selParcial[k] || 0, it.qty);
+                const mudar = (d)=>setSelParcial(s=>({ ...s, [k]: Math.max(0, Math.min(it.qty, (s[k]||0)+d)) }));
+                return (
+                  <div key={k} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px dashed #f0f0f0",fontSize:13,background:n?"#f0fdfa":"transparent"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:n?700:500,color:"#333"}}>{it.nome}</div>
+                      <div style={{fontSize:11,color:"#999"}}>{fmtR(it.preco)} cada · {it.qty} na conta</div>
+                    </div>
+                    <button onClick={()=>mudar(-1)} disabled={!n} style={{width:30,height:30,borderRadius:"50%",border:"none",background:n?"#fee2e2":"#f0f0f0",color:n?"#ef4444":"#ccc",fontWeight:800,fontSize:17,cursor:n?"pointer":"default"}}>−</button>
+                    <span style={{minWidth:44,textAlign:"center",fontWeight:800,color:n?"#0e7490":"#aaa"}}>{n}/{it.qty}</span>
+                    <button onClick={()=>mudar(+1)} disabled={n>=it.qty} style={{width:30,height:30,borderRadius:"50%",border:"none",background:n<it.qty?"#0e7490":"#f0f0f0",color:n<it.qty?"#fff":"#ccc",fontWeight:800,fontSize:17,cursor:n<it.qty?"pointer":"default"}}>+</button>
+                    <span style={{minWidth:70,textAlign:"right",fontWeight:700,color:n?"#333":"#ccc"}}>{fmtR(n*it.preco)}</span>
+                  </div>
+                );
+              })}
+              <div style={{display:"flex",gap:8,marginTop:8}}>
+                <button onClick={()=>setSelParcial(Object.fromEntries(todosItensFechar.map(it=>[chaveItem(it), it.qty])))} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"6px 10px",fontSize:11,fontWeight:700,color:"#555",cursor:"pointer"}}>Marcar tudo</button>
+                <button onClick={()=>setSelParcial({})} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"6px 10px",fontSize:11,fontWeight:700,color:"#555",cursor:"pointer"}}>Limpar</button>
+              </div>
+              <div style={{marginTop:10,borderRadius:10,padding:"9px 12px",background:"#ecfeff",color:"#155e75",fontSize:12,display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+                <span>Pagando agora: <strong>{fmtR(valorSelecionado)}</strong></span>
+                <span>Continua em aberto: <strong>{fmtR(Math.max(0, valorEscopo - valorSelecionado))}</strong></span>
+              </div>
+              {pagandoTudo && valorSelecionado > 0 && (
+                <div style={{marginTop:6,fontSize:11,color:"#0e7490"}}>Todos os itens marcados: a conta fecha inteira, como no pagamento normal.</div>
+              )}
+            </>
+          )}
           <div style={{display:"flex",justifyContent:"space-between",paddingTop:10,fontSize:16,fontWeight:800,color:"#7b1a0a"}}>
-            <span>Total</span><span>{fmtR(totalComanda)}</span>
+            <span>{parcialAtivo ? "Total a pagar agora" : "Total"}</span><span>{fmtR(totalComanda)}</span>
           </div>
         </div>
         <div style={card2}>
@@ -5985,7 +6137,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               mesa: mesa.id,
               cliente: nomeCliente,
               garcom: nomeGarcom,
-              itens: todosItensFechar,
+              itens: itensFechar,
               subtotal: subtotalFechar,
               desconto: desc.valor,
               descontoInfo: desc.texto,
@@ -6033,7 +6185,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               <h2>👑 Império dos Espetos</h2>
               <div class="sub">Comanda — Mesa ${mesa.id}${fecharUma?` | ${sc.label}`:""}</div>
               <div class="info">${nomeCliente&&nomeCliente!=="—"?'Cliente: '+nomeCliente+'<br>':''}${nomeGarcom&&nomeGarcom!=="—"?'Garçom: '+nomeGarcom+'<br>':''}Abertura: ${abertura?new Date(abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
-              ${todosItensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
+              ${itensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
               ${desc.valor > 0 ? `<div class="linha"><span>Subtotal</span><span>R$ ${subtotalFechar.toFixed(2)}</span></div>
               <div class="linha"><span>Desconto${desc.texto?' ('+desc.texto+')':''}</span><span>− R$ ${desc.valor.toFixed(2)}</span></div>` : ''}
               <div class="total"><span>TOTAL</span><span>R$ ${totalComanda.toFixed(2)}</span></div>
@@ -6047,9 +6199,17 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             setTimeout(()=>win.print(),500);
           }} style={{background:T.grayLL,color:T.gray,border:`1px solid ${T.grayL}`,borderRadius:T.radiusS,padding:"12px 0",fontWeight:600,fontSize:14,cursor:"pointer",flex:1}}>🖨️ Imprimir</button>
           <button disabled={!podeConfirmar}
-            onClick={()=>fecharUma?fecharComanda(scIdx,pagInfo.pagamentos,descontoInfo,gorjetaInfo):fecharMesa(pagInfo.pagamentos,descontoInfo,gorjetaInfo)}
+            onClick={()=>{
+              // Parte dos itens: registra so eles e deixa o resto na mesa
+              if (parcialAtivo && !pagandoTudo) {
+                return fecharParcial({ itensSel: itensFechar, indices: indicesEscopo,
+                  rotulo: indicesEscopo.length === 1 ? (mesa.subComandas[indicesEscopo[0]]?.label || sc.label) : "Mesa inteira",
+                  pagamentos: pagInfo.pagamentos, descInfo: descontoInfo, gorjInfo: gorjetaInfo });
+              }
+              return fecharUma ? fecharComanda(scIdx,pagInfo.pagamentos,descontoInfo,gorjetaInfo) : fecharMesa(pagInfo.pagamentos,descontoInfo,gorjetaInfo);
+            }}
             style={{...BP2(podeConfirmar?"linear-gradient(135deg,#065f46,#10b981)":"#ccc"),flex:2,cursor:podeConfirmar?"pointer":"not-allowed"}}>
-            ✅ Confirmar — {fmtR(totalFechar)}
+            ✅ Confirmar — {fmtR(totalFechar)}{parcialAtivo && !pagandoTudo ? " (parcial)" : ""}
           </button>
         </div>
       </div>
