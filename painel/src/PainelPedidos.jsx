@@ -5449,7 +5449,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const pagOk = !pagDividido || (pagInfo.pagamentos.length > 0 && Math.abs(pagInfo.falta) <= 0.02);
     const pagTexto = descrevePagamento(pagInfo.pagamentos, pagSalao);
     const trocoInfo = calcTroco(pagInfo.pagamentos);
-    const podeConfirmar = pagOk && !desc.erro && !gor.erro && totalComanda > 0 && trocoInfo.falta === 0;
+    // O troco e uma conta de apoio, nao parte do pagamento: nao entra aqui.
+    // Travava a venda quando o operador digitava "5" e a mascara fazia
+    // R$ 0,05 — com pix + dinheiro o painel dizia "fecha certo" e mesmo
+    // assim o botao ficava cinza.
+    const podeConfirmar = pagOk && !desc.erro && !gor.erro && totalComanda > 0;
     const todosItensFechar = fecharUma
       ? [...(sc.rodadas||[]).flatMap(r=>r.itens),...sc.itens].reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[])
       : (mesa.subComandas||[]).flatMap(s=>[...(s.rodadas||[]).flatMap(r=>r.itens),...s.itens]).reduce((acc,it)=>{const ex=acc.find(i=>chaveItem(i)===chaveItem(it));if(ex)ex.qty+=(it.qty||1);else acc.push({...it,qty:it.qty||1});return acc;},[]);
@@ -5673,8 +5677,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 fontSize: trocoInfo.recebido>0 && trocoInfo.falta===0 ? 18 : 13,
                 background: trocoInfo.recebido<=0 ? "#f8f8f8" : trocoInfo.falta>0 ? "#fef3c7" : "#d1fae5",
                 color: trocoInfo.recebido<=0 ? "#999" : trocoInfo.falta>0 ? "#92400e" : "#065f46"}}>
-                {trocoInfo.recebido<=0 ? "Informe quanto o cliente entregou para ver o troco"
-                  : trocoInfo.falta>0 ? `Faltam ${fmtR(trocoInfo.falta)} — entregou menos que os ${fmtR(trocoInfo.emDinheiro)} em dinheiro`
+                {trocoInfo.recebido<=0 ? "Opcional: informe quanto o cliente entregou para ver o troco"
+                  : trocoInfo.falta>0 ? `${fmtR(trocoInfo.recebido)} é menos que os ${fmtR(trocoInfo.emDinheiro)} em dinheiro. Digite de novo ou toque em "exato" — dá para fechar assim mesmo.`
                   : trocoInfo.troco>0 ? `Troco: ${fmtR(trocoInfo.troco)}` : "✅ Valor exato, sem troco"}
               </div>
             </div>

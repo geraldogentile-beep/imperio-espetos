@@ -43,10 +43,14 @@ console.log("\n=== 2) valor exato: sem troco ===");
   ok(r.status === 201 && r.corpo.troco === 0, `troco 0 (veio ${r.corpo.troco})`);
 }
 
-console.log("\n=== 3) entregou menos que a conta: recusa ===");
+console.log("\n=== 3) valor menor que a conta: grava a venda e ignora o troco ===");
 {
-  const r = await api("POST", "/vendas-salao", venda({ pagamento: "dinheiro", recebidoDinheiro: 40 }));
-  ok(r.status === 400, `recusou (HTTP ${r.status}): ${r.corpo.erro || ""}`);
+  // Antes isto recusava a venda inteira. O campo de troco e apoio: digitar
+  // "5" e virar R$ 0,05 nao pode travar o fechamento da comanda.
+  const r = await api("POST", "/vendas-salao", venda({ pagamento: "dinheiro", recebidoDinheiro: 0.05 }));
+  ok(r.status === 201, `gravou mesmo assim (HTTP ${r.status}) ${r.corpo.erro || ""}`);
+  ok(r.corpo.troco === 0 && r.corpo.recebidoDinheiro === 0, `sem troco anotado (${r.corpo.recebidoDinheiro} / ${r.corpo.troco})`);
+  ok(r.corpo.total === 45, `e o valor da venda continua certo (R$ ${r.corpo.total})`);
 }
 
 console.log("\n=== 4) dividido: 20 em dinheiro + 25 no pix, entregou 50 em dinheiro ===");
@@ -75,7 +79,7 @@ console.log("\n=== 7) o troco nao muda o faturamento ===");
   const lista = (await api("GET", "/vendas-salao")).corpo;
   const desta = lista.filter(v => v.mesa === 98);
   const total = desta.reduce((s, v) => s + v.total, 0);
-  ok(desta.length === 5 && total === 225, `5 vendas de 45 = R$ ${total} (o troco nao entra)`);
+  ok(desta.length === 6 && total === 270, `6 vendas de 45 = R$ ${total} (o troco nao entra)`);
 }
 
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);

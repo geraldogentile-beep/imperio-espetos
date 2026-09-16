@@ -1913,9 +1913,9 @@ function normalizarTroco(body, pagamentos) {
   if (recebido > 100000) return { erro: "Valor recebido em dinheiro fora do razoavel" };
   const emDinheiro = (pagamentos || []).filter(p => p.tipo === "dinheiro").reduce((s, p) => s + (Number(p.valor) || 0), 0);
   if (emDinheiro <= 0) return { recebidoDinheiro: 0, troco: 0 };   // sem dinheiro na comanda, nao ha troco
-  if (recebido + 0.005 < emDinheiro) {
-    return { erro: "Recebido em dinheiro (R$ " + recebido.toFixed(2) + ") menor que a parte em dinheiro (R$ " + emDinheiro.toFixed(2) + ")" };
-  }
+  // Valor menor que a parte em dinheiro e digitacao errada no campo de apoio.
+  // Perder a venda por causa disso e pior do que ficar sem o troco anotado.
+  if (recebido + 0.005 < emDinheiro) return { recebidoDinheiro: 0, troco: 0 };
   return { recebidoDinheiro: parseFloat(recebido.toFixed(2)), troco: parseFloat((recebido - emDinheiro).toFixed(2)) };
 }
 
