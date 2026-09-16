@@ -5031,6 +5031,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   }
 
   function limparPagamento() {
+    setFecharTudo(false);
     setPagDividido(false);
     setLinhasPag([]);
     setRecebidoDin("");
@@ -5072,6 +5073,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     return t.recebido > 0 && t.falta === 0 && t.troco > 0 ? ` · Troco ${fmtR(t.troco)}` : "";
   }
   const [divSalao, setDivSalao] = useState(1);
+  // Mesa com duas comandas que na hora de pagar viram uma conta so. Antes o
+  // botao "Fechar mesa inteira" fechava tudo na hora, sem passar pelo
+  // pagamento: ia como pix e sem desconto, gorjeta nem divisao.
+  const [fecharTudo, setFecharTudo] = useState(false);
   const [selSC, setSelSC] = useState(0); // índice da sub-comanda ativa
   const fechandoRef = useRef(false); // trava contra duplo clique em fechar mesa/comanda
   const [toastSalao, setToastSalao] = useState(null);
@@ -5492,7 +5497,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
   // TELA FECHAR
   if(telaSalao==="fechar") {
-    const fecharUma = mesa.subComandas.length > 1; // se há múltiplas, fecha só a ativa
+    // Com varias comandas, o padrao e pagar so a ativa; o caixa pode juntar
+    // todas numa conta so quando os clientes decidem dividir de outro jeito.
+    const fecharUma = mesa.subComandas.length > 1 && !fecharTudo;
     // Ordem do cálculo: itens → desconto → comanda → gorjeta → o que o cliente paga
     const subtotalFechar = fecharUma ? totalSCAtual : totalAcumulado;
     const desc = calcDesconto(subtotalFechar);
@@ -5522,11 +5529,31 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
         </div>
       </div>
       <div style={{padding:"14px",display:"flex",flexDirection:"column",gap:10}}>
-        {/* Se há múltiplas comandas, mostra opção de fechar todas */}
+        {/* Varias comandas: escolher se paga so esta ou a mesa inteira */}
         {mesa.subComandas.length>1&&(
-          <div style={{background:"#ede9fe",borderRadius:12,padding:"10px 14px",fontSize:12,color:"#7c3aed",fontWeight:600,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span>📋 Fechando: {fecharUma?sc.label:"Todas as comandas"}</span>
-            <button onClick={fecharMesa} style={{background:"#7c3aed",color:"#fff",border:"none",borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>Fechar mesa inteira</button>
+          <div style={{background:"#ede9fe",borderRadius:12,padding:"10px 12px"}}>
+            <div style={{fontSize:11,fontWeight:800,color:"#7c3aed",textTransform:"uppercase",marginBottom:8}}>📋 O que vai ser pago agora</div>
+            <div style={{display:"flex",gap:8}}>
+              {[[false, sc.label, totalSCAtual], [true, `Mesa inteira (${mesa.subComandas.length} comandas)`, totalAcumulado]].map(([tudo, rotulo, valor])=>{
+                const ativo = tudo === fecharTudo;
+                return (
+                  <button key={String(tudo)} onClick={()=>setFecharTudo(tudo)} style={{
+                    flex:1, padding:"9px 8px", borderRadius:10, cursor:"pointer", textAlign:"center",
+                    border:`2px solid ${ativo?"#7c3aed":"#ddd6fe"}`, background: ativo?"#7c3aed":"#fff",
+                    color: ativo?"#fff":"#6d28d9", fontFamily:"'DM Sans',sans-serif",
+                  }}>
+                    <div style={{fontWeight:800,fontSize:12,lineHeight:1.2}}>{rotulo}</div>
+                    <div style={{fontWeight:700,fontSize:13,marginTop:3,opacity:ativo?1:0.75}}>{fmtR(valor)}</div>
+                  </button>
+                );
+              })}
+            </div>
+            {fecharTudo && (
+              <div style={{marginTop:8,fontSize:11,color:"#6d28d9",lineHeight:1.4}}>
+                As {mesa.subComandas.length} comandas viram uma conta só. Em <strong>Pagamento</strong>, use
+                "Dividir formas" para lançar quanto cada pessoa pagou — os valores não precisam ser iguais.
+              </div>
+            )}
           </div>
         )}
         <div style={card2}>
