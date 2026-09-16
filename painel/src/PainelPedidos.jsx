@@ -42,6 +42,10 @@ const STATUS_CONFIG = {
   cancelado:  { label: "Cancelado",  color: "#ef4444", bg: "#fee2e2", icon: "❌" },
 };
 
+// Identidade de uma venda do salao. O servidor nunca guardou o campo "id" do
+// painel (o schema descarta), entao toda venda vinda dele tinha id undefined:
+// clicar numa abria todas, e excluir uma tirava todas da tela.
+const chaveVenda = (v) => String(v?._id || v?.id || "");
 function isMesmosDias(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
 // Momento em que o pedido "fechou" para o caixa: a entrega. Pedido feito antes
 // do "Fechar caixa" e entregue depois entra no caixa seguinte. Pedido antigo,
@@ -892,44 +896,149 @@ function BadgeNota({ status }) {
 function BotaoEmitirNota({ venda, onEmitido }) {
   const [emitindo, setEmitindo] = useState(false);
   const [erro, setErro] = useState(null);
+  const [aviso, setAviso] = useState(null);
   const [cpf, setCpf] = useState("");
   const [pedindoCpf, setPedindoCpf] = useState(false);
+  const [nota, setNota] = useState(null);           // a ultima nota desta venda
+  const [cancelando, setCancelando] = useState(false);
+  const [motivo, setMotivo] = useState("");
 
-  const jaTem = venda.notaFiscalStatus === "autorizada";
+  const status = venda.notaFiscalStatus || "sem_nota";
+
+  // Carrega a nota para mostrar numero, DANFE ou o motivo da rejeicao
+  async function carregarNota(id) {
+    if (!id) { setNota(null); return; }
+    try {
+      const r = await authFetch(BACKEND_URL + "/notas/" + id);
+      if (r.ok) setNota(await r.json());
+    } catch {}
+  }
+  useEffect(() => { carregarNota(venda.notaFiscalId); }, [venda.notaFiscalId, status]);
+
+  function avisarPai(novoStatus, notaId) { if (onEmitido) onEmitido(novoStatus, notaId); }
 
   async function emitir() {
-    setEmitindo(true); setErro(null);
+    setEmitindo(true); setErro(null); setAviso(null);
     try {
       const r = await authFetch(BACKEND_URL + "/notas/emitir", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ vendaId: venda._id, cpfCliente: cpf.replace(/\D/g, "") }),
       });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) {
+      if (r.ok) {
+        setPedindoCpf(false);
+        avisarPai("autorizada", d.notaId);
+      } else if (r.status === 202) {
+        // Resultado incerto: nao emitir de novo antes de consultar
+        setPedindoCpf(false);
+        setAviso(d.erro || "Nota em processamento.");
+        avisarPai("processando", d.notaId);
+      } else {
         const det = d.faltando?.length ? " Falta: " + d.faltando.join(", ")
                   : d.detalhes?.length ? " " + d.detalhes.join("; ") : "";
         setErro((d.erro || "Falha ao emitir") + det);
-      } else {
-        setPedindoCpf(false);
-        if (onEmitido) onEmitido();
+        if (d.status) avisarPai(d.status, d.notaId);
       }
     } catch { setErro("Erro de conexao ao emitir a nota."); }
     setEmitindo(false);
   }
 
-  if (jaTem) {
+  async function consultar() {
+    const id = venda.notaFiscalId || nota?._id;
+    if (!id) return;
+    setEmitindo(true); setErro(null); setAviso(null);
+    try {
+      const r = await authFetch(BACKEND_URL + "/notas/" + id + "/consultar", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) setErro(d.erro || "Falha ao consultar");
+      else {
+        if (d.mensagem) setAviso(d.mensagem);
+        avisarPai(d.status, id);
+        carregarNota(id);
+      }
+    } catch { setErro("Erro de conexao ao consultar."); }
+    setEmitindo(false);
+  }
+
+  async function cancelar() {
+    if (motivo.trim().length < 15) { setErro("Escreva o motivo com pelo menos 15 caracteres (exigencia da SEFAZ)."); return; }
+    setEmitindo(true); setErro(null);
+    try {
+      const r = await authFetch(BACKEND_URL + "/notas/" + nota._id + "/cancelar", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ motivo: motivo.trim() }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) setErro(d.erro || "Falha ao cancelar");
+      else { setCancelando(false); setMotivo(""); avisarPai("cancelada", nota._id); carregarNota(nota._id); }
+    } catch { setErro("Erro de conexao ao cancelar."); }
+    setEmitindo(false);
+  }
+
+  const caixa = (bg, borda, cor) => ({ marginTop: 10, padding: "9px 11px", background: bg, border: `1px solid ${borda}`, borderRadius: 9, fontSize: 12, color: cor, lineHeight: 1.5 });
+  const botaoPeq = (bg, cor) => ({ background: bg, color: cor, border: "none", borderRadius: 7, padding: "6px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" });
+  const mensagens = (
+    <>
+      {aviso && <div style={caixa("#fef3c7", "#fcd34d", "#92400e")}>{aviso}</div>}
+      {erro && <div style={caixa("#fee2e2", "#ef4444", "#991b1b")}>{erro}</div>}
+    </>
+  );
+
+  // Autorizada: numero, DANFE e cancelamento dentro do prazo
+  if (status === "autorizada") {
+    const minutos = nota?.dataAutorizacao ? (Date.now() - new Date(nota.dataAutorizacao).getTime()) / 60000 : 999;
     return (
-      <div style={{ marginTop: 10, padding: "8px 10px", background: "#d1fae5", borderRadius: 8, fontSize: 12, color: "#065f46", fontWeight: 600 }}>
-        🧾 Nota fiscal emitida para esta venda
+      <div onClick={e => e.stopPropagation()}>
+        <div style={caixa("#d1fae5", "#a7f3d0", "#065f46")}>
+          <div style={{ fontWeight: 700 }}>🧾 NFC-e {nota?.numero ? `nº ${nota.numero}` : ""} autorizada{nota?.ambiente === "homologacao" ? " (homologação, sem valor fiscal)" : ""}</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+            {nota?.danfeUrl && <a href={nota.danfeUrl} target="_blank" rel="noreferrer" style={{ ...botaoPeq("#065f46", "#fff"), textDecoration: "none" }}>Abrir DANFE</a>}
+            {nota?.urlConsulta && nota?.chave && <a href={nota.urlConsulta} target="_blank" rel="noreferrer" style={{ ...botaoPeq("#fff", "#065f46"), textDecoration: "none", border: "1px solid #a7f3d0" }}>Consultar na SEFAZ</a>}
+            {minutos <= 30 && !cancelando && <button onClick={() => setCancelando(true)} style={botaoPeq("#fff", "#b91c1c")}>Cancelar nota ({Math.max(0, Math.floor(30 - minutos))} min)</button>}
+          </div>
+          {cancelando && (
+            <div style={{ marginTop: 8 }}>
+              <input value={motivo} onChange={e => setMotivo(e.target.value)} placeholder="Motivo (mínimo 15 caracteres)"
+                style={{ width: "100%", padding: "7px 9px", border: "1.5px solid #fca5a5", borderRadius: 7, fontSize: 12, boxSizing: "border-box" }} />
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <button onClick={cancelar} disabled={emitindo} style={botaoPeq("#b91c1c", "#fff")}>{emitindo ? "Cancelando..." : "Confirmar cancelamento"}</button>
+                <button onClick={() => { setCancelando(false); setErro(null); }} style={botaoPeq("#f0f0f0", "#555")}>Voltar</button>
+              </div>
+            </div>
+          )}
+        </div>
+        {mensagens}
+      </div>
+    );
+  }
+
+  // Em processamento: so consultar (emitir de novo arrisca nota em dobro)
+  if (status === "processando") {
+    return (
+      <div onClick={e => e.stopPropagation()}>
+        <div style={caixa("#fef3c7", "#fcd34d", "#92400e")}>
+          <div style={{ fontWeight: 700 }}>⏳ Nota em processamento</div>
+          <div style={{ marginTop: 3 }}>A SEFAZ ainda não confirmou. Consulte antes de tentar de novo.</div>
+          <button onClick={consultar} disabled={emitindo} style={{ ...botaoPeq("#92400e", "#fff"), marginTop: 6 }}>{emitindo ? "Consultando..." : "Consultar agora"}</button>
+        </div>
+        {mensagens}
       </div>
     );
   }
 
   return (
-    <div style={{ marginTop: 10 }}>
+    <div style={{ marginTop: 10 }} onClick={e => e.stopPropagation()}>
+      {/* Tentativa anterior que nao deu certo: mostra o porque */}
+      {(status === "rejeitada" || status === "erro") && nota?.mensagemErro && (
+        <div style={{ ...caixa("#fee2e2", "#fecaca", "#991b1b"), marginTop: 0, marginBottom: 8 }}>
+          <strong>{status === "rejeitada" ? "Nota rejeitada" : "Última tentativa falhou"}:</strong> {nota.mensagemErro}
+        </div>
+      )}
+      {status === "cancelada" && (
+        <div style={{ ...caixa("#f5f5f5", "#e5e5e5", "#555"), marginTop: 0, marginBottom: 8 }}>🚫 A nota desta venda foi cancelada.</div>
+      )}
       {!pedindoCpf ? (
-        <button onClick={() => setPedindoCpf(true)} style={{ width: "100%", background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 8, padding: "8px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-          🧾 Emitir NFC-e
+        <button onClick={() => setPedindoCpf(true)} style={{ width: "100%", background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 8, padding: "8px 0", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+          🧾 {status === "sem_nota" ? "Emitir NFC-e" : "Emitir NFC-e de novo"}
         </button>
       ) : (
         <div style={{ background: "#faf9f8", borderRadius: 10, padding: 10 }}>
@@ -937,20 +1046,16 @@ function BotaoEmitirNota({ venda, onEmitido }) {
           <input value={cpf} onChange={e => setCpf(e.target.value)} placeholder="somente numeros"
             style={{ width: "100%", padding: "7px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 8 }} />
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={emitir} disabled={emitindo} style={{ flex: 2, background: "linear-gradient(135deg,#065f46,#10b981)", color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: emitindo ? "not-allowed" : "pointer", opacity: emitindo ? 0.7 : 1 }}>
+            <button onClick={emitir} disabled={emitindo} style={{ flex: 2, background: "linear-gradient(135deg,#065f46,#10b981)", color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
               {emitindo ? "Emitindo..." : "Confirmar emissao"}
             </button>
-            <button onClick={() => { setPedindoCpf(false); setErro(null); }} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+            <button onClick={() => { setPedindoCpf(false); setErro(null); }} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
               Cancelar
             </button>
           </div>
         </div>
       )}
-      {erro && (
-        <div style={{ marginTop: 8, padding: "8px 10px", background: "#fee2e2", border: "1px solid #ef4444", borderRadius: 8, fontSize: 11, color: "#991b1b", lineHeight: 1.5 }}>
-          {erro}
-        </div>
-      )}
+      {mensagens}
     </div>
   );
 }
@@ -1141,6 +1246,18 @@ function FiscalConfig() {
   const set = (campo, v) => setCfg(p => ({ ...p, [campo]: v }));
   const setEnd = (campo, v) => setCfg(p => ({ ...p, endereco: { ...p.endereco, [campo]: v } }));
 
+  // Confere o token salvo sem emitir nada
+  const [testando, setTestando] = useState(false);
+  const [teste, setTeste] = useState(null);
+  async function testarToken() {
+    setTestando(true); setTeste(null);
+    try {
+      const r = await authFetch(BACKEND_URL + "/config/fiscal/testar", { method: "POST" });
+      setTeste(await r.json().catch(() => ({ ok: false, mensagem: "Resposta invalida" })));
+    } catch { setTeste({ ok: false, mensagem: "Erro de conexao." }); }
+    setTestando(false);
+  }
+
   // Busca o codigo IBGE pelo nome do municipio (API oficial, via backend).
   // Evita tabela fixa no codigo, que e onde nascem os erros de digitacao.
   const [sugestoesMun, setSugestoesMun] = useState([]);
@@ -1222,11 +1339,68 @@ function FiscalConfig() {
             <input type="password" value={cfg.apiToken || ""} onChange={e => set("apiToken", e.target.value)} placeholder="cole o token" style={inp} />
           </div>
         </div>
+        {cfg.provedor === "focusnfe" && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button onClick={testarToken} disabled={testando || !cfg.apiTokenPreenchido} style={{ background: "#fff", color: "#1d4ed8", border: "1.5px solid #93c5fd", borderRadius: 8, padding: "6px 12px", fontWeight: 700, fontSize: 12, cursor: cfg.apiTokenPreenchido ? "pointer" : "not-allowed" }}>
+                {testando ? "Testando..." : "Testar token salvo"}
+              </button>
+              {teste && <span style={{ fontSize: 12, fontWeight: 600, color: teste.ok ? "#065f46" : "#b91c1c" }}>{teste.ok ? "✅ " : "❌ "}{teste.mensagem}</span>}
+            </div>
+            <div style={{ marginTop: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#1e3a8a", lineHeight: 1.6 }}>
+              <strong>Na Focus NFe, o cadastro da empresa é feito no painel deles:</strong>
+              <ol style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                <li>Criar a conta em focusnfe.com.br (tem período de teste).</li>
+                <li>Cadastrar a empresa: CNPJ, Inscrição Estadual, endereço e regime (Simples Nacional).</li>
+                <li>Enviar o certificado A1 (.pfx) e a senha <em>no painel da Focus</em>.</li>
+                <li>Informar o <strong>CSC</strong> e o <strong>ID do CSC</strong> de homologação (e depois os de produção), gerados no portal da SEFAZ-PR.</li>
+                <li>Habilitar NFC-e para a empresa e copiar o <strong>token de homologação</strong> para o campo acima.</li>
+              </ol>
+              <div style={{ marginTop: 6 }}>Com a Focus, os campos de CSC e endereço desta tela não são usados. O CNPJ, sim.</div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Como os pagamentos e impostos vao para a nota */}
+      <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 4 }}>Pagamentos e PIS/COFINS na nota</div>
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>O painel registra só "Cartão" e "Pix". Diga aqui como declarar. Confirme com o contador.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 140 }}>
+            <div style={lbl}>Cartão</div>
+            <select value={cfg.cartaoCodigo || "03"} onChange={e => set("cartaoCodigo", e.target.value)} style={inp}>
+              <option value="03">03 - Crédito</option>
+              <option value="04">04 - Débito</option>
+            </select>
+          </div>
+          <div style={{ flex: 1, minWidth: 140 }}>
+            <div style={lbl}>Pix</div>
+            <select value={cfg.pixCodigo || "20"} onChange={e => set("pixCodigo", e.target.value)} style={inp}>
+              <option value="20">20 - Estático (QR ou chave fixa)</option>
+              <option value="17">17 - Dinâmico (gerado na maquininha)</option>
+            </select>
+          </div>
+          <div style={{ flex: 1, minWidth: 110 }}>
+            <div style={lbl}>CST do PIS</div>
+            <select value={cfg.pisCst || "49"} onChange={e => set("pisCst", e.target.value)} style={inp}>
+              {["49", "99", "07", "08", "04", "06", "09", "01"].map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: 1, minWidth: 110 }}>
+            <div style={lbl}>CST da COFINS</div>
+            <select value={cfg.cofinsCst || "49"} onChange={e => set("cofinsCst", e.target.value)} style={inp}>
+              {["49", "99", "07", "08", "04", "06", "09", "01"].map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* CSC */}
       <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>CSC (gerado no portal da SEFAZ)</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>
+          CSC (gerado no portal da SEFAZ){cfg.provedor === "focusnfe" && <span style={{ fontWeight: 500, color: "#1d4ed8" }}> — na Focus NFe vai no painel deles</span>}
+        </div>
         <div style={{ display: "flex", gap: 8 }}>
           <div style={{ flex: 2 }}>
             <div style={lbl}>CSC {cfg.cscPreenchido && <span style={{ color: "#10b981" }}>✓ salvo</span>}</div>
@@ -3996,12 +4170,12 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {[...historicoSalao].reverse().map(v => (
-                <div key={v.id} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: vendaAberta === v.id ? "2px solid #7b1a0a" : "2px solid transparent" }}>
+                <div key={chaveVenda(v)} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: vendaAberta === chaveVenda(v) ? "2px solid #7b1a0a" : "2px solid transparent" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
                     onClick={() => {
                       // No modo lote, tocar na comanda marca/desmarca em vez de abrir
                       if (modoLote && v._id && v.notaFiscalStatus !== "autorizada") return alternarSelecao(v._id);
-                      setVendaAberta(vendaAberta === v.id ? null : v.id);
+                      setVendaAberta(vendaAberta === chaveVenda(v) ? null : chaveVenda(v));
                     }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       {modoLote && (
@@ -4025,7 +4199,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                       <BadgeNota status={v.notaFiscalStatus} />
                     </div>
                   </div>
-                  {vendaAberta === v.id && (
+                  {vendaAberta === chaveVenda(v) && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #f0f0f0" }}>
                       {v.itens.map((it,i) => (
                         <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0", color: "#555" }}>
@@ -4033,7 +4207,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                           <span>R$ {(it.qty*it.preco).toFixed(2)}</span>
                         </div>
                       ))}
-                      {v._id && <BotaoEmitirNota venda={v} onEmitido={() => { if (setHistoricoSalao) setHistoricoSalao(h => h.map(x => x._id === v._id ? { ...x, notaFiscalStatus: "autorizada" } : x)); }} />}
+                      {v._id && <BotaoEmitirNota venda={v} onEmitido={(st, notaId) => { if (setHistoricoSalao) setHistoricoSalao(h => h.map(x => x._id === v._id ? { ...x, notaFiscalStatus: st || "autorizada", notaFiscalId: notaId || x.notaFiscalId } : x)); }} />}
                       <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.grayL}`, display:"flex", gap:8 }}>
                         <button onClick={(e)=>{
                           e.stopPropagation();
@@ -4070,11 +4244,15 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                         <button onClick={async (e) => {
                           e.stopPropagation();
                           if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
-                            // Remove do MongoDB se tiver _id
+                            // Remove do MongoDB se tiver _id. Se o servidor recusar (ex.: venda
+                            // com nota autorizada), a venda fica na tela e o motivo aparece.
                             if (v._id) {
-                              try { await authFetch(BACKEND_URL + "/vendas-salao/" + v._id, { method: "DELETE" }); } catch {}
+                              try {
+                                const r = await authFetch(BACKEND_URL + "/vendas-salao/" + v._id, { method: "DELETE" });
+                                if (!r.ok) { const d = await r.json().catch(() => ({})); alert("Nao foi possivel excluir: " + (d.erro || r.status)); return; }
+                              } catch { alert("Sem conexao: a venda nao foi excluida."); return; }
                             }
-                            if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => x.id !== v.id));
+                            if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => chaveVenda(x) !== chaveVenda(v)));
                             if (setFaturadoSalaoRel) setFaturadoSalaoRel(f => Math.max(0, f - v.total));
                             setVendaAberta(null);
                           }

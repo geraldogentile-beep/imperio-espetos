@@ -7,6 +7,7 @@ import 'dotenv/config';
 import express from "express";
 import fetch from "node-fetch";
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
+import * as focus from "./fiscal/focusnfe.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -303,6 +304,8 @@ const NotaFiscalSchema = new mongoose.Schema({
   xmlUrl:       { type: String, default: null },
   danfeUrl:     { type: String, default: null },
   qrCode:       { type: String, default: null },
+  urlConsulta:  { type: String, default: null },
+  statusSefaz:  { type: String, default: "" },   // 100 = autorizado; outros = motivo da rejeicao
   mensagemErro: { type: String, default: "" },
 
   dataEmissao:     { type: Date, default: Date.now },
@@ -2825,6 +2828,11 @@ const CONFIG_FISCAL_PADRAO = {
   },
   // Aplicados a itens do cardápio sem configuração fiscal própria
   padroes: { ncm: "", cfop: "", csosn: "", origem: "0", unidade: "UN" },
+  // Como o painel registra o pagamento x o que a NFC-e exige (confirmar com o contador)
+  cartaoCodigo: "03",   // o painel so tem "cartao": 03 = credito, 04 = debito
+  pixCodigo: "20",      // 20 = pix estatico (QR/chave fixa), 17 = dinamico (maquininha)
+  pisCst: "49",         // Simples Nacional: PIS/COFINS vao no DAS
+  cofinsCst: "49",
 };
 
 async function getConfigFiscal() {
@@ -2863,6 +2871,12 @@ app.put("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
   const strFields = ["ambiente", "provedor", "cscId", "cnpj", "ie", "razaoSocial", "nomeFantasia", "crt"];
   for (const k of strFields) if (typeof b[k] === "string") novo[k] = b[k].trim();
 
+  if (["03", "04"].includes(b.cartaoCodigo)) novo.cartaoCodigo = b.cartaoCodigo;
+  if (["17", "20"].includes(b.pixCodigo)) novo.pixCodigo = b.pixCodigo;
+  const CSTS_PIS = ["01", "04", "06", "07", "08", "09", "49", "99"];
+  if (CSTS_PIS.includes(b.pisCst)) novo.pisCst = b.pisCst;
+  if (CSTS_PIS.includes(b.cofinsCst)) novo.cofinsCst = b.cofinsCst;
+
   if (b.ativo !== undefined) novo.ativo = b.ativo === true || b.ativo === "true";
   if (b.serie !== undefined) { const n = parseInt(b.serie); if (Number.isFinite(n) && n > 0) novo.serie = n; }
   if (!["homologacao", "producao"].includes(novo.ambiente)) novo.ambiente = "homologacao";
@@ -2899,12 +2913,16 @@ function pendenciasFiscais(cfg) {
   const faltando = [];
   if (!cfg.provedor) faltando.push("provedor da API fiscal");
   if (!cfg.apiToken) faltando.push("token da API");
-  if (!cfg.csc) faltando.push("CSC");
-  if (!cfg.cscId) faltando.push("ID do CSC");
   if (!cfg.cnpj) faltando.push("CNPJ");
-  if (!cfg.ie) faltando.push("Inscricao Estadual");
-  if (!cfg.razaoSocial) faltando.push("razao social");
-  if (!cfg.endereco?.codigoMunicipio) faltando.push("codigo IBGE do municipio");
+  // Na Focus NFe, certificado, CSC, IE e endereco ficam no cadastro da empresa
+  // la no painel deles; aqui nao sao usados.
+  if (cfg.provedor !== "focusnfe") {
+    if (!cfg.csc) faltando.push("CSC");
+    if (!cfg.cscId) faltando.push("ID do CSC");
+    if (!cfg.ie) faltando.push("Inscricao Estadual");
+    if (!cfg.razaoSocial) faltando.push("razao social");
+    if (!cfg.endereco?.codigoMunicipio) faltando.push("codigo IBGE do municipio");
+  }
   if (!cfg.padroes?.ncm) faltando.push("NCM padrao");
   if (!cfg.padroes?.cfop) faltando.push("CFOP padrao");
   if (!cfg.padroes?.csosn) faltando.push("CSOSN padrao");
@@ -2936,6 +2954,7 @@ function montarItensFiscais(itens, cfg) {
     const preco = Number(it.preco) || 0;
     return {
       numero: idx + 1,
+      codigo: doCardapio?.id ?? it.id ?? idx + 1,
       nome: it.nome,
       quantidade: qtd,
       valorUnitario: parseFloat(preco.toFixed(2)),
@@ -3278,9 +3297,15 @@ app.post("/fiscal/sugestoes/aplicar", authMiddleware(["dono"]), async (req, res)
 // de XML, assinatura, transmissão e contingência.
 // O adaptador concreto é implementado quando o provedor for escolhido —
 // endpoint, headers e formato do payload saem da documentação de cada um.
-async function emitirNoProvedor(cfg, payload) {
+async function emitirNoProvedor(cfg, { nota, itens, pagamentos, entrega }) {
   switch (cfg.provedor) {
-    case "focusnfe":
+    case "focusnfe": {
+      const nfce = focus.montarNfce({
+        cfg, itens, valorNota: nota.valorTotal, pagamentos,
+        cpf: nota.cpfCliente, nome: nota.nomeCliente, entrega,
+      });
+      return focus.emitir(cfg, nota.refExterna, nfce);
+    }
     case "plugnotas":
     case "webmania":
     case "nfeio":
@@ -3294,7 +3319,25 @@ async function emitirNoProvedor(cfg, payload) {
 }
 
 async function cancelarNoProvedor(cfg, nota, motivo) {
-  throw new Error("Cancelamento ainda nao implementado — depende do provedor escolhido.");
+  if (cfg.provedor === "focusnfe") return focus.cancelar(cfg, nota.refExterna, motivo);
+  throw new Error("Cancelamento nao implementado para o provedor \"" + cfg.provedor + "\".");
+}
+
+async function consultarNoProvedor(cfg, nota) {
+  if (cfg.provedor === "focusnfe") return focus.consultar(cfg, nota.refExterna);
+  throw new Error("Consulta nao implementada para o provedor \"" + cfg.provedor + "\".");
+}
+
+// Grava o resultado da SEFAZ na nota e no cache da venda
+async function registrarAutorizada(nota, r) {
+  await NotaFiscalDB.findByIdAndUpdate(nota._id, {
+    status: "autorizada", mensagemErro: "",
+    numero: r.numero, serie: r.serie, chave: r.chave, protocolo: r.protocolo,
+    xmlUrl: r.xmlUrl, danfeUrl: r.danfeUrl, qrCode: r.qrCode,
+    urlConsulta: r.urlConsulta || null, statusSefaz: r.statusSefaz || "100",
+    dataAutorizacao: new Date(),
+  });
+  if (nota.vendaId) await VendaSalaoDB.findByIdAndUpdate(nota.vendaId, { notaFiscalId: nota._id, notaFiscalStatus: "autorizada" });
 }
 
 // Emite UMA nota. Devolve { http, corpo } em vez de escrever na resposta,
@@ -3306,6 +3349,8 @@ async function emitirUmaNota({ vendaId, pedidoId, cpfCliente, cfg, usuario }) {
       origem = await VendaSalaoDB.findById(vendaId).lean();
       if (!origem) return { http: 404, corpo: { erro: "Venda nao encontrada" } };
       if (origem.notaFiscalStatus === "autorizada") return { http: 409, corpo: { erro: "Essa venda ja tem nota autorizada" } };
+      // Resultado em duvida: emitir de novo poderia gerar duas notas da mesma venda
+      if (origem.notaFiscalStatus === "processando") return { http: 409, corpo: { erro: "Ha uma nota desta venda em processamento. Use \"Consultar\" antes de emitir de novo.", notaId: origem.notaFiscalId } };
       itens = origem.itens; valorTotal = origem.total; nomeCliente = origem.cliente || "";
     } else {
       origem = await PedidoDB.findOne({ id: String(pedidoId) }).lean();
@@ -3332,9 +3377,19 @@ async function emitirUmaNota({ vendaId, pedidoId, cpfCliente, cfg, usuario }) {
 
   // Registra a nota como "processando" ANTES de chamar o provedor.
   // Se a chamada cair no meio, fica o rastro em vez de sumir.
+  // Pagamentos como a NFC-e precisa (sem gorjeta; o adaptador ajusta)
+  const pagamentos = vendaId
+    ? (Array.isArray(origem.pagamentos) && origem.pagamentos.length ? origem.pagamentos : [{ tipo: origem.pagamento, valor: origem.total }])
+    : (origem.pagamento ? [{ tipo: origem.pagamento, valor: origem.total }] : []);
+  if (!pagamentos.length) {
+    return { http: 400, corpo: { erro: "Marque a forma de pagamento do pedido antes de emitir a nota." } };
+  }
+
   let nota;
+  const notaId = new mongoose.Types.ObjectId();
   try {
     nota = await NotaFiscalDB.create({
+      _id: notaId,
       vendaId: vendaId || null,
       pedidoId: pedidoId ? String(pedidoId) : null,
       ambiente: cfg.ambiente,
@@ -3343,7 +3398,7 @@ async function emitirUmaNota({ vendaId, pedidoId, cpfCliente, cfg, usuario }) {
       cpfCliente: cpfLimpo,
       nomeCliente,
       itens: itensFiscais,
-      refExterna: (vendaId || pedidoId) + "-" + Date.now(),
+      refExterna: focus.refDaNota(notaId),   // so letras e numeros (exigencia da Focus)
       emitidoPor: usuario || "",
     });
     if (vendaId) {
@@ -3355,20 +3410,18 @@ async function emitirUmaNota({ vendaId, pedidoId, cpfCliente, cfg, usuario }) {
   }
 
   try {
-    const r = await emitirNoProvedor(cfg, { nota, itens: itensFiscais, cfg });
-    await NotaFiscalDB.findByIdAndUpdate(nota._id, {
-      status: "autorizada",
-      numero: r.numero, serie: r.serie, chave: r.chave, protocolo: r.protocolo,
-      xmlUrl: r.xmlUrl, danfeUrl: r.danfeUrl, qrCode: r.qrCode,
-      dataAutorizacao: new Date(),
-    });
-    if (vendaId) await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalStatus: "autorizada" });
+    const r = await emitirNoProvedor(cfg, { nota, itens: itensFiscais, pagamentos, entrega: !vendaId });
+    await registrarAutorizada(nota, r);
     return { http: 200, corpo: { ok: true, notaId: nota._id, ...r } };
   } catch (e) {
     console.error("Falha na emissao da NFC-e:", e.message);
-    await NotaFiscalDB.findByIdAndUpdate(nota._id, { status: "erro", mensagemErro: e.message });
-    if (vendaId) await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalStatus: "erro" });
-    return { http: 502, corpo: { erro: e.message, notaId: nota._id } };
+    // incerto  -> fica "processando" ate alguem consultar (evita nota dupla)
+    // definitivo com status SEFAZ -> "rejeitada" (precisa corrigir algo)
+    // o resto -> "erro" (pode tentar de novo)
+    const status = e.incerto ? "processando" : (e.definitivo && e.statusSefaz ? "rejeitada" : "erro");
+    await NotaFiscalDB.findByIdAndUpdate(nota._id, { status, mensagemErro: e.message, statusSefaz: e.statusSefaz || "" });
+    if (vendaId) await VendaSalaoDB.findByIdAndUpdate(vendaId, { notaFiscalStatus: status });
+    return { http: e.incerto ? 202 : 502, corpo: { erro: e.message, status, notaId: nota._id } };
   }
 }
 
@@ -3499,6 +3552,53 @@ app.get("/notas/resumo", authMiddleware(["dono"]), async (req, res) => {
     console.error("Erro no resumo fiscal:", e.message);
     res.status(500).json({ erro: "Erro ao gerar resumo" });
   }
+});
+
+// GET /notas/:id — uma nota, para o painel mostrar numero, DANFE ou o motivo da falha
+app.get("/notas/:id", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id invalido" });
+  try {
+    const nota = await NotaFiscalDB.findById(req.params.id).select("-itens").lean();
+    if (!nota) return res.status(404).json({ erro: "Nota nao encontrada" });
+    res.json(nota);
+  } catch (e) {
+    console.error("Erro ao ler nota:", e.message);
+    res.status(500).json({ erro: "Erro ao ler a nota" });
+  }
+});
+
+// POST /notas/:id/consultar — tira a nota do "processando" perguntando ao provedor
+app.post("/notas/:id/consultar", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id invalido" });
+  try {
+    const nota = await NotaFiscalDB.findById(req.params.id);
+    if (!nota) return res.status(404).json({ erro: "Nota nao encontrada" });
+    const cfg = await getConfigFiscal();
+    const c = await consultarNoProvedor(cfg, nota);
+    if (c.situacao === "autorizada") {
+      await registrarAutorizada(nota, c.dados);
+      return res.json({ ok: true, status: "autorizada", ...c.dados });
+    }
+    let status = nota.status, mensagem = "";
+    if (c.situacao === "rejeitada") { status = "rejeitada"; mensagem = "SEFAZ: " + c.motivo; }
+    else if (c.situacao === "inexistente") { status = "erro"; mensagem = "A nota nao chegou ao provedor. Pode emitir de novo."; }
+    else if (c.situacao === "cancelada") { status = "cancelada"; }
+    else if (c.situacao === "processando") { status = "processando"; mensagem = "Ainda em processamento na SEFAZ. Consulte de novo em instantes."; }
+    await NotaFiscalDB.findByIdAndUpdate(nota._id, { status, mensagemErro: mensagem, statusSefaz: c.statusSefaz || nota.statusSefaz });
+    if (nota.vendaId) await VendaSalaoDB.findByIdAndUpdate(nota.vendaId, { notaFiscalStatus: status });
+    res.json({ ok: true, status, mensagem });
+  } catch (e) {
+    console.error("Erro ao consultar nota:", e.message);
+    res.status(502).json({ erro: e.message });
+  }
+});
+
+// POST /config/fiscal/testar — confere o token sem emitir nada
+app.post("/config/fiscal/testar", authMiddleware(["dono"]), async (req, res) => {
+  const cfg = await getConfigFiscal();
+  if (!cfg.apiToken) return res.status(400).json({ ok: false, mensagem: "Salve o token antes de testar." });
+  if (cfg.provedor !== "focusnfe") return res.status(400).json({ ok: false, mensagem: "Teste disponivel so para a Focus NFe." });
+  res.json(await focus.testarToken(cfg));
 });
 
 // POST /notas/:id/cancelar — prazo legal da NFC-e é de 30 minutos
