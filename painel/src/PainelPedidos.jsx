@@ -4885,7 +4885,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const [varAberta, setVarAberta] = useState(null);   // item com a escolha de carne aberta
   // Comanda paga em mais de uma forma (metade dinheiro, metade pix)
   const [pagDividido, setPagDividido] = useState(false);
-  const [valoresPag, setValoresPag] = useState({ pix: "", cartao: "", dinheiro: "" });
+  // Lista de lancamentos: [{tipo, valor}]. Era um campo fixo por forma, e
+  // duas pessoas pagando metade no cartao nao cabiam — so existia um lugar
+  // para lancar cartao.
+  const [linhasPag, setLinhasPag] = useState([]);
+  const linhasPadrao = () => FORMAS_PAG.map(([tipo]) => ({ tipo, valor: "" }));
   // Troco: o operador informa quanto o cliente entregou em dinheiro e o
   // sistema mostra o que devolver. So aparece quando ha dinheiro no pagamento.
   const [recebidoDin, setRecebidoDin] = useState("");
@@ -4974,7 +4978,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
   function limparPagamento() {
     setPagDividido(false);
-    setValoresPag({ pix: "", cartao: "", dinheiro: "" });
+    setLinhasPag([]);
     setRecebidoDin("");
     setDescModo("nenhum");
     setDescValor("");
@@ -4987,8 +4991,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     if (!pagDividido) {
       return { pagamentos: [{ tipo: pagSalao, valor: parseFloat(total.toFixed(2)) }], falta: 0 };
     }
-    const lista = FORMAS_PAG
-      .map(([tipo]) => ({ tipo, valor: parseMoedaGlobal(valoresPag[tipo]) }))
+    const lista = linhasPag
+      .map(l => ({ tipo: l.tipo, valor: parseMoedaGlobal(l.valor) }))
       .filter(p => p.valor > 0);
     const soma = lista.reduce((acc, p) => acc + p.valor, 0);
     return { pagamentos: lista, falta: parseFloat((total - soma).toFixed(2)) };
@@ -5618,7 +5622,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
         <div style={card2}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div style={{fontWeight:700,fontSize:12,color:"#888",textTransform:"uppercase"}}>💳 Pagamento</div>
-            <button onClick={()=>{ setPagDividido(d=>!d); setValoresPag({pix:"",cartao:"",dinheiro:""}); }}
+            <button onClick={()=>{ const ligar=!pagDividido; setPagDividido(ligar); setLinhasPag(ligar?linhasPadrao():[]); setRecebidoDin(""); }}
               style={{background:pagDividido?"#7b1a0a":"#f0f0f0",color:pagDividido?"#fff":"#666",border:"none",borderRadius:8,padding:"6px 11px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
               {pagDividido ? "↩ Uma forma só" : "✂️ Dividir formas"}
             </button>
@@ -5632,20 +5636,48 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             </div>
           ) : (
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {FORMAS_PAG.map(([k,l])=>(
-                <div key={k} style={{display:"flex",alignItems:"center",gap:8}}>
-                  <div style={{width:96,fontSize:12,fontWeight:600,color:"#555",flexShrink:0}}>{l}</div>
-                  <input inputMode="decimal" value={valoresPag[k]} placeholder="0,00"
-                    onChange={e=>setValoresPag(v=>({...v,[k]:mascaraMoeda(e.target.value)}))}
-                    style={{flex:1,minWidth:0,padding:"9px 10px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:15,outline:"none",boxSizing:"border-box",color:"#333"}} />
+              {linhasPag.map((linha,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                  <select value={linha.tipo}
+                    onChange={e=>setLinhasPag(ls=>ls.map((l,j)=>j===i?{...l,tipo:e.target.value}:l))}
+                    style={{width:112,flexShrink:0,padding:"9px 6px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:13,fontWeight:600,color:"#555",background:"#fff",cursor:"pointer"}}>
+                    {FORMAS_PAG.map(([k,l])=><option key={k} value={k}>{l}</option>)}
+                  </select>
+                  <input inputMode="decimal" value={linha.valor} placeholder="0,00"
+                    onChange={e=>setLinhasPag(ls=>ls.map((l,j)=>j===i?{...l,valor:mascaraMoeda(e.target.value)}:l))}
+                    style={{flex:1,minWidth:80,padding:"9px 10px",border:"1.5px solid #e0e0e0",borderRadius:9,fontSize:15,outline:"none",boxSizing:"border-box",color:"#333"}} />
                   <button onClick={()=>{
-                    const outros = FORMAS_PAG.filter(([o])=>o!==k).reduce((acc,[o])=>acc+parseMoedaGlobal(valoresPag[o]),0);
+                    const outros = linhasPag.reduce((acc,l,j)=>j===i?acc:acc+parseMoedaGlobal(l.valor),0);
                     const resto = Math.max(0, parseFloat((totalFechar-outros).toFixed(2)));
                     // Passa pela mascara para ficar igual ao que o usuario digita
-                    setValoresPag(v=>({...v,[k]: resto>0 ? mascaraMoeda(String(Math.round(resto*100))) : ""}));
+                    setLinhasPag(ls=>ls.map((l,j)=>j===i?{...l,valor: resto>0 ? mascaraMoeda(String(Math.round(resto*100))) : ""}:l));
                   }} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"9px 10px",fontSize:11,cursor:"pointer",color:"#555",fontWeight:700,flexShrink:0}}>resto</button>
+                  {linhasPag.length>1&&(
+                    <button onClick={()=>setLinhasPag(ls=>ls.filter((_,j)=>j!==i))} title="Remover este lançamento"
+                      style={{background:"#fee2e2",border:"none",borderRadius:8,padding:"9px 11px",fontSize:13,cursor:"pointer",color:"#ef4444",fontWeight:800,flexShrink:0}}>×</button>
+                  )}
                 </div>
               ))}
+
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button onClick={()=>setLinhasPag(ls=>[...ls,{tipo:pagSalao,valor:""}])}
+                  style={{background:"#eef2ff",border:"1.5px dashed #c7d2fe",borderRadius:9,padding:"8px 12px",fontSize:12,fontWeight:700,color:"#4338ca",cursor:"pointer"}}>
+                  + Outro pagamento
+                </button>
+                {divSalao>1&&(
+                  <button onClick={()=>{
+                    // Duas pessoas, metade cada: o caixa nao precisa fazer a conta.
+                    // O ultimo lancamento absorve o centavo que sobra da divisao.
+                    const n = divSalao;
+                    const parte = Math.floor((totalFechar*100)/n)/100;
+                    const valores = Array.from({length:n},(_,i)=> i===n-1 ? parseFloat((totalFechar-parte*(n-1)).toFixed(2)) : parte);
+                    setLinhasPag(valores.map((v,i)=>({ tipo: linhasPag[i]?.tipo || pagSalao, valor: mascaraMoeda(String(Math.round(v*100))) })));
+                  }} style={{background:"#fef3c7",border:"1.5px solid #fcd34d",borderRadius:9,padding:"8px 12px",fontSize:12,fontWeight:700,color:"#92400e",cursor:"pointer"}}>
+                    Dividir em {divSalao} partes iguais
+                  </button>
+                )}
+              </div>
+
               <div style={{
                 marginTop:2,borderRadius:10,padding:"9px 12px",fontSize:13,fontWeight:700,textAlign:"center",
                 background: pagOk ? "#d1fae5" : "#fef3c7",
