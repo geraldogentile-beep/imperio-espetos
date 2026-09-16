@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import PainelPedidos from "./PainelPedidos.jsx";
+import AvisoAtualizacao from "./atualizacao.jsx";
 import { getToken, setToken, clearToken, getSavedLogin, saveLogin } from "./auth.js";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
@@ -205,7 +206,13 @@ function TelaLogin({ onLogin }) {
   );
 }
 
+// O aviso de nova versao fica por fora do painel: vale na tela de PIN, no
+// app do garcom e no painel do adm.
 export default function App() {
+  return (<><AppInterno /><AvisoAtualizacao /></>);
+}
+
+function AppInterno() {
   const [login, setLogin] = useState(() => {
     // Restaura sessão se token válido
     const token = getToken();

@@ -1,5 +1,5 @@
 // Service Worker — Império dos Espetos PWA v2
-const CACHE_NAME = "imperio-v2";
+const CACHE_NAME = "imperio-v3";
 const ASSETS = ["/", "/index.html", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", e => {
@@ -19,7 +19,11 @@ self.addEventListener("fetch", e => {
   // Nunca faz cache de chamadas de API: qualquer request para fora da
   // origem do painel. Antes checava "onrender.com" (backend antigo), entao
   // com o backend em bisao.tech o SW cacheava pedidos/config/cardapio.
-  if (new URL(e.request.url).origin !== self.location.origin) return;
+  const url = new URL(e.request.url);
+  if (url.origin !== self.location.origin) return;
+  // Pedido com "?": e checagem de versao ou consulta, nunca arquivo do app.
+  // Cachear isso enchia o cache de copias e mascarava a versao nova.
+  if (url.search) return;
   e.respondWith(
     fetch(e.request)
       .then(res => {
