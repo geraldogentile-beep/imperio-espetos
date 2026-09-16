@@ -1438,6 +1438,7 @@ function FiscalConfig() {
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
           <div style={{ flex: 3 }}><div style={lbl}>Logradouro</div><input value={cfg.endereco?.logradouro || ""} onChange={e => setEnd("logradouro", e.target.value)} style={inp} /></div>
           <div style={{ flex: 1 }}><div style={lbl}>Numero</div><input value={cfg.endereco?.numero || ""} onChange={e => setEnd("numero", e.target.value)} style={inp} /></div>
+          <div style={{ flex: 1 }}><div style={lbl}>Complemento</div><input value={cfg.endereco?.complemento || ""} onChange={e => setEnd("complemento", e.target.value)} placeholder="Sala, loja..." style={inp} /></div>
         </div>
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
           <div style={{ flex: 1 }}><div style={lbl}>Bairro</div><input value={cfg.endereco?.bairro || ""} onChange={e => setEnd("bairro", e.target.value)} style={inp} /></div>
