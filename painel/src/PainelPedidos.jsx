@@ -4876,6 +4876,60 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const faturado = faturadoSalao;
   const setFaturado = setFaturadoSalao;
   const [verFat, setVerFat] = useState(false);   // faturamento escondido ate clicar no olhinho
+  // Ultima comanda paga, para reimprimir o comprovante de conferencia.
+  // Antes, depois de confirmar o pagamento a tela voltava para o mapa e nao
+  // existia mais nenhum caminho para tirar aquele ticket.
+  const [ultimaVenda, setUltimaVenda] = useState(null);
+
+  // Imprime o comprovante de uma venda ja paga: impressora deste aparelho,
+  // senao a fila do caixa, senao a janela do navegador.
+  async function imprimirComprovante(venda, avisar = true) {
+    if (!venda) return;
+    if (impressora.isDisponivel()) {
+      try {
+        await impressora.imprimirRecibo(venda);
+        if (avisar) msgSalao("✅ Comprovante impresso!");
+        return;
+      } catch (e) { console.warn("Falha BT:", e.message); if (avisar) avisarSemTermica(e.message); }
+    } else {
+      try {
+        await enfileirarImpressao("recibo", venda);
+        if (avisar) msgSalao("🖨️ Comprovante enviado para a impressora do caixa");
+        return;
+      } catch (e) { if (avisar) avisarSemTermica(e.message); }
+    }
+
+    const win = abrirJanelaImpressao("width=400,height=600");
+    if (!win) return;
+    const linhas = (venda.itens || []).map(it => `<div class="l"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${(((it.qty||1)*(it.preco||0))).toFixed(2)}</span></div>`).join("");
+    const pagos = Array.isArray(venda.pagamentos) && venda.pagamentos.length
+      ? venda.pagamentos.map(pg => `<div class="l"><span>${({pix:"Pix",cartao:"Cartão",dinheiro:"Dinheiro"})[pg.tipo]||pg.tipo}</span><span>R$ ${(Number(pg.valor)||0).toFixed(2)}</span></div>`).join("")
+      : `<div class="l"><span>Pagamento</span><span>${venda.pagamentoTexto || venda.pagamento || ""}</span></div>`;
+    win.document.write(`<!DOCTYPE html><html><head><title>Comprovante Mesa ${venda.mesa}</title><style>
+      body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
+      h2{text-align:center;font-size:16px;margin:0 0 4px}
+      .sub{text-align:center;font-size:12px;color:#666;margin-bottom:14px}
+      .l{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-bottom:1px dashed #eee}
+      .t{display:flex;justify-content:space-between;font-size:15px;font-weight:bold;padding:8px 0;border-top:2px solid #000;margin-top:8px}
+      .info{font-size:12px;color:#555;margin-bottom:10px}
+      .rodape{text-align:center;font-size:11px;color:#999;margin-top:16px}
+      @media print{button{display:none}}
+    </style></head><body>
+      <h2>👑 Império dos Espetos</h2>
+      <div class="sub">Comprovante — Mesa ${venda.mesa}${venda.subComanda ? " · " + venda.subComanda : ""}</div>
+      <div class="info">${venda.cliente && venda.cliente !== "—" ? "Cliente: " + venda.cliente + "<br>" : ""}${venda.garcom && venda.garcom !== "—" ? "Garçom: " + venda.garcom + "<br>" : ""}Fechamento: ${new Date(venda.fechamento).toLocaleString("pt-BR")}</div>
+      ${linhas}
+      ${Number(venda.desconto) > 0 ? `<div class="l"><span>Desconto${venda.descontoInfo ? " (" + venda.descontoInfo + ")" : ""}</span><span>- R$ ${Number(venda.desconto).toFixed(2)}</span></div>` : ""}
+      <div class="t"><span>TOTAL</span><span>R$ ${Number(venda.total || 0).toFixed(2)}</span></div>
+      ${Number(venda.gorjeta) > 0 ? `<div class="l"><span>Gorjeta</span><span>+ R$ ${Number(venda.gorjeta).toFixed(2)}</span></div>` : ""}
+      ${pagos}
+      ${Number(venda.troco) > 0 ? `<div class="l"><span>Recebido em dinheiro</span><span>R$ ${Number(venda.recebidoDinheiro).toFixed(2)}</span></div><div class="t"><span>TROCO</span><span>R$ ${Number(venda.troco).toFixed(2)}</span></div>` : ""}
+      <div class="rodape">Obrigado pela visita!</div>
+      <br><button onclick="window.print()" style="width:100%;padding:10px;font-size:14px;cursor:pointer">🖨️ Imprimir</button>
+    </body></html>`);
+    win.document.close();
+    setTimeout(() => win.print(), 400);
+  }
   const sel = selSalao;
   const setSel = setSelSalao;
   const telaSalao = telaSalaoGlobal;
@@ -5209,11 +5263,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
     setFaturado(f=>f+totalSC);
 
-    // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
-    if (impressora.isDisponivel()) {
-      try { await impressora.imprimirRecibo(registro); }
-      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
-    }
+    // Comprovante: sai na impressora deste aparelho ou na do caixa. Fica
+    // guardado para reimprimir pelo botao do mapa, se precisarem conferir.
+    setUltimaVenda(registro);
+    imprimirComprovante(registro, false);
 
     limparPagamento();
 
@@ -5281,11 +5334,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     if(setHistoricoSalao) setHistoricoSalao(h=>[...h,registro]);
     setFaturado(f=>f+totalMesa);
 
-    // Imprime recibo do cliente se a impressora Bluetooth estiver conectada
-    if (impressora.isDisponivel()) {
-      try { await impressora.imprimirRecibo(registro); }
-      catch (e) { console.warn("Erro ao imprimir recibo:", e.message); msgSalao("⚠️ Falha ao imprimir recibo", "#f59e0b"); }
-    }
+    // Comprovante: sai na impressora deste aparelho ou na do caixa. Fica
+    // guardado para reimprimir pelo botao do mapa, se precisarem conferir.
+    setUltimaVenda(registro);
+    imprimirComprovante(registro, false);
 
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} — ${descrevePagamento(pagamentos, pagSalao)}${textoTroco(pagamentos)}`);
     upd(mesaZerada(mesa));
@@ -6035,6 +6087,18 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   return (
     <div style={{background:T.cream,minHeight:"100%"}}>
       {toastSalao&&<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:toastSalao.cor,color:"#fff",borderRadius:16,padding:"14px 28px",fontWeight:700,fontSize:15,zIndex:9999,boxShadow:"0 8px 32px rgba(0,0,0,0.3)",minWidth:200,textAlign:"center",animation:"slideDown 0.3s ease"}}>{toastSalao.txt}</div>}
+      {ultimaVenda && (
+        <div style={{background:"#d1fae5",borderBottom:"1px solid #a7f3d0",padding:"10px 14px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:150,fontSize:13,color:"#065f46",fontWeight:700}}>
+            ✅ Mesa {ultimaVenda.mesa} paga — {fmtR(Number(ultimaVenda.total)||0)}
+            <div style={{fontSize:11,fontWeight:500,opacity:0.8}}>{ultimaVenda.pagamentoTexto || ""}</div>
+          </div>
+          <button onClick={()=>imprimirComprovante(ultimaVenda)} style={{background:"#065f46",color:"#fff",border:"none",borderRadius:9,padding:"9px 14px",fontWeight:800,fontSize:12,cursor:"pointer",flexShrink:0}}>
+            🖨️ Imprimir comprovante
+          </button>
+          <button onClick={()=>setUltimaVenda(null)} title="Fechar aviso" style={{background:"transparent",border:"none",color:"#065f46",fontSize:18,fontWeight:800,cursor:"pointer",padding:"0 4px",flexShrink:0}}>×</button>
+        </div>
+      )}
       <div style={{background:`linear-gradient(135deg,${T.wineD},${T.wine})`,color:"#fff",padding:"12px 16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <div>
