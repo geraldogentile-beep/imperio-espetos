@@ -5917,10 +5917,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           </div>
         )}
         <div style={card2}>
-          {/* Mais espaco entre o botao e os itens: o notebook do caixa tem uma
-              linha de pixels queimada que caia em cima do primeiro item. */}
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:28,gap:8}}>
-            <div style={{fontWeight:700,fontSize:12,color:"#888",textTransform:"uppercase"}}>🧾 Resumo</div>
+          <div style={{fontWeight:700,fontSize:12,color:"#888",textTransform:"uppercase",marginBottom:8}}>🧾 Resumo</div>
+          {/* Botao a esquerda e itens mais abaixo dele: o notebook do caixa tem
+              uma linha de pixels queimada que caia em cima do primeiro item. */}
+          <div style={{display:"flex",justifyContent:"flex-start",marginBottom:28}}>
             {/* Cliente que paga so parte: escolhe os itens dele */}
             <button onClick={()=>{ setParcialAtivo(a=>!a); setSelParcial({}); }}
               style={{background:parcialAtivo?"#0e7490":"#ecfeff",color:parcialAtivo?"#fff":"#0e7490",border:`1.5px solid ${parcialAtivo?"#0e7490":"#a5f3fc"}`,borderRadius:8,padding:"6px 11px",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
@@ -6283,7 +6283,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               }
               return fecharUma ? fecharComanda(scIdx,pagInfo.pagamentos,descontoInfo,gorjetaInfo) : fecharMesa(pagInfo.pagamentos,descontoInfo,gorjetaInfo);
             }}
-            style={{...BP2(podeConfirmar?"linear-gradient(135deg,#065f46,#10b981)":"#ccc"),flex:2,order:-1,cursor:podeConfirmar?"pointer":"not-allowed"}}>
+            style={{...BP2(podeConfirmar?"linear-gradient(135deg,#065f46,#10b981)":"#ccc"),flex:2,cursor:podeConfirmar?"pointer":"not-allowed"}}>
             ✅ Confirmar — {fmtR(totalFechar)}{parcialAtivo && !pagandoTudo ? " (parcial)" : ""}
           </button>
         </div>
