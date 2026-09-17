@@ -130,6 +130,21 @@ if (!BASE) {
     const semVersao = await garcom("PUT", `/mesas/${MESA}`, { dados: mesa([], { id: MESA }) });
     ok(semVersao.status === 409, `gravar mesa existente sem versao e recusado (HTTP ${semVersao.status})`);
   }
+
+  console.log("\n=== parte 2e: liberar mesa presa sem cobrar ===");
+  {
+    const presa = mesa([{ id: 1, label: "Comanda 1", cliente: "", itens: [], rodadas: [rodada([{ ...picanha, qty: 2 }])] }], { id: MESA, status: "ocupada" });
+    await gravar(garcom, presa);
+    const vendasAntes = (await caixa("GET", "/vendas-salao")).corpo.length;
+    const doGarcom = await garcom("POST", `/mesas/${MESA}/liberar`, { motivo: "conta ja paga" });
+    ok(doGarcom.status === 403, `garcom nao pode (HTTP ${doGarcom.status})`);
+    const semMotivo = await caixa("POST", `/mesas/${MESA}/liberar`, { motivo: "" });
+    ok(semMotivo.status === 400, `sem motivo e recusado (HTTP ${semMotivo.status})`);
+    const r = await caixa("POST", `/mesas/${MESA}/liberar`, { motivo: "conta ja paga no caixa" });
+    ok(r.status === 200 && r.corpo.dados?.status === "livre", `adm liberou (HTTP ${r.status})`);
+    ok((await naMesa()).dados.status === "livre", "todos veem a mesa livre");
+    ok((await caixa("GET", "/vendas-salao")).corpo.length === vendasAntes, "nenhuma venda nova foi gravada");
+  }
 }
 
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);

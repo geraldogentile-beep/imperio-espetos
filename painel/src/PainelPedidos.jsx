@@ -4984,6 +4984,52 @@ function tempoAberto(abertura) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
+// ── LIBERAR MESA SEM COBRAR (so o adm) ───────────────────────
+// Para mesa presa com conta ja paga, ou pedido cancelado. Nao gera venda.
+function BotaoLiberarMesa({ mesa, onLiberada }) {
+  const [aberto, setAberto] = useState(false);
+  const [motivo, setMotivo] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  async function liberar() {
+    if (motivo.trim().length < 5) { setErro("Diga o motivo (ex.: conta já paga, pedido cancelado)."); return; }
+    setEnviando(true); setErro("");
+    try {
+      const r = await authFetch(BACKEND_URL + "/mesas/" + mesa.id + "/liberar", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ motivo: motivo.trim() }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 404) setErro("O servidor ainda não tem esta função. Atualize o servidor (git pull na VPS).");
+      else if (!r.ok) setErro(d.erro || "Não foi possível liberar a mesa.");
+      else { setAberto(false); setMotivo(""); onLiberada(d.versao ?? null, d.dados ?? null); }
+    } catch { setErro("Sem conexão: a mesa não foi liberada."); }
+    setEnviando(false);
+  }
+
+  if (!aberto) {
+    return (
+      <button onClick={() => setAberto(true)} style={{ background: "none", border: "none", color: "#9ca3af", fontSize: 12, cursor: "pointer", padding: "4px 0", textDecoration: "underline" }}>
+        🔓 Liberar mesa sem cobrar
+      </button>
+    );
+  }
+  return (
+    <div style={{ background: "#fff7ed", border: "1.5px solid #fdba74", borderRadius: 12, padding: 12, fontSize: 12, color: "#7c2d12", lineHeight: 1.5 }}>
+      <div>Libera a mesa <strong>sem registrar venda</strong>. Use só se a conta já foi paga ou o pedido foi cancelado. O que está na mesa fica guardado, com o motivo.</div>
+      <input value={motivo} onChange={e => setMotivo(e.target.value)} placeholder="Motivo (ex.: conta já paga no caixa)"
+        style={{ width: "100%", marginTop: 8, padding: "8px 10px", border: "1.5px solid #fdba74", borderRadius: 8, fontSize: 13, boxSizing: "border-box" }} />
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button onClick={liberar} disabled={enviando} style={{ flex: 2, background: "#c2410c", color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+          {enviando ? "Liberando..." : `Liberar mesa ${mesa.id}`}
+        </button>
+        <button onClick={() => { setAberto(false); setErro(""); }} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Voltar</button>
+      </div>
+      {erro && <div style={{ marginTop: 8, color: "#b91c1c", fontWeight: 600 }}>{erro}</div>}
+    </div>
+  );
+}
+
 // ── EDITOR DE RODADAS (ITENS JÁ ENVIADOS À COZINHA) ─────────
 function RodadasEditor({ rodadas, isDono, onSave }) {
   // Detecta rodada recém-adicionada (últimos 5 segundos)
@@ -6477,6 +6523,14 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             )
           )}
           <button onClick={()=>{setSel(null);setTelaSalao("mapa");}} style={{background:"none",border:"none",color:"#aaa",fontSize:13,cursor:"pointer",padding:"6px 0"}}>← Voltar ao Salão</button>
+          {isDono && (temItens(mesa) || mesa.status !== "livre") && (
+            <BotaoLiberarMesa mesa={mesa} onLiberada={(versao, dados) => {
+              if (dados && onMesaAtualizada) onMesaAtualizada(mesa.id, versao, dados);
+              else upd(mesaZerada(mesa));
+              setSel(null); setTelaSalao("mapa");
+              msgSalao(`🔓 Mesa ${mesa.id} liberada sem cobrança`, "#6b7280");
+            }} />
+          )}
         </div>
       </div>
     );

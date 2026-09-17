@@ -8,7 +8,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import * as focus from "./fiscal/focusnfe.js";
-import { aplicarPagamentoNaMesa } from "./salao/fechamento.js";
+import { aplicarPagamentoNaMesa, mesaZeradaServidor } from "./salao/fechamento.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -416,6 +416,17 @@ const MesaSalaoSchema = new mongoose.Schema({
 }, { timestamps: true });
 MesaSalaoSchema.index({ dataStr: 1, mesaId: 1 }, { unique: true });
 const MesaSalaoDB = mongoose.model("MesaSalao", MesaSalaoSchema);
+
+// Mesa liberada pelo adm SEM venda (conta ja paga, pedido cancelado). O que
+// estava nela fica guardado aqui, com o motivo e quem liberou.
+const LiberacaoMesaSchema = new mongoose.Schema({
+  mesaId:  Number,
+  dataStr: String,
+  antes:   Object,
+  motivo:  String,
+  porQuem: String,
+}, { timestamps: true });
+const LiberacaoMesaDB = mongoose.model("LiberacaoMesa", LiberacaoMesaSchema);
 
 // O periodo do caixa vai do fim do ultimo fechamento ate agora. Nunca vira
 // sozinho: enquanto ninguem apertar "fechar caixa", tudo continua no mesmo
@@ -3789,6 +3800,39 @@ app.put("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) =
 });
 
 // DELETE /mesas — zera o salao do dia (usado pelo "zerar salão" do painel)
+// POST /mesas/:mesaId/liberar — o adm solta uma mesa presa sem gerar venda.
+// Fechar de novo gravaria a venda em dobro (e excluir a venda nao devolve o
+// estoque); por isso existe este caminho, com motivo obrigatorio e registro.
+app.post("/mesas/:mesaId/liberar", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  const mesaId = parseInt(req.params.mesaId);
+  if (!Number.isFinite(mesaId)) return res.status(400).json({ erro: "Mesa invalida" });
+  const motivo = String(req.body?.motivo || "").trim().slice(0, 200);
+  if (motivo.length < 5) return res.status(400).json({ erro: "Diga o motivo (ex.: conta ja paga, pedido cancelado)" });
+  const dataStr = diaOperacional();
+  const quem = req.user?.nome || req.user?.role || "";
+  try {
+    for (let tentativa = 0; tentativa < 6; tentativa++) {
+      const atual = await MesaSalaoDB.findOne({ dataStr, mesaId }).lean();
+      if (!atual) return res.json({ ok: true, dados: null });   // nada no servidor: o painel zera sozinho
+      const novo = await MesaSalaoDB.findOneAndUpdate(
+        { dataStr, mesaId, versao: atual.versao },
+        { $set: { dados: mesaZeradaServidor(atual.dados), porQuem: quem }, $inc: { versao: 1 } },
+        { new: true }
+      ).lean();
+      if (novo) {
+        await LiberacaoMesaDB.create({ mesaId, dataStr, antes: atual.dados, motivo, porQuem: quem });
+        console.log(`Mesa ${mesaId} liberada sem venda por ${quem}: ${motivo}`);
+        return res.json({ ok: true, versao: novo.versao, dados: novo.dados });
+      }
+    }
+    res.status(409).json({ erro: "A mesa esta sendo alterada agora; tente de novo" });
+  } catch (e) {
+    console.error("Erro ao liberar mesa:", e.message);
+    res.status(500).json({ erro: "Erro ao liberar a mesa" });
+  }
+});
+
 // Remove UMA mesa extra do dia (a 17, a 18...). So se estiver livre: mesa com
 // pedido nao some por engano. Os outros aparelhos param de ve-la no poll.
 app.delete("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) => {
