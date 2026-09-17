@@ -8,6 +8,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import * as focus from "./fiscal/focusnfe.js";
+import { aplicarPagamentoNaMesa } from "./salao/fechamento.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -1943,18 +1944,61 @@ app.post("/vendas-salao", authMiddleware(["dono"]), async (req, res) => {
   const trc = normalizarTroco(req.body, pag.pagamentos);
   if (trc.erro) return res.status(400).json({ erro: trc.erro });
 
+  // O que fazer com a mesa depois da venda (opcional; painel antigo nao manda)
+  const lib = req.body.liberarMesa;
+  let liberar = null;
+  if (lib && typeof lib === "object") {
+    const mesaId = Number(lib.mesaId);
+    if (!Number.isFinite(mesaId) || mesaId !== Number(req.body.mesa)) return res.status(400).json({ erro: "Mesa da venda nao confere" });
+    if (!["mesa", "comanda", "parcial"].includes(lib.modo)) return res.status(400).json({ erro: "Modo de fechamento invalido" });
+    const scIds = Array.isArray(lib.scIds) ? lib.scIds.map(Number).filter(Number.isFinite) : [];
+    if (lib.modo !== "mesa" && !scIds.length) return res.status(400).json({ erro: "Informe a comanda paga" });
+    liberar = { mesaId, modo: lib.modo, scIds };
+  }
+
   try {
+    const { liberarMesa: _ignorar, ...corpo } = req.body;
     const venda = await VendaSalaoDB.create({
-      ...req.body, ...desc, ...gor,
+      ...corpo, ...desc, ...gor,
       pagamento: pag.pagamento, pagamentos: pag.pagamentos,
       recebidoDinheiro: trc.recebidoDinheiro, troco: trc.troco,
     });
     // Baixa automática no estoque
     await baixarEstoqueVenda(req.body.itens, String(venda._id));
-    res.status(201).json(venda);
+
+    const resposta = venda.toObject();
+    if (liberar) {
+      // A venda ja esta gravada; se a mesa falhar, o painel cai no caminho antigo
+      try {
+        const m = await liberarMesaAposVenda(liberar, venda.itens, req.user?.nome || req.user?.role || "");
+        if (m) resposta.mesaAtualizada = m;
+      } catch (e) {
+        console.error("Venda gravada, mas a mesa nao foi liberada:", e.message);
+        resposta.mesaErro = e.message;
+      }
+    }
+    res.status(201).json(resposta);
   }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
+
+// Tira da mesa o que acabou de ser pago, sobre a versao mais nova dela.
+// Se outro aparelho gravar no meio, le de novo e reaplica.
+async function liberarMesaAposVenda({ mesaId, modo, scIds }, pagos, quem) {
+  const dataStr = diaOperacional();
+  for (let tentativa = 0; tentativa < 6; tentativa++) {
+    const atual = await MesaSalaoDB.findOne({ dataStr, mesaId }).lean();
+    if (!atual) return null;   // mesa nao esta no servidor hoje: o painel resolve
+    const dados = aplicarPagamentoNaMesa(atual.dados, { modo, scIds }, pagos);
+    const novo = await MesaSalaoDB.findOneAndUpdate(
+      { dataStr, mesaId, versao: atual.versao },
+      { $set: { dados, porQuem: quem }, $inc: { versao: 1 } },
+      { new: true }
+    ).lean();
+    if (novo) return { versao: novo.versao, dados: novo.dados };
+  }
+  throw new Error("A mesa foi alterada varias vezes seguidas; tente de novo");
+}
 // PUT /vendas-salao/:id — corrige uma venda ja fechada.
 // So o que costuma sair errado no balcao: forma de pagamento, desconto,
 // gorjeta, mesa e nome. ITENS ficam de fora de proposito: mexer neles exige
@@ -3709,8 +3753,10 @@ app.put("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) =
       return res.status(201).json({ ok: true, versao: criada.versao });
     }
 
+    // Sem versao, o aparelho nao sabe o que existe no servidor: gravar por cima
+    // apagaria o que outro aparelho fez (inclusive um fechamento).
     const esperada = Number(versao);
-    if (Number.isFinite(esperada) && esperada !== atual.versao) {
+    if (versao === undefined || versao === null || !Number.isFinite(esperada) || esperada !== atual.versao) {
       return res.status(409).json({
         erro: "Essa mesa foi alterada em outro aparelho",
         versao: atual.versao,

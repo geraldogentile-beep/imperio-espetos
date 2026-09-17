@@ -5057,7 +5057,7 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
   );
 }
 
-function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada, onMesaRemovida }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada, onMesaRemovida, onMesaAtualizada }) {
   // ── MODO EVENTO (preços promocionais) ──
   const modoEvento = configExterna?.modoEvento || {};
   const emModoEvento = (() => {
@@ -5317,6 +5317,22 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   // "o usuario mudou" de "meu cache esta velho".
   function upd(m){ onMesaEditada?.(m.id); setMesas(p=>p.map(x=>x.id===m.id?m:x)); }
 
+  // Depois de uma venda: a mesa que o servidor devolveu manda (ele tirou so o
+  // que foi pago, sobre a versao mais nova). Servidor antigo nao devolve nada;
+  // ai o painel grava a previa como antes.
+  function aplicarMesaPaga(mesaServidor, previa) {
+    if (mesaServidor?.dados && onMesaAtualizada) {
+      onMesaAtualizada(mesa.id, mesaServidor.versao, mesaServidor.dados);
+      const final = migrarMesa(mesaServidor.dados);
+      const aMais = parseFloat((totMesaCompleta(final) - totMesaCompleta(previa)).toFixed(2));
+      if (aMais > 0) setTimeout(() => msgSalao(`ℹ️ ${fmtR(aMais)} lançados na mesa durante o pagamento continuam em aberto`, "#0e7490"), 4200);
+      return final;
+    }
+    upd(previa);
+    return previa;
+  }
+  const temItens = (m) => (m?.subComandas || []).some(s => (s.itens || []).length || (s.rodadas || []).length);
+
   // Sub-comanda ativa (com segurança para índice fora do range)
   const scIdx = Math.min(selSC, (mesa?.subComandas?.length||1)-1);
   const sc = mesa?.subComandas?.[scIdx] || initSubComanda(1);
@@ -5474,8 +5490,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     };
     // Antes: erro no POST era só console.warn e a mesa era liberada mesmo assim.
     // A venda existia no painel e NAO no banco -> divergia do fechamento do dia.
+    let mesaServidor = null;
     try {
-      const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
+      const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ ...registro, liberarMesa: { mesaId: mesa.id, modo: "comanda", scIds: [scFechando.id] } })});
       if (!res.ok) {
         const err = await res.json().catch(()=>({}));
         msgSalao(`❌ Nao foi possivel registrar a venda: ${err.erro || res.status}`, "#ef4444");
@@ -5484,6 +5502,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       }
       const salvo = await res.json();
       registro._id = salvo._id;
+      mesaServidor = salvo.mesaAtualizada || null;
     } catch(e){
       console.error("Falha ao salvar venda:", e);
       msgSalao("❌ Sem conexao com o servidor. A mesa NAO foi fechada.", "#ef4444");
@@ -5500,17 +5519,19 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
     limparPagamento();
 
-    // Remove a comanda fechada
+    // Remove a comanda fechada (previa; a versao do servidor prevalece)
     const novasSCs = mesa.subComandas.filter((_,i)=>i!==idxSC);
     const novoStatus = novasSCs.length===0||novasSCs.every(s=>s.itens.length===0&&(s.rodadas||[]).length===0)?"livre":"ocupada";
-    if(novasSCs.length===0) {
+    const previa = novasSCs.length===0
+      ? mesaZerada(mesa)
+      : {...mesa, subComandas:novasSCs, status:novoStatus, solicitadoPor:null, solicitadoEm:null,
+         ...(novoStatus==="livre" ? MESA_LIBERADA : {})};
+    const final = aplicarMesaPaga(mesaServidor, previa);
+    if (novasSCs.length===0 && !temItens(final)) {
       // Mesa totalmente liberada
-      upd(mesaZerada(mesa));
       setSel(null); setTelaSalao("mapa");
     } else {
-      upd({...mesa, subComandas:novasSCs, status:novoStatus, solicitadoPor:null, solicitadoEm:null,
-           ...(novoStatus==="livre" ? MESA_LIBERADA : {})});
-      setSelSC(Math.min(idxSC, novasSCs.length-1));
+      setSelSC(Math.min(idxSC, Math.max(0, (final.subComandas||[]).length-1)));
       setTelaSalao("comanda");
     }
     msgSalao(`✅ ${scFechando.label} fechada! ${fmtR(totalSC)}${textoTroco(pagamentos)}`);
@@ -5542,15 +5563,19 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       ...infoTroco(pagamentos),
       abertura: mesa.abertura, fechamento: new Date().toISOString(),
     };
+    let mesaServidor = null;
     try {
-      const res = await authFetch(BACKEND_URL + "/vendas-salao", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(registro) });
+      const res = await authFetch(BACKEND_URL + "/vendas-salao", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...registro, liberarMesa: { mesaId: mesa.id, modo: "parcial", scIds: indices.map(i => mesa.subComandas[i]?.id).filter(v => v != null) } }) });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         msgSalao(`❌ Nao foi possivel registrar o pagamento: ${err.erro || res.status}`, "#ef4444");
         fechandoRef.current = false;
         return;
       }
-      registro._id = (await res.json())._id;
+      const salvo = await res.json();
+      registro._id = salvo._id;
+      mesaServidor = salvo.mesaAtualizada || null;
     } catch (e) {
       msgSalao("❌ Sem conexao com o servidor. Nada foi pago.", "#ef4444");
       fechandoRef.current = false;
@@ -5560,8 +5585,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     setFaturado(f => f + total);
 
     // So depois da venda gravada a mesa perde os itens pagos
-    const novaMesa = removerItensPagos(mesa, indices, itensSel);
-    upd(novaMesa);
+    const novaMesa = aplicarMesaPaga(mesaServidor, removerItensPagos(mesa, indices, itensSel));
     setUltimaVenda(registro);
     imprimirComprovante(registro, false);
     limparPagamento();
@@ -5598,8 +5622,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       ...infoTroco(pagamentos),
       abertura:mesa.abertura, fechamento:new Date().toISOString(),
     };
+    let mesaServidor = null;
     try {
-      const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(registro)});
+      const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ ...registro, liberarMesa: { mesaId: mesa.id, modo: "mesa" } })});
       if (!res.ok) {
         const err = await res.json().catch(()=>({}));
         msgSalao(`❌ Nao foi possivel registrar a venda: ${err.erro || res.status}`, "#ef4444");
@@ -5608,6 +5634,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       }
       const salvo = await res.json();
       registro._id = salvo._id;
+      mesaServidor = salvo.mesaAtualizada || null;
     } catch(e) {
       console.error("Falha ao salvar venda:", e);
       msgSalao("❌ Sem conexao com o servidor. A mesa NAO foi fechada.", "#ef4444");
@@ -5623,7 +5650,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     imprimirComprovante(registro, false);
 
     msgSalao(`✅ Mesa ${mesa.id} fechada! ${fmtR(totalMesa)} — ${descrevePagamento(pagamentos, pagSalao)}${textoTroco(pagamentos)}`);
-    upd(mesaZerada(mesa));
+    aplicarMesaPaga(mesaServidor, mesaZerada(mesa));
     limparPagamento();
     setSel(null); setTelaSalao("mapa"); setDivSalao(1); setSelSC(0);
     fechandoRef.current = false;
@@ -6438,7 +6465,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             </div>
           ):(
             totalAcumulado>0&&(
-              <button onClick={()=>{upd({...mesa,status:"conta",solicitadoPor:mesa.garcom||garcomLogado?.nome||"Garçom",solicitadoEm:new Date().toISOString()});msgSalao("📨 Fechamento solicitado ao caixa!","#8b5cf6");}} style={BP2(mesa.status==="conta"?"#8b5cf6":"linear-gradient(135deg,#7c3aed,#6d28d9)")}>
+              <button onClick={()=>{
+                // Tocar de novo nao grava nada: cada gravacao a mais disputava
+                // a mesa com o caixa na hora de fechar.
+                if (mesa.status === "conta") { msgSalao("✅ O caixa já recebeu o pedido de fechamento","#8b5cf6"); return; }
+                upd({...mesa,status:"conta",solicitadoPor:mesa.garcom||garcomLogado?.nome||"Garçom",solicitadoEm:new Date().toISOString()});
+                msgSalao("📨 Fechamento solicitado ao caixa!","#8b5cf6");
+              }} style={BP2(mesa.status==="conta"?"#8b5cf6":"linear-gradient(135deg,#7c3aed,#6d28d9)")}>
                 {mesa.status==="conta"?"✅ Fechamento já solicitado":"📨 Solicitar fechamento ao caixa"}
               </button>
             )
@@ -6988,6 +7021,17 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   // entrar na fila de envio.
   const marcarMesaEditada = useCallback((id) => { sujasMesa.current.add(id); }, []);
   const removidasMesa = useRef(new Set());   // extras removidas AQUI, ate o servidor confirmar
+  // Mesa acabou de ser fechada pelo servidor: por alguns segundos, ignora
+  // resposta de consulta atrasada (anterior ao fechamento) que traria a mesa
+  // ocupada de volta.
+  const protegidasMesa = useRef({});   // mesaId -> { versao, ate }
+  const aplicarMesaAutoritativa = useCallback((id, versao, dados) => {
+    versaoMesa.current[id] = versao;
+    enviadoMesa.current[id] = JSON.stringify(dados);
+    sujasMesa.current.delete(id);
+    protegidasMesa.current[id] = { versao, ate: Date.now() + 15000 };
+    setMesasSalao(prev => prev.map(m => m.id === id ? migrarMesa(dados) : m));
+  }, []);
 
   // Remover mesa extra: some daqui e do servidor; os outros aparelhos
   // deixam de ve-la no proximo poll.
@@ -7010,6 +7054,8 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     // "já aplicado" e descartar a atualização inteira.
     const aplicar = [];
     for (const remota of lista) {
+      const prot = protegidasMesa.current[remota.mesaId];
+      if (prot && Date.now() < prot.ate && remota.versao < prot.versao) continue;
       // Não atropela mesa que este aparelho mexeu e ainda não sincronizou
       if (sujasMesa.current.has(remota.mesaId)) continue;
       if (enviandoMesa.current.has(remota.mesaId)) continue;
@@ -7548,7 +7594,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} onMesaRemovida={removerMesaExtra} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} onMesaRemovida={removerMesaExtra} onMesaAtualizada={aplicarMesaAutoritativa} />}
           {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
         </div>

@@ -44,13 +44,14 @@ const pc = api(token);        // o caixa
 
 console.log(`\nServidor: ${BASE} · mesa de teste: ${MESA}\n`);
 
-// Estado limpo para esta mesa
-await celular("PUT", `/mesas/${MESA}`, { dados: mesaCom([]), versao: undefined });
+// Estado limpo para esta mesa (o servidor exige a versao se a mesa ja existe)
+const versaoAtual = async () => ((await pc("GET", "/mesas")).corpo.mesas || []).find(m => m.mesaId === MESA)?.versao;
+await celular("PUT", `/mesas/${MESA}`, { dados: mesaCom([]), versao: await versaoAtual() });
 
 console.log("=== 1) o que o garcom lanca aparece para o caixa ===");
 {
   const escrita = await celular("PUT", `/mesas/${MESA}`, {
-    dados: mesaCom([{ id: 1, nome: "Alcatra", qty: 2, preco: 9 }]),
+    dados: mesaCom([{ id: 1, nome: "Alcatra", qty: 2, preco: 9 }]), versao: await versaoAtual(),
   });
   ok(escrita.status === 200 || escrita.status === 201, `gravou (HTTP ${escrita.status})`);
 
@@ -116,8 +117,14 @@ console.log("\n=== 5) mesa invalida ===");
   ok(r2.status === 400, `sem dados recusou (HTTP ${r2.status})`);
 }
 
+console.log("\n=== 6) gravar sem versao nao passa por cima ===");
+{
+  const r = await celular("PUT", `/mesas/${MESA}`, { dados: mesaCom([{ id: 9, nome: "Cache velho", qty: 5, preco: 1 }]) });
+  ok(r.status === 409 && !!r.corpo.dados, `recusou e devolveu o estado atual (HTTP ${r.status})`);
+}
+
 // Limpeza: devolve a mesa de teste ao estado vazio
-await celular("PUT", `/mesas/${MESA}`, { dados: mesaCom([]) });
+await celular("PUT", `/mesas/${MESA}`, { dados: mesaCom([]), versao: await versaoAtual() });
 
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);
 process.exit(falhas === 0 ? 0 : 1);
