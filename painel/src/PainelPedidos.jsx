@@ -133,6 +133,42 @@ async function enfileirarImpressao(tipo, dados) {
   return r.json();
 }
 
+const IMPRIMIR_AQUI = {
+  cozinha:  (d) => impressora.imprimirComanda(d),
+  recibo:   (d) => impressora.imprimirRecibo(d),
+  delivery: (d) => impressora.imprimirPedidoDelivery(d),
+};
+
+// Imprime na termica deste aparelho se ela esta conectada; se nao, o ticket
+// vai para a fila do servidor e sai quando a impressora voltar (a estacao do
+// caixa puxa a fila). Antes, com a impressora fora do ar, o app tentava
+// direto, falhava e abria a janela do navegador: o "enviar para a cozinha"
+// nao saia na termica nem depois que ela reconectava.
+// Devolve { via: "local" | "fila" }. So lanca erro se nada deu certo.
+async function imprimirOuEnfileirar(tipo, dados) {
+  const aqui = async () => {
+    try { await IMPRIMIR_AQUI[tipo](dados); return true; }
+    catch (e) { if (e?.semConexao) return false; throw e; }
+  };
+  if (impressora.isConnected() && await aqui()) return { via: "local" };
+
+  const temImpressora = impressora.temDispositivoSalvo();
+  // Aparelho com impressora mas que nao e a estacao: ninguem puxaria a fila
+  // por ele, entao espera a impressora voltar aqui mesmo.
+  if (temImpressora && !estacaoLigada() && await impressora.garantirConexao() && await aqui()) {
+    return { via: "local" };
+  }
+  try {
+    await enfileirarImpressao(tipo, dados);
+    if (temImpressora) impressora.reconectarAuto().catch(() => {});
+    return { via: "fila", aguardandoImpressora: temImpressora };
+  } catch (e) {
+    // Servidor fora: ultima chance na termica deste aparelho
+    if (temImpressora && await impressora.garantirConexao() && await aqui()) return { via: "local" };
+    throw e;
+  }
+}
+
 function abrirJanelaImpressao(dimensoes = "width=400,height=600") {
   const win = window.open("", "_blank", dimensoes);
   if (!win) {
@@ -1766,7 +1802,7 @@ function SugestoesFiscais() {
 
 // ── CONFIGURAÇÃO DE IMPRESSORA BLUETOOTH ──────────────────────
 function ImpressoraConfig() {
-  const [status, setStatus] = useState({ conectada: impressora.isConnected(), nome: null, reconectando: false });
+  const [status, setStatus] = useState(() => impressora.status());
   const [conectando, setConectando] = useState(false);
   const [imprimindo, setImprimindo] = useState(false);
   const [erro, setErro] = useState(null);
@@ -1827,6 +1863,15 @@ function ImpressoraConfig() {
     return () => { vivo = false; clearInterval(t); };
   }, []);
 
+  // Os que desistiram depois de 3 falhas voltam para a fila
+  async function reenviarErrosFila() {
+    try {
+      const r = await authFetch(BACKEND_URL + "/impressao/erros/reenviar", { method: "POST" });
+      if (r.status === 404) { setErro("O servidor ainda não tem esta função. Atualize o servidor (git pull na VPS)."); return; }
+      if (r.ok) setFila(f => ({ pendentes: f.pendentes + f.erros, erros: 0 }));
+    } catch {}
+  }
+
   async function limparErrosFila() {
     try {
       await authFetch(BACKEND_URL + "/impressao/erros", { method: "DELETE" });
@@ -1868,6 +1913,9 @@ function ImpressoraConfig() {
                   {status.conectada ? "Impressora conectada" : status.reconectando ? "Reconectando..." : "Impressora desconectada"}
                 </div>
                 {status.nome && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>📱 {status.nome}</div>}
+                {!status.conectada && !status.reconectando && status.erro && (
+                  <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 4 }}>Último problema: {status.erro}</div>
+                )}
                 {!status.conectada && !status.reconectando && temSalvo && (
                   <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>💾 Tentamos reconectar automaticamente quando você abre o painel</div>
                 )}
@@ -1937,6 +1985,8 @@ function ImpressoraConfig() {
                 Na fila agora: <strong>{fila.pendentes}</strong>
                 {fila.erros > 0 && (
                   <> · <strong>{fila.erros} com erro</strong>{" "}
+                    <button onClick={reenviarErrosFila} style={{ background: "none", border: "none", color: "#991b1b", textDecoration: "underline", fontSize: 12, cursor: "pointer", padding: 0, fontWeight: 700 }}>imprimir de novo</button>
+                    {" · "}
                     <button onClick={limparErrosFila} style={{ background: "none", border: "none", color: "#991b1b", textDecoration: "underline", fontSize: 12, cursor: "pointer", padding: 0 }}>limpar</button>
                   </>
                 )}
@@ -1957,7 +2007,8 @@ function ImpressoraConfig() {
             1. <strong>Instale como app</strong>: no Chrome → menu (⋮) → "Adicionar à tela inicial". Vira um ícone igual app nativo, conexão fica mais estável.<br /><br />
             2. <strong>Não feche</strong> o painel/Chrome durante o expediente.<br /><br />
             3. <strong>Mantenha o celular plugado</strong> no carregador (a tela acende sozinha quando você usa).<br /><br />
-            4. Se a conexão cair, ao voltar pro painel <strong>reconecta sozinha em 1-2 segundos</strong>.
+            4. Se a conexão cair, o painel <strong>tenta reconectar sozinho</strong>. Os tickets ficam guardados na fila e saem quando ela voltar.<br /><br />
+            5. <strong>No computador (Windows)</strong>: Gerenciador de Dispositivos → Bluetooth → clique duas vezes no adaptador → aba "Gerenciamento de Energia" → desmarque "Permitir que o computador desligue este dispositivo para economizar energia". Isso evita boa parte das quedas.
           </div>
         </>
       )}
@@ -4737,13 +4788,14 @@ function PedidoCard({ pedido, onStatus, onPagamento, expanded, onToggle, atualiz
           ) : pedido.status !== "entregue" && pedido.status !== "cancelado" && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button onClick={async () => {
-                if (impressora.isDisponivel()) {
-                  try {
-                    await impressora.imprimirPedidoDelivery(pedido);
-                    return;
-                  } catch (e) { console.warn("Erro imprimir delivery:", e.message); }
+                try {
+                  const r = await imprimirOuEnfileirar("delivery", pedido);
+                  if (r.via === "fila") alert(r.aguardandoImpressora
+                    ? "Impressora desconectada: o pedido sai assim que ela reconectar."
+                    : "Pedido enviado para a impressora do caixa.");
+                } catch (e) {
+                  alert("Não foi possível imprimir: " + (e.message || e) + "\nVeja em Config → Impressora.");
                 }
-                alert("Impressora Bluetooth não conectada. Vá em Config → Impressora.");
               }} style={{ background: T.white, color: T.dark, border: `1.5px solid ${T.grayL}`, borderRadius: T.radiusS, padding: "10px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>🖨️ Imprimir</button>
               {podeEditar && <button onClick={iniciarEdicao} style={{ background: T.white, color: T.blue, border: `1.5px solid ${T.blue}`, borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily:"'DM Sans',sans-serif" }}>✏️ Editar</button>}
               {nxt && <button onClick={() => onStatus(pedido.id, nxt)} disabled={atualizando} style={{ flex: 1, minWidth: 140, background: atualizando ? T.grayL : `linear-gradient(135deg,${T.wineD},${T.wine})`, color: T.white, border: "none", borderRadius: T.radiusS, padding: "10px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily:"'DM Sans',sans-serif" }}>{STATUS_CONFIG[nxt].icon} {STATUS_CONFIG[nxt].label}</button>}
@@ -5030,13 +5082,137 @@ function BotaoLiberarMesa({ mesa, onLiberada }) {
   );
 }
 
+// ── SITUAÇÃO DA IMPRESSORA NO MAPA DO SALÃO ──────────────────
+// Quem cuida do caixa ve na hora se a impressora caiu e quantos tickets estao
+// esperando, sem precisar entrar em Config.
+function ChipImpressora({ podeReenviar }) {
+  const [st, setSt] = useState(() => impressora.status());
+  const [fila, setFila] = useState({ pendentes: 0, erros: 0 });
+  const [ocupado, setOcupado] = useState(false);
+  const [aviso, setAviso] = useState("");
+  useEffect(() => { const sair = impressora.onStatus(setSt); return () => { sair(); }; }, []);
+  useEffect(() => {
+    let vivo = true;
+    async function ler() {
+      try {
+        const r = await authFetch(BACKEND_URL + "/impressao/status");
+        if (r.ok && vivo) setFila(await r.json());
+      } catch {}
+    }
+    ler();
+    const t = setInterval(ler, 10000);
+    return () => { vivo = false; clearInterval(t); };
+  }, []);
+
+  const pendentes = fila.pendentes || 0, erros = fila.erros || 0;
+  if (!st.salva && !st.conectada && !pendentes && !erros) return null;
+
+  async function reconectar() {
+    setOcupado(true); setAviso("");
+    const r = await impressora.reconectarAuto();
+    if (r?.erro) setAviso(r.erro);
+    setOcupado(false);
+  }
+  async function parear() {
+    setAviso("");
+    try { await impressora.conectar(); }
+    catch (e) { if (!String(e).includes("cancel")) setAviso(e.message || "Não foi possível conectar"); }
+  }
+  async function reenviar() {
+    try {
+      const r = await authFetch(BACKEND_URL + "/impressao/erros/reenviar", { method: "POST" });
+      if (r.status === 404) setAviso("Atualize o servidor (git pull na VPS) para usar isto.");
+      else if (r.ok) setFila(f => ({ pendentes: (f.pendentes || 0) + (f.erros || 0), erros: 0 }));
+    } catch {}
+  }
+
+  const cor = st.conectada ? "#34d399" : st.reconectando ? "#fbbf24" : st.salva ? "#f87171" : "#cbd5e1";
+  const texto = st.conectada ? "Impressora ok"
+    : st.reconectando ? "Reconectando impressora..."
+    : st.salva ? "Impressora desconectada"
+    : "Impressora do caixa";
+  const botao = { background: "rgba(255,255,255,0.9)", color: "#7b1a0a", border: "none", borderRadius: 7, padding: "3px 8px", fontWeight: 700, fontSize: 11, cursor: "pointer" };
+
+  return (
+    <div style={{ background: "rgba(255,255,255,0.15)", borderRadius: 10, padding: "5px 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", border: st.salva && !st.conectada && !st.reconectando ? "1px solid #f87171" : "1px solid transparent" }}>
+      <span style={{ width: 8, height: 8, borderRadius: "50%", background: cor, flexShrink: 0 }} />
+      <span style={{ fontWeight: 700 }}>🖨️ {texto}</span>
+      {pendentes > 0 && <span style={{ opacity: 0.9 }}>· {pendentes} na fila</span>}
+      {erros > 0 && <span style={{ color: "#fecaca", fontWeight: 700 }}>· {erros} não saíram</span>}
+      {st.salva && !st.conectada && !st.reconectando && (
+        <button onClick={reconectar} disabled={ocupado} style={botao}>{ocupado ? "..." : "Reconectar"}</button>
+      )}
+      {st.salva && !st.conectada && !st.reconectando && aviso && impressora.isSupported() && (
+        <button onClick={parear} style={botao}>Parear de novo</button>
+      )}
+      {podeReenviar && erros > 0 && <button onClick={reenviar} style={botao}>Imprimir de novo</button>}
+      {aviso && <span style={{ width: "100%", fontSize: 11, color: "#fde68a" }}>{aviso}</span>}
+    </div>
+  );
+}
+
+// ── RESUMO DA MESA ──────────────────────────────────────────
+// Tudo o que a mesa consumiu, somado, com o total. Antes a mesa mostrava
+// pedido por pedido e o total ficava so no canto do cabecalho.
+function ResumoMesa({ mesa }) {
+  const scs = mesa.subComandas || [];
+  const itens = juntarItens(scs.flatMap(s => [...(s.rodadas || []).flatMap(r => r.itens || []), ...(s.itens || [])]));
+  if (itens.length === 0) return null;
+  const qtd = itens.reduce((q, i) => q + (i.qty || 1), 0);
+  const naoEnviados = scs.reduce((q, s) => q + (s.itens || []).reduce((n, i) => n + (i.qty || 1), 0), 0);
+  const porComanda = scs
+    .map(s => ({ id: s.id, label: s.label, cliente: s.cliente, total: totMesa(s.itens) + (s.rodadas || []).reduce((t, r) => t + totMesa(r.itens), 0) }))
+    .filter(c => c.total > 0);
+  const total = totMesaCompleta(mesa);
+  return (
+    <div style={{background:"#fff",borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:10,border:"1.5px solid #f0c040"}}>
+      <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>🧾 Resumo da mesa · {qtd} {qtd === 1 ? "item" : "itens"}</div>
+      {itens.map(it => (
+        <div key={chaveItem(it)} style={{display:"flex",alignItems:"baseline",gap:8,fontSize:13,padding:"4px 0",borderBottom:"1px dashed #f3f3f3"}}>
+          <span style={{fontWeight:800,minWidth:30}}>{it.qty}x</span>
+          <span style={{flex:1,minWidth:0}}>{it.nome}</span>
+          <span style={{fontSize:11,color:"#999",whiteSpace:"nowrap"}}>{fmtR(Number(it.preco) || 0)}</span>
+          <span style={{fontWeight:700,minWidth:70,textAlign:"right",whiteSpace:"nowrap"}}>{fmtR(it.qty * (Number(it.preco) || 0))}</span>
+        </div>
+      ))}
+      {porComanda.length > 1 && (
+        <div style={{marginTop:8,paddingTop:6,borderTop:"1px solid #f0f0f0"}}>
+          {porComanda.map(c => (
+            <div key={c.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#666",padding:"2px 0"}}>
+              <span>{c.label}{c.cliente ? ` · ${c.cliente}` : ""}</span>
+              <span style={{fontWeight:700}}>{fmtR(c.total)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginTop:8,paddingTop:10,borderTop:"2px solid #7b1a0a",color:"#7b1a0a"}}>
+        <span style={{fontSize:15,fontWeight:800}}>Total da mesa</span>
+        <span style={{fontSize:22,fontWeight:900}}>{fmtR(total)}</span>
+      </div>
+      {naoEnviados > 0 && (
+        <div style={{fontSize:11,color:"#b45309",marginTop:4}}>
+          Inclui {naoEnviados} {naoEnviados === 1 ? "item que ainda não foi enviado" : "itens que ainda não foram enviados"} à cozinha
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── EDITOR DE RODADAS (ITENS JÁ ENVIADOS À COZINHA) ─────────
-function RodadasEditor({ rodadas, isDono, onSave }) {
+function RodadasEditor({ rodadas, isDono, onSave, onReimprimir }) {
   // Detecta rodada recém-adicionada (últimos 5 segundos)
   const agora = Date.now();
   function isRecente(hora) { return agora - new Date(hora).getTime() < 5000; }
   const [editIdx, setEditIdx] = useState(null);
   const [editItens, setEditItens] = useState([]);
+  const [reimprimindo, setReimprimindo] = useState(null);
+
+  // Segura o botao uns segundos: dois toques nao mandam dois tickets
+  async function reimprimir(r, ri) {
+    if (reimprimindo !== null) return;
+    setReimprimindo(ri);
+    try { await onReimprimir(r); } finally { setTimeout(() => setReimprimindo(null), 2500); }
+  }
 
   function iniciarEdicao(ri) {
     setEditItens((rodadas[ri].itens || []).map(i => ({ ...i, qty: i.qty || 1 })));
@@ -5066,8 +5242,17 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
               {recente && <span style={{fontWeight:700,marginLeft:6}}>Enviado!</span>}
               {r.editadoEm && <span style={{color:"#f59e0b",marginLeft:6}}>(editado)</span>}
             </div>
-            {isDono && editIdx !== ri && (
-              <button onClick={() => iniciarEdicao(ri)} style={{background:"#eff6ff",color:"#1d4ed8",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✏️ Editar</button>
+            {editIdx !== ri && (
+              <div style={{display:"flex",gap:6,flexShrink:0}}>
+                {onReimprimir && (
+                  <button onClick={() => reimprimir(r, ri)} disabled={reimprimindo !== null} style={{background:"#f5f3ff",color:"#6d28d9",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:600,cursor:"pointer",opacity:reimprimindo !== null && reimprimindo !== ri ? 0.5 : 1}}>
+                    {reimprimindo === ri ? "🖨️ Enviado" : "🖨️ Reimprimir"}
+                  </button>
+                )}
+                {isDono && (
+                  <button onClick={() => iniciarEdicao(ri)} style={{background:"#eff6ff",color:"#1d4ed8",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:600,cursor:"pointer"}}>✏️ Editar</button>
+                )}
+              </div>
             )}
           </div>
           {editIdx === ri ? (
@@ -5090,15 +5275,28 @@ function RodadasEditor({ rodadas, isDono, onSave }) {
               </div>
             </div>
           ) : (
-            r.itens.map((it, ii) => (
-              <div key={ii} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#555",padding:"2px 0"}}>
-                <span>{it.qty||1}x {it.nome}</span>
+            <>
+              {r.itens.map((it, ii) => (
+                <div key={ii} style={{display:"flex",justifyContent:"space-between",gap:8,fontSize:12,color:"#555",padding:"2px 0"}}>
+                  <span>{it.qty||1}x {it.nome}</span>
+                  <span style={{whiteSpace:"nowrap"}}>{fmtR((it.qty||1) * (Number(it.preco) || 0))}</span>
+                </div>
+              ))}
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:"#333",paddingTop:3}}>
+                <span>Subtotal do pedido</span>
+                <span>{fmtR(totMesa(r.itens))}</span>
               </div>
-            ))
+            </>
           )}
         </div>
       );
       })}
+      {rodadas.length > 1 && (
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:800,color:"#7b1a0a",paddingTop:4}}>
+          <span>Total enviado à cozinha</span>
+          <span>{fmtR(rodadas.reduce((t, r) => t + totMesa(r.itens), 0))}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -5131,6 +5329,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     else if (!impressora.isSupported()) msgSalao("Este navegador nao tem Bluetooth. Use o Chrome no Android.", "#f59e0b");
     else msgSalao("Impressora nao pareada neste aparelho. Va em Config -> Impressora", "#f59e0b");
   }
+  function avisarImpressao(r, textoAqui) {
+    if (r.via === "local") { if (textoAqui) msgSalao(textoAqui); }
+    else if (r.aguardandoImpressora) msgSalao("🖨️ Impressora desconectada: o ticket sai assim que ela reconectar", "#f59e0b");
+    else msgSalao("🖨️ Enviado para a impressora do caixa");
+  }
   const setPerfil = setPerfilSalao;
   const mesas = mesasSalao;
   const setMesas = setMesasSalao;
@@ -5146,19 +5349,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   // senao a fila do caixa, senao a janela do navegador.
   async function imprimirComprovante(venda, avisar = true) {
     if (!venda) return;
-    if (impressora.isDisponivel()) {
-      try {
-        await impressora.imprimirRecibo(venda);
-        if (avisar) msgSalao("✅ Comprovante impresso!");
-        return;
-      } catch (e) { console.warn("Falha BT:", e.message); if (avisar) avisarSemTermica(e.message); }
-    } else {
-      try {
-        await enfileirarImpressao("recibo", venda);
-        if (avisar) msgSalao("🖨️ Comprovante enviado para a impressora do caixa");
-        return;
-      } catch (e) { if (avisar) avisarSemTermica(e.message); }
-    }
+    try {
+      const r = await imprimirOuEnfileirar("recibo", venda);
+      if (avisar) avisarImpressao(r, "✅ Comprovante impresso!");
+      return;
+    } catch (e) { console.warn("Falha ao imprimir:", e.message); if (avisar) avisarSemTermica(e.message); }
 
     const win = abrirJanelaImpressao("width=400,height=600");
     if (!win) return;
@@ -5425,8 +5620,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   }
 
   // Imprime ticket de cozinha SEM VALORES
-  async function imprimirCozinha(rodada, mesaId, scLabel){
+  async function imprimirCozinha(rodada, mesaId, scLabel, opcoes = {}){
     const agora = new Date();
+    const reimpressao = !!opcoes.reimpressao;
     const nomeGarcom = garcomLogado?.nome || mesa.garcom || "—";
 
     const ticket = {
@@ -5439,26 +5635,17 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       // A observacao da mesa ("sem cebola", "bem passado") nao chegava na
       // cozinha: ficava so na tela. Vai em todo ticket desta mesa.
       obs: (mesa.obs || "").trim(),
+      reimpressao,
     };
 
-    // 1) Impressora aqui neste aparelho: imprime direto
-    if (impressora.isDisponivel()) {
-      try {
-        await impressora.imprimirComanda(ticket);
-        return;
-      } catch (e) {
-        console.warn("Falha ao imprimir BT:", e.message);
-        avisarSemTermica(e.message);
-      }
-    } else {
-      // 2) Celular do garcom: manda para a estacao do caixa imprimir
-      try {
-        await enfileirarImpressao("cozinha", ticket);
-        msgSalao("🖨️ Ticket enviado para a impressora do caixa");
-        return;
-      } catch (e) {
-        avisarSemTermica(e.message);
-      }
+    // 1) Termica deste aparelho; 2) fila da estacao do caixa
+    try {
+      const r = await imprimirOuEnfileirar("cozinha", ticket);
+      avisarImpressao(r, reimpressao ? "🖨️ Pedido reimpresso" : "");
+      return;
+    } catch (e) {
+      console.warn("Falha ao imprimir:", e.message);
+      avisarSemTermica(e.message);
     }
 
     // 3) Fallback: janela do navegador
@@ -5482,6 +5669,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 <body>
   <h2>👑 Império dos Espetos</h2>
   <div class="sub">🔥 Pedido — Cozinha / Churrasqueira</div>
+  ${reimpressao ? '<div class="obs" style="text-align:center">REIMPRESSÃO</div>' : ""}
   <hr>
   <div class="info">
     Mesa: <strong>${mesaId}</strong>${scLabel !== "Comanda 1" ? ` &nbsp;|&nbsp; ${scLabel}` : ""}<br>
@@ -6226,23 +6414,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               abertura: abertura,
               fechamento: new Date().toISOString(),
             };
-            if (impressora.isDisponivel()) {
-              try {
-                await impressora.imprimirRecibo(recibo);
-                msgSalao("✅ Comanda impressa!");
-                return;
-              } catch (e) {
-                console.warn("Falha BT:", e.message);
-                avisarSemTermica(e.message);
-              }
-            } else {
-              try {
-                await enfileirarImpressao("recibo", recibo);
-                msgSalao("🖨️ Recibo enviado para a impressora do caixa");
-                return;
-              } catch (e) {
-                avisarSemTermica(e.message);
-              }
+            try {
+              const r = await imprimirOuEnfileirar("recibo", recibo);
+              avisarImpressao(r, "✅ Comanda impressa!");
+              return;
+            } catch (e) {
+              console.warn("Falha ao imprimir:", e.message);
+              avisarSemTermica(e.message);
             }
 
             const win = abrirJanelaImpressao('width=400,height=600');
@@ -6389,8 +6567,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           {(sc.rodadas||[]).length>0&&(
             <RodadasEditor rodadas={sc.rodadas} isDono={isDono} onSave={(novasRodadas) => {
               upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,rodadas:novasRodadas}:s)});
-            }} />
+            }} onReimprimir={podeLancar ? (rodada) => imprimirCozinha(rodada, mesa.id, sc.label, { reimpressao: true }) : null} />
           )}
+          <ResumoMesa mesa={mesa} />
           <div style={{...card2}}>
             <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observações da mesa..." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
           </div>
@@ -6446,23 +6625,13 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                     abertura: mesa.abertura,
                     fechamento: new Date().toISOString(),
                   };
-                  if (impressora.isDisponivel()) {
-                    try {
-                      await impressora.imprimirRecibo(conta);
-                      msgSalao("✅ Comanda impressa!");
-                      return;
-                    } catch (e) {
-                      console.warn("Falha BT:", e.message);
-                      avisarSemTermica(e.message);
-                    }
-                  } else {
-                    try {
-                      await enfileirarImpressao("recibo", conta);
-                      msgSalao("🖨️ Conta enviada para a impressora do caixa");
-                      return;
-                    } catch (e) {
-                      avisarSemTermica(e.message);
-                    }
+                  try {
+                    const r = await imprimirOuEnfileirar("recibo", conta);
+                    avisarImpressao(r, "✅ Comanda impressa!");
+                    return;
+                  } catch (e) {
+                    console.warn("Falha ao imprimir:", e.message);
+                    avisarSemTermica(e.message);
                   }
 
                   const win = abrirJanelaImpressao('width=400,height=650');
@@ -6578,6 +6747,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{fontWeight:800,fontSize:14}}>⚠️ {alertas.length}</div>
             <div style={{fontSize:10,opacity:0.8}}>atenção</div>
           </div>}
+          {(isDono||perfil==="caixa")&&<ChipImpressora podeReenviar={isDono} />}
           <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
             {isDono&&<>
               <button onClick={()=>{
@@ -7224,12 +7394,13 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   // - Tenta a cada 30s enquanto estiver desconectada (e tem dispositivo salvo)
   // - O bluetoothPrinter.js também reage a visibilitychange/focus internamente
   useEffect(() => {
-    if (!impressora.isSupported() || !impressora.temDispositivoSalvo()) return;
+    if (!impressora.isSupported()) return;
 
     let cancelado = false;
     const tentar = () => {
       if (cancelado) return;
-      if (impressora.isConnected()) return;
+      // Confere a cada vez: a impressora pode ter sido pareada depois
+      if (impressora.isConnected() || !impressora.temDispositivoSalvo()) return;
       impressora.reconectarAuto().then(r => {
         if (!cancelado && r?.conectada) console.log("🖨️ Impressora reconectada:", r.nome);
       }).catch(() => {});
@@ -7250,41 +7421,55 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   useEffect(() => {
     let parar = false;
     let rodando = false;   // impede dois ciclos sobrepostos numa impressão lenta
+    let ultimaReconexao = 0;
 
     async function ciclo() {
       if (parar || rodando) return;
-      if (!estacaoLigada() || !impressora.isDisponivel()) return;
+      if (!estacaoLigada() || !impressora.temDispositivoSalvo()) return;
       rodando = true;
       try {
+        // So pega ticket com a impressora conectada. Antes a estacao reservava
+        // com ela fora do ar e cada volta gastava uma das 3 tentativas: depois
+        // de uma queda, os pedidos da cozinha eram dados como perdidos.
+        if (!impressora.isConnected()) {
+          if (Date.now() - ultimaReconexao < 15000) return;
+          ultimaReconexao = Date.now();
+          if (!(await impressora.garantirConexao())) return;
+        }
         const r = await authFetch(BACKEND_URL + "/impressao/reservar", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ limite: 5 }),
         });
-        if (r.ok) {
-          const { jobs = [] } = await r.json();
-          for (const job of jobs) {
-            if (parar) break;
-            let ok = false, erro = null;
+        if (!r.ok) return;
+        const { jobs = [] } = await r.json();
+        let caiu = false;
+        for (const job of jobs) {
+          let ok = false, erro = null, semConexao = false;
+          if (parar || caiu) {
+            // A impressora caiu no meio do lote: devolve o resto sem gastar tentativa
+            erro = "impressora desconectada"; semConexao = true;
+          } else {
             try {
-              if (job.tipo === "cozinha") await impressora.imprimirComanda(job.dados);
-              else if (job.tipo === "recibo") await impressora.imprimirRecibo(job.dados);
-              else if (job.tipo === "delivery") await impressora.imprimirPedidoDelivery(job.dados);
-              else throw new Error("tipo desconhecido: " + job.tipo);
+              const imprimir = IMPRIMIR_AQUI[job.tipo];
+              if (!imprimir) throw new Error("tipo desconhecido: " + job.tipo);
+              await imprimir(job.dados);
               ok = true;
             } catch (e) {
               erro = e.message || "falha ao imprimir";
+              semConexao = !!e.semConexao;
+              caiu = semConexao;
               console.warn("Estacao: falha no job", job.id, erro);
             }
-            // Marca o resultado mesmo em erro: o servidor devolve para a fila
-            // enquanto houver tentativa sobrando.
-            await authFetch(BACKEND_URL + "/impressao/" + job.id + "/concluir", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ok, erro }),
-            }).catch(() => {});
           }
+          // Marca o resultado mesmo em erro: o servidor devolve para a fila
+          // (sem contar tentativa quando o problema foi a conexao).
+          await authFetch(BACKEND_URL + "/impressao/" + job.id + "/concluir", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ok, erro, semConexao }),
+          }).catch(() => {});
         }
       } catch { /* servidor fora: tenta no proximo ciclo */ }
-      rodando = false;
+      finally { rodando = false; }
     }
 
     const t = setInterval(ciclo, 4000);
@@ -7549,8 +7734,11 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 9, color: T.gray, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 600 }}>Hoje</div>
-              <div className="serif-title" style={{ fontWeight: 700, fontSize: 18, color: T.wine, lineHeight: 1 }}>R$ {totalHoje.toFixed(2)}</div>
+              {/* Mesmo olhinho do cabecalho do computador: no celular o valor ficava sempre a mostra */}
+              <div style={{ fontSize: 9, color: T.gray, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
+                Hoje <BotaoOlho aberto={verFaturamento} onClick={() => setVerFaturamento(v => !v)} />
+              </div>
+              <div className="serif-title" style={{ fontWeight: 700, fontSize: 18, color: T.wine, lineHeight: 1 }}>{verFaturamento ? "R$ " + totalHoje.toFixed(2) : VALOR_OCULTO}</div>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <button onClick={fetchAll} title="Atualizar" style={{ background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, cursor: "pointer", fontSize: 14, padding: "6px 10px", borderRadius: 10 }}>↻</button>

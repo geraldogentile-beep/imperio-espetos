@@ -3930,9 +3930,9 @@ app.post("/impressao/reservar", authMiddleware(["dono", "garcom"]), async (req, 
   }
 });
 
-// POST /impressao/:id/concluir  { ok, erro }
+// POST /impressao/:id/concluir  { ok, erro, semConexao }
 app.post("/impressao/:id/concluir", authMiddleware(["dono", "garcom"]), async (req, res) => {
-  const { ok, erro } = req.body || {};
+  const { ok, erro, semConexao } = req.body || {};
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
   try {
     const job = await ImpressaoDB.findById(req.params.id).lean();
@@ -3941,6 +3941,14 @@ app.post("/impressao/:id/concluir", authMiddleware(["dono", "garcom"]), async (r
     if (ok) {
       await ImpressaoDB.findByIdAndUpdate(req.params.id, {
         $set: { status: "impresso", impressoEm: new Date() }, $unset: { erro: "" },
+      });
+    } else if (semConexao) {
+      // A impressora caiu: o ticket nao tem defeito. Volta para a fila sem
+      // gastar tentativa — antes, tres quedas seguidas e o pedido da cozinha
+      // era dado como perdido.
+      await ImpressaoDB.findByIdAndUpdate(req.params.id, {
+        $set: { status: "pendente", tentativas: Math.max(0, (job.tentativas || 0) - 1), erro: String(erro || "impressora desconectada").slice(0, 300) },
+        $unset: { reservadoPor: "", reservadoEm: "" },
       });
     } else {
       // Ainda tem tentativa sobrando? Volta para a fila. Senão desiste.
@@ -3974,6 +3982,19 @@ app.delete("/impressao/erros", authMiddleware(["dono"]), async (req, res) => {
   try {
     const r = await ImpressaoDB.deleteMany({ status: "erro" });
     res.json({ ok: true, removidos: r.deletedCount });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// POST /impressao/erros/reenviar — devolve para a fila o que tinha desistido
+// (a impressora voltou, o papel foi trocado...)
+app.post("/impressao/erros/reenviar", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  try {
+    const r = await ImpressaoDB.updateMany(
+      { status: "erro" },
+      { $set: { status: "pendente", tentativas: 0 }, $unset: { erro: "", reservadoPor: "", reservadoEm: "" } }
+    );
+    res.json({ ok: true, reenviados: r.modifiedCount });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 

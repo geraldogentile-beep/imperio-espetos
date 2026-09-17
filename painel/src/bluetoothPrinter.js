@@ -51,14 +51,55 @@ function textoParaBytes(texto) {
 function texto(t) { return textoParaBytes(t); }
 
 // ── CLASSE PRINCIPAL ──
+// O que faz a conexao aguentar o dia inteiro no caixa:
+//  - toda operacao Bluetooth passa por UMA fila (duas impressoes ao mesmo
+//    tempo davam "GATT operation already in progress" e o ticket sumia);
+//  - conectar tem tempo limite: antes, um connect() que nunca respondia
+//    deixava o app "reconectando" para sempre e nada mais imprimia;
+//  - quem pede para imprimir durante uma reconexao espera por ela;
+//  - quando cai, tenta de novo em 2s, 5s, 10s, 20s e depois a cada 30s;
+//  - de tempos em tempos manda um comando neutro para a impressora nao
+//    desligar a conexao por inatividade.
+// Os testes automatizados encurtam estes tempos por globalThis.__impressoraTempos
+const TEMPOS = (typeof globalThis !== "undefined" && globalThis.__impressoraTempos) || {};
+const TEMPO_CONECTAR_MS = TEMPOS.conectar ?? 12000;
+const TEMPO_DESCOBERTA_MS = TEMPOS.descoberta ?? 8000;
+const TEMPO_ANUNCIO_MS = TEMPOS.anuncio ?? 6000;
+const TEMPO_ESCRITA_MS = TEMPOS.escrita ?? 5000;
+const INTERVALO_MANTER_VIVA_MS = TEMPOS.manterViva ?? 40000;
+const ESPERAS_RECONEXAO_MS = TEMPOS.esperas ?? [2000, 5000, 10000, 20000, 30000];
+
+function comTempo(promessa, ms, mensagem) {
+  let t;
+  return Promise.race([
+    promessa,
+    new Promise((_, rej) => { t = setTimeout(() => rej(new Error(mensagem)), ms); }),
+  ]).finally(() => clearTimeout(t));
+}
+
+// Erro de conexao (a impressora caiu ou nao responde). Quem imprime pela fila
+// usa isso para devolver o ticket sem gastar tentativa.
+function erroConexao(mensagem) {
+  const e = new Error(mensagem);
+  e.semConexao = true;
+  return e;
+}
+
 class ImpressoraBT {
   constructor() {
     this.device = null;
     this.characteristic = null;
     this.listeners = new Set();
     this.tentandoReconectar = false;
+    this.ultimoErro = null;
     this.wakeLock = null;
-    this._onDisconnect = null; // referencia do handler p/ poder remover depois
+    this._onDisconnect = null;      // handler atual
+    this._deviceOuvido = null;      // em qual objeto o handler esta pendurado
+    this._reconexao = null;         // promessa da reconexao em andamento (compartilhada)
+    this._fila = Promise.resolve(); // uma operacao Bluetooth por vez
+    this._timerReconexao = null;
+    this._tentativasSeguidas = 0;
+    this._manterViva = null;
     this._setupVisibilityListener();
   }
 
@@ -67,16 +108,16 @@ class ImpressoraBT {
     if (typeof document === "undefined") return;
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && !this.isConnected() && this.temDispositivoSalvo()) {
-        // Pequeno delay pra evitar problemas com a transição
         setTimeout(() => this.reconectarAuto().catch(() => {}), 500);
       }
     });
-    // Também tenta reconectar quando a janela ganha foco
-    window.addEventListener("focus", () => {
-      if (!this.isConnected() && this.temDispositivoSalvo()) {
-        setTimeout(() => this.reconectarAuto().catch(() => {}), 500);
-      }
-    });
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", () => {
+        if (!this.isConnected() && this.temDispositivoSalvo()) {
+          setTimeout(() => this.reconectarAuto().catch(() => {}), 500);
+        }
+      });
+    }
   }
 
   // Mantém a tela do celular ligada (impede o navegador de suspender a aba)
@@ -94,55 +135,116 @@ class ImpressoraBT {
   }
 
   isSupported() { return !!navigator.bluetooth; }
-  isConnected() { return this.device?.gatt?.connected && !!this.characteristic; }
+  isConnected() { return !!(this.device?.gatt?.connected && this.characteristic); }
   // Considera "disponível" se conectada OU se tem dispositivo salvo (vai reconectar automaticamente)
   isDisponivel() { return this.isConnected() || this.temDispositivoSalvo(); }
   // Se tem dispositivo salvo (foi pareado antes)
   temDispositivoSalvo() {
     try { return !!localStorage.getItem("imperio_printer_name"); } catch { return false; }
   }
+  nomeSalvo() {
+    try { return localStorage.getItem("imperio_printer_name") || null; } catch { return null; }
+  }
 
   onStatus(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
+  status() {
+    return {
+      conectada: this.isConnected(),
+      nome: this.device?.name || this.nomeSalvo(),
+      reconectando: this.tentandoReconectar,
+      salva: this.temDispositivoSalvo(),
+      erro: this.ultimoErro,
+    };
+  }
   _notify() {
-    const s = { conectada: this.isConnected(), nome: this.device?.name || null, reconectando: this.tentandoReconectar };
+    const s = this.status();
     this.listeners.forEach(cb => { try { cb(s); } catch {} });
+  }
+
+  // Uma operacao por vez no Bluetooth, mesmo que a anterior tenha falhado
+  _emSerie(fn) {
+    const p = this._fila.then(() => fn(), () => fn());
+    this._fila = p.catch(() => {});
+    return p;
+  }
+
+  _pararManterViva() { clearInterval(this._manterViva); this._manterViva = null; }
+  _iniciarManterViva() {
+    this._pararManterViva();
+    this._manterViva = setInterval(() => {
+      if (!this.isConnected()) return;
+      // ESC @ (inicializar) nao imprime nada; so mantem o canal ativo
+      this._emSerie(() => this._escrever(INIT)).catch(() => {});
+    }, INTERVALO_MANTER_VIVA_MS);
+  }
+
+  // Conexao caiu: limpa o estado e agenda novas tentativas
+  _marcarQueda(motivo) {
+    this.characteristic = null;
+    if (motivo) this.ultimoErro = motivo;
+    this._pararManterViva();
+    this._notify();
+    this._agendarReconexao();
+  }
+
+  _agendarReconexao() {
+    clearTimeout(this._timerReconexao);
+    if (!this.temDispositivoSalvo()) return;
+    const espera = ESPERAS_RECONEXAO_MS[Math.min(this._tentativasSeguidas, ESPERAS_RECONEXAO_MS.length - 1)];
+    this._timerReconexao = setTimeout(async () => {
+      if (this.isConnected() || !this.temDispositivoSalvo()) return;
+      const r = await this.reconectarAuto();
+      if (!r?.conectada) { this._tentativasSeguidas++; this._agendarReconexao(); }
+    }, espera);
   }
 
   // Faz a conexão ao GATT e configura característica (compartilhado entre conectar e reconectar)
   async _setupConexao() {
-    const server = await this.device.gatt.connect();
-
-    let service = null;
-    for (const uuid of SERVICES_CONHECIDOS) {
-      try {
-        service = await server.getPrimaryService(uuid);
-        if (service) break;
-      } catch {}
+    const device = this.device;
+    let server;
+    try {
+      server = await comTempo(device.gatt.connect(), TEMPO_CONECTAR_MS, "A impressora não respondeu ao conectar");
+    } catch (e) {
+      try { device.gatt.disconnect(); } catch {}   // cancela a tentativa pendurada
+      throw e;
     }
-    if (!service) {
-      const services = await server.getPrimaryServices();
-      service = services.find(s => !s.uuid.startsWith("00001800") && !s.uuid.startsWith("00001801"));
-    }
-    if (!service) throw new Error("Nenhum serviço de impressão encontrado");
 
-    const chars = await service.getCharacteristics();
-    this.characteristic = chars.find(c => c.properties.writeWithoutResponse) || chars.find(c => c.properties.write);
-    if (!this.characteristic) throw new Error("Característica de escrita não encontrada");
+    try {
+      let service = null;
+      for (const uuid of SERVICES_CONHECIDOS) {
+        try {
+          service = await comTempo(server.getPrimaryService(uuid), TEMPO_DESCOBERTA_MS, "tempo");
+          if (service) break;
+        } catch {}
+      }
+      if (!service) {
+        const services = await comTempo(server.getPrimaryServices(), TEMPO_DESCOBERTA_MS, "A impressora não listou seus serviços");
+        service = services.find(s => !s.uuid.startsWith("00001800") && !s.uuid.startsWith("00001801"));
+      }
+      if (!service) throw new Error("Nenhum serviço de impressão encontrado");
 
-    // _setupConexao roda tanto em conectar() quanto em reconectarAuto(), e o
-    // reconectarAuto recupera o MESMO objeto BluetoothDevice via getDevices().
-    // Sem remover o handler anterior, os listeners acumulavam: apos N
-    // reconexoes, uma unica queda disparava N callbacks -> N reconexoes
-    // concorrentes travando o GATT.
-    if (this._onDisconnect) {
-      try { this.device.removeEventListener("gattserverdisconnected", this._onDisconnect); } catch {}
+      const chars = await comTempo(service.getCharacteristics(), TEMPO_DESCOBERTA_MS, "A impressora não respondeu");
+      const ch = chars.find(c => c.properties.writeWithoutResponse) || chars.find(c => c.properties.write);
+      if (!ch) throw new Error("Característica de escrita não encontrada");
+      this.characteristic = ch;
+    } catch (e) {
+      try { device.gatt.disconnect(); } catch {}
+      throw e;
     }
-    this._onDisconnect = () => {
-      this.characteristic = null;
-      this._notify();
-      setTimeout(() => this.reconectarAuto().catch(() => {}), 2000);
-    };
-    this.device.addEventListener("gattserverdisconnected", this._onDisconnect);
+
+    // O mesmo aparelho pode chegar como outro objeto na reconexao: tira o
+    // handler de onde ele estava, senao uma queda disparava varias reconexoes.
+    if (this._onDisconnect && this._deviceOuvido) {
+      try { this._deviceOuvido.removeEventListener("gattserverdisconnected", this._onDisconnect); } catch {}
+    }
+    this._onDisconnect = () => this._marcarQueda("A conexão com a impressora caiu");
+    device.addEventListener("gattserverdisconnected", this._onDisconnect);
+    this._deviceOuvido = device;
+
+    this.ultimoErro = null;
+    this._tentativasSeguidas = 0;
+    clearTimeout(this._timerReconexao);
+    this._iniciarManterViva();
   }
 
   async conectar() {
@@ -154,7 +256,7 @@ class ImpressoraBT {
         acceptAllDevices: true,
         optionalServices: SERVICES_CONHECIDOS,
       });
-      await this._setupConexao();
+      await this._emSerie(() => this._setupConexao());
 
       // Salva dados para reconexão automática
       try {
@@ -164,55 +266,88 @@ class ImpressoraBT {
       this._notify();
       return { nome: this.device.name };
     } catch (e) {
-      this.device = null;
       this.characteristic = null;
+      this.ultimoErro = e.message || "Erro ao conectar";
+      this._notify();
       throw e;
     }
   }
 
-  // Tenta reconectar automaticamente (sem precisar de interação)
-  // Funciona se: (1) o navegador suporta getDevices, (2) já foi pareado antes, (3) impressora está em alcance
-  async reconectarAuto() {
-    if (this.isConnected()) return { conectada: true };
-    if (!this.isSupported() || !navigator.bluetooth.getDevices) {
-      return { erro: "Reconexão automática não suportada neste navegador" };
+  // Alguns aparelhos so aceitam reconectar depois de "ouvir" a impressora
+  async _esperarAnuncio(device) {
+    if (typeof device.watchAdvertisements !== "function") return;
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    try {
+      await comTempo(new Promise((resolve, reject) => {
+        device.addEventListener("advertisementreceived", () => resolve(), { once: true });
+        device.watchAdvertisements(ctrl ? { signal: ctrl.signal } : undefined).catch(reject);
+      }), TEMPO_ANUNCIO_MS, "A impressora não foi encontrada por perto");
+    } finally {
+      try { ctrl?.abort(); } catch {}
     }
-    if (!this.temDispositivoSalvo()) return { erro: "Nenhuma impressora pareada anteriormente" };
-    if (this.tentandoReconectar) return { erro: "Reconexão já em andamento" };
+  }
+
+  // Tenta reconectar automaticamente (sem precisar de interação).
+  // Quem chama enquanto uma tentativa esta em andamento recebe a MESMA
+  // promessa, em vez de um "ja em andamento" que fazia a impressao falhar.
+  reconectarAuto() {
+    if (this.isConnected()) return Promise.resolve({ conectada: true, nome: this.device?.name });
+    if (!this.isSupported()) return Promise.resolve({ erro: "Este navegador não tem Bluetooth" });
+    if (!this.temDispositivoSalvo()) return Promise.resolve({ erro: "Nenhuma impressora pareada neste aparelho" });
+    if (!this.device && !navigator.bluetooth.getDevices) {
+      return Promise.resolve({ erro: "Reconexão automática não suportada neste navegador. Use \"Parear de novo\"." });
+    }
+    if (this._reconexao) return this._reconexao;
 
     this.tentandoReconectar = true;
     this._notify();
 
-    try {
-      const idSalvo = localStorage.getItem("imperio_printer_id");
-      const nomeSalvo = localStorage.getItem("imperio_printer_name");
-      const devices = await navigator.bluetooth.getDevices();
-      // Tenta achar pelo ID primeiro, fallback no nome
-      this.device = devices.find(d => d.id === idSalvo) || devices.find(d => d.name === nomeSalvo);
-
-      if (!this.device) {
-        this.tentandoReconectar = false;
-        this._notify();
-        return { erro: "Impressora pareada não encontrada (foi removida do Bluetooth do dispositivo?)" };
+    this._reconexao = this._emSerie(async () => {
+      if (this.isConnected()) return { conectada: true, nome: this.device?.name };
+      // Na mesma sessao a impressora ja esta na memoria: reconecta nela direto
+      // (getDevices nem existe em todo Chrome). Depois de recarregar a pagina,
+      // procura entre as impressoras que este navegador ja autorizou.
+      let device = this.device;
+      if (!device) {
+        const idSalvo = localStorage.getItem("imperio_printer_id");
+        const nomeSalvo = localStorage.getItem("imperio_printer_name");
+        const devices = await navigator.bluetooth.getDevices();
+        device = devices.find(d => d.id === idSalvo) || devices.find(d => d.name === nomeSalvo);
+        if (!device) {
+          return { erro: "Impressora pareada não encontrada. Use \"Parear de novo\"." };
+        }
+        this.device = device;
       }
-
-      await this._setupConexao();
-      this.tentandoReconectar = false;
-      this._notify();
-      return { conectada: true, nome: this.device.name };
-    } catch (e) {
-      this.device = null;
+      try {
+        await this._setupConexao();
+      } catch (primeira) {
+        // Segunda chance, esperando a impressora aparecer
+        await this._esperarAnuncio(device);
+        await this._setupConexao();
+      }
+      return { conectada: true, nome: device.name };
+    }).catch(e => {
       this.characteristic = null;
+      this.ultimoErro = e.message || "Falha na reconexão";
+      return { erro: this.ultimoErro };
+    }).finally(() => {
+      this._reconexao = null;
       this.tentandoReconectar = false;
       this._notify();
-      return { erro: e.message || "Falha na reconexão" };
-    }
+    });
+    return this._reconexao;
   }
 
   async desconectar() {
-    if (this.device?.gatt?.connected) this.device.gatt.disconnect();
+    clearTimeout(this._timerReconexao);
+    this._pararManterViva();
+    if (this._onDisconnect && this._deviceOuvido) {
+      try { this._deviceOuvido.removeEventListener("gattserverdisconnected", this._onDisconnect); } catch {}
+    }
+    try { if (this.device?.gatt?.connected) this.device.gatt.disconnect(); } catch {}
     this.characteristic = null;
     this.device = null;
+    this.ultimoErro = null;
     try {
       localStorage.removeItem("imperio_printer_name");
       localStorage.removeItem("imperio_printer_id");
@@ -228,27 +363,29 @@ class ImpressoraBT {
     await this.desconectar();
   }
 
-  // Garante conexão antes de imprimir — tenta reconectar se cair
-  async _garantirConexao() {
+  // Garante conexão antes de imprimir — espera a reconexão se precisar
+  async garantirConexao() {
     if (this.isConnected()) return true;
     if (!this.temDispositivoSalvo()) return false;
     const r = await this.reconectarAuto();
     return !!r?.conectada;
   }
+  _garantirConexao() { return this.garantirConexao(); }
 
-  async _sendBytes(bytes) {
-    // Antes de mandar bytes, garante conexão (tenta reconectar se preciso)
-    if (!this.isConnected()) {
-      const ok = await this._garantirConexao();
-      if (!ok) throw new Error("Impressora não conectada");
-    }
+  // Escreve em pedacos. Chamar sempre de dentro de _emSerie.
+  async _escrever(bytes) {
     const tamanho = 100; // BLE max ~180, 100 é seguro
     for (let i = 0; i < bytes.length; i += tamanho) {
+      const ch = this.characteristic;
+      if (!ch || !this.device?.gatt?.connected) throw erroConexao("A impressora desconectou durante a impressão");
       const chunk = bytes.slice(i, i + tamanho);
-      if (this.characteristic.properties.writeWithoutResponse) {
-        await this.characteristic.writeValueWithoutResponse(chunk);
-      } else {
-        await this.characteristic.writeValue(chunk);
+      try {
+        const escrita = ch.properties.writeWithoutResponse ? ch.writeValueWithoutResponse(chunk) : ch.writeValue(chunk);
+        await comTempo(escrita, TEMPO_ESCRITA_MS, "a impressora não confirmou o envio");
+      } catch (e) {
+        // Falha de escrita quase sempre e conexao perdida
+        this._marcarQueda("Falha ao enviar para a impressora: " + (e.message || e));
+        throw erroConexao("A impressora parou de responder durante a impressão");
       }
       await new Promise(r => setTimeout(r, 30));
     }
@@ -259,19 +396,31 @@ class ImpressoraBT {
     const merged = new Uint8Array(total);
     let offset = 0;
     for (const c of comandos) { merged.set(c, offset); offset += c.length; }
-    await this._sendBytes(merged);
+
+    // Espera a reconexao (se houver) FORA da fila, para nao travar a fila
+    // enquanto a impressora nao volta.
+    if (!this.isConnected()) {
+      const ok = await this.garantirConexao();
+      if (!ok) throw erroConexao(this.temDispositivoSalvo() ? "Impressora desconectada" : "Nenhuma impressora pareada neste aparelho");
+    }
+    await this._emSerie(async () => {
+      if (!this.isConnected()) throw erroConexao("Impressora desconectada");
+      await this._escrever(merged);
+    });
   }
 
   // ── IMPRIMIR COMANDA DA COZINHA ──
   // Foco: cozinha/churrasqueira ver O QUE preparar.
   // SEM preços, SEM totais, SEM nome do estabelecimento.
-  async imprimirComanda({ mesa, label, garcom, cliente, itens, hora, obs }) {
+  async imprimirComanda({ mesa, label, garcom, cliente, itens, hora, obs, reimpressao }) {
     const agora = hora ? new Date(hora) : new Date();
     const cmds = [
       INIT,
       // Cabeçalho compacto
       ALIGN_CENTER, BOLD_ON,
       texto("COZINHA / GRILL"), NL,
+      // Reimpressao: a cozinha precisa saber que NAO e pedido novo
+      ...(reimpressao ? [SIZE_DOUBLE_H, texto("** REIMPRESSAO **"), NL, SIZE_NORMAL] : []),
       BOLD_OFF,
       texto("--------------------------------"), NL,
       NL,

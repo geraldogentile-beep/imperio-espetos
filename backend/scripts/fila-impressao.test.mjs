@@ -110,8 +110,34 @@ console.log("\n=== 4) depois de 3 falhas, desiste e marca erro ===");
   ok(st.corpo.pendentes === 0, "parou de tentar");
   ok(st.corpo.erros === 1, `ficou 1 marcado com erro (tem ${st.corpo.erros})`);
 
+  const reenviou = await api("POST", "/impressao/erros/reenviar");
+  ok(reenviou.status === 200 && reenviou.corpo.reenviados === 1, `o adm pode mandar de novo (HTTP ${reenviou.status})`);
+  const r = await api("POST", "/impressao/reservar", { limite: 5 });
+  ok(r.corpo.jobs?.[0]?.id === job.id && r.corpo.jobs?.[0]?.tentativas === 1, "volta como primeira tentativa");
+  await api("POST", `/impressao/${job.id}/concluir`, { ok: false, erro: "a" });
+  await api("POST", "/impressao/reservar", { limite: 5 }).then(x => api("POST", `/impressao/${x.corpo.jobs[0].id}/concluir`, { ok: false, erro: "b" }));
+  await api("POST", "/impressao/reservar", { limite: 5 }).then(x => api("POST", `/impressao/${x.corpo.jobs[0].id}/concluir`, { ok: false, erro: "c" }));
+
   const limpou = await api("DELETE", "/impressao/erros");
   ok(limpou.corpo.removidos === 1, "e da para limpar pelo painel");
+}
+
+console.log("\n=== 4b) impressora caida nao gasta tentativa ===");
+{
+  await api("POST", "/impressao", ticket(11));
+  let job = null;
+  for (let i = 0; i < 6; i++) {
+    const r = await api("POST", "/impressao/reservar", { limite: 5 });
+    job = r.corpo.jobs?.[0];
+    if (!job) break;
+    await api("POST", `/impressao/${job.id}/concluir`, { ok: false, erro: "Impressora desconectada", semConexao: true });
+  }
+  ok(!!job, "seis quedas seguidas e o ticket continua na fila");
+  const st = await api("GET", "/impressao/status");
+  ok(st.corpo.pendentes === 1 && st.corpo.erros === 0, `nada dado como perdido (pendentes ${st.corpo.pendentes}, erros ${st.corpo.erros})`);
+  const r = await api("POST", "/impressao/reservar", { limite: 5 });
+  ok(r.corpo.jobs?.[0]?.tentativas === 1, `quando a impressora volta, e a primeira tentativa de verdade (tentativas=${r.corpo.jobs?.[0]?.tentativas})`);
+  await api("POST", `/impressao/${r.corpo.jobs[0].id}/concluir`, { ok: true });
 }
 
 console.log("\n=== 5) tipo invalido nao entra na fila ===");
