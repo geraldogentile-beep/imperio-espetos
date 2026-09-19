@@ -9,6 +9,7 @@ import fetch from "node-fetch";
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import * as focus from "./fiscal/focusnfe.js";
 import { aplicarPagamentoNaMesa, mesaZeradaServidor } from "./salao/fechamento.js";
+import { transferirMesa } from "./salao/transferencia.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -3830,6 +3831,86 @@ app.post("/mesas/:mesaId/liberar", authMiddleware(["dono"]), async (req, res) =>
   } catch (e) {
     console.error("Erro ao liberar mesa:", e.message);
     res.status(500).json({ erro: "Erro ao liberar a mesa" });
+  }
+});
+
+// POST /mesas/:mesaId/transferir  { destino, scIds?, versao, versaoDestino }
+// Troca de mesa. As duas mesas mudam aqui, de uma vez: se o painel gravasse
+// cada uma por conta propria, um garcom mexendo na mesa de destino no mesmo
+// instante fazia o aparelho adotar a versao dele — e os itens sumiam das duas.
+// versao/versaoDestino: o que o aparelho estava vendo. Se alguem mexeu
+// depois, recusa e devolve o estado atual para a pessoa conferir.
+app.post("/mesas/:mesaId/transferir", authMiddleware(["dono", "garcom"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  const mesaId = parseInt(req.params.mesaId);
+  const destinoId = parseInt(req.body?.destino);
+  if (!Number.isFinite(mesaId) || !Number.isFinite(destinoId)) return res.status(400).json({ erro: "Mesa invalida" });
+  if (destinoId >= 900) return res.status(400).json({ erro: "Nao da para trocar para essa mesa" });
+  const { scIds, versao, versaoDestino } = req.body || {};
+  const dataStr = diaOperacional();
+  const quem = req.user?.nome || req.user?.role || "";
+
+  const estado = (doc) => doc ? { versao: doc.versao, dados: doc.dados } : null;
+  try {
+    const [orig, dest] = await Promise.all([
+      MesaSalaoDB.findOne({ dataStr, mesaId }).lean(),
+      MesaSalaoDB.findOne({ dataStr, mesaId: destinoId }).lean(),
+    ]);
+    if (!orig) return res.status(409).json({ erro: "A mesa ainda nao chegou ao servidor. Espere uns segundos e tente de novo." });
+    const mudouOrigem = Number(versao) !== orig.versao;
+    const mudouDestino = (dest?.versao ?? null) !== (versaoDestino === undefined || versaoDestino === null ? null : Number(versaoDestino));
+    if (mudouOrigem || mudouDestino) {
+      return res.status(409).json({
+        erro: `A mesa ${mudouOrigem ? mesaId : destinoId} foi alterada em outro aparelho. Confira e tente de novo.`,
+        origem: estado(orig), destino: estado(dest),
+      });
+    }
+
+    let r;
+    try { r = transferirMesa(orig.dados, dest?.dados || null, { destinoId, scIds }); }
+    catch (e) { return res.status(e.status || 400).json({ erro: e.message, origem: estado(orig), destino: estado(dest) }); }
+
+    // Destino primeiro: se algo falhar no meio, o pedido fica nas duas mesas
+    // (da para corrigir), nunca em nenhuma.
+    let novoDest;
+    if (dest) {
+      novoDest = await MesaSalaoDB.findOneAndUpdate(
+        { dataStr, mesaId: destinoId, versao: dest.versao },
+        { $set: { dados: r.destino, porQuem: quem }, $inc: { versao: 1 } },
+        { new: true }
+      ).lean();
+    } else {
+      try { novoDest = (await MesaSalaoDB.create({ mesaId: destinoId, dataStr, dados: r.destino, versao: 1, porQuem: quem })).toObject(); }
+      catch (e) { if (e.code !== 11000) throw e; novoDest = null; }
+    }
+    const recusar = async () => {
+      const [o, d] = await Promise.all([
+        MesaSalaoDB.findOne({ dataStr, mesaId }).lean(),
+        MesaSalaoDB.findOne({ dataStr, mesaId: destinoId }).lean(),
+      ]);
+      return res.status(409).json({ erro: "As mesas foram alteradas agora mesmo. Confira e tente de novo.", origem: estado(o), destino: estado(d) });
+    };
+    if (!novoDest) return recusar();
+
+    const novaOrig = await MesaSalaoDB.findOneAndUpdate(
+      { dataStr, mesaId, versao: orig.versao },
+      { $set: { dados: r.origem, porQuem: quem }, $inc: { versao: 1 } },
+      { new: true }
+    ).lean();
+    if (!novaOrig) {
+      // Alguem mexeu na origem no meio: desfaz o destino, se ninguem mexeu nele
+      await MesaSalaoDB.findOneAndUpdate(
+        { dataStr, mesaId: destinoId, versao: novoDest.versao },
+        { $set: { dados: dest ? dest.dados : mesaZeradaServidor({ id: destinoId }), porQuem: quem }, $inc: { versao: 1 } }
+      ).catch(() => {});
+      return recusar();
+    }
+
+    console.log(`Troca de mesa por ${quem}: ${mesaId} -> ${destinoId} (${r.movidas.map(m => m.de).join(", ") || "sem comandas"}${r.juntou ? ", juntou" : ""})`);
+    res.json({ ok: true, juntou: r.juntou, movidas: r.movidas, origem: estado(novaOrig), destino: estado(novoDest) });
+  } catch (e) {
+    console.error("Erro ao trocar de mesa:", e.message);
+    res.status(500).json({ erro: "Erro ao trocar de mesa" });
   }
 });
 

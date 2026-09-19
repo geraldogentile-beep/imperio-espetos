@@ -5036,6 +5036,140 @@ function tempoAberto(abertura) {
 }
 
 // ── SALÃO INTEGRADO ───────────────────────────────────────────
+// ── TROCA DE MESA ─────────────────────────────────────────────
+// O cliente sentou, pediu e depois quis mudar de mesa. Antes nao tinha como:
+// era lancar tudo de novo na mesa nova. A troca e feita pelo servidor nas duas
+// mesas de uma vez (backend/salao/transferencia.js).
+const nomeDaMesa = (m) => m?.nome || `Mesa ${m?.id}`;
+const AVISO_COZINHA_MIN = 40;   // pedido enviado ha menos que isso pode estar no fogo
+
+function TrocaDeMesa({ mesa, mesas, onVoltar, onConfirmar }) {
+  const comandas = mesa.subComandas || [];
+  const [modo, setModo] = useState("tudo");
+  const [escolhidas, setEscolhidas] = useState([]);
+  const [destinoId, setDestinoId] = useState(null);
+  const [avisarManual, setAvisarManual] = useState(null);
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const vao = modo === "tudo" ? comandas : comandas.filter(sc => escolhidas.includes(sc.id));
+  const vaiTudo = vao.length === comandas.length;
+  const temPedidoNaCozinha = vao.some(sc => (sc.rodadas || []).length);
+  const pedidoRecente = vao.some(sc => (sc.rodadas || []).some(r => Date.now() - new Date(r.hora).getTime() < AVISO_COZINHA_MIN * 60000));
+  const avisar = temPedidoNaCozinha && (avisarManual ?? pedidoRecente);
+  const opcoes = mesas.filter(m => !m.tipo && m.id !== mesa.id);
+  const destino = opcoes.find(m => m.id === destinoId) || null;
+  const ocupada = (m) => m.status !== "livre" || totMesaCompleta(migrarMesa(m)) > 0;
+  const pronto = !!destino && vao.length > 0 && !enviando;
+  const totalComanda = (sc) => totMesa(sc.itens) + (sc.rodadas || []).reduce((t, r) => t + totMesa(r.itens), 0);
+
+  let resumo = "";
+  if (destino) {
+    const quem = vao.map(sc => sc.cliente ? `${sc.label} (${sc.cliente})` : sc.label).join(", ");
+    const verbo = vao.length > 1 ? "vão" : "vai";
+    if (!ocupada(destino)) {
+      resumo = vaiTudo
+        ? `Tudo da ${nomeDaMesa(mesa)} vai para a mesa ${destino.id}: pedidos, garçom e horário de chegada. A ${nomeDaMesa(mesa)} fica livre.`
+        : `${quem} ${verbo} para a mesa ${destino.id}. O resto continua na ${nomeDaMesa(mesa)}.`;
+    } else {
+      const la = (destino.subComandas || []).map(x => x.cliente).filter(Boolean).join(", ");
+      resumo = `A mesa ${destino.id} já está ocupada${la ? ` (${la})` : ""}. `
+        + `${!vaiTudo ? quem : vao.length > 1 ? `As comandas da ${nomeDaMesa(mesa)}` : `A comanda da ${nomeDaMesa(mesa)}${vao[0]?.cliente ? ` (${vao[0].cliente})` : ""}`}`
+        + ` ${vao.length > 1 ? "entram" : "entra"} nela`
+        + (vao.length > 1 ? ", cada uma com a sua conta." : " com a conta separada.")
+        + (vaiTudo ? ` A ${nomeDaMesa(mesa)} fica livre.` : "");
+    }
+  }
+
+  async function confirmar() {
+    if (!pronto) return;
+    setEnviando(true); setErro("");
+    try { await onConfirmar(destino.id, modo === "tudo" ? [] : escolhidas, avisar); }
+    catch (e) { setErro(e.message || "Não foi possível trocar de mesa."); setEnviando(false); }
+  }
+
+  const card = {background:"#fff",borderRadius:14,padding:"14px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:10};
+  const titulo = {fontWeight:700,fontSize:12,color:"#888",marginBottom:10,textTransform:"uppercase"};
+  const opcao = (ativo) => ({flex:1,padding:"10px 8px",borderRadius:10,border:`2px solid ${ativo?"#7b1a0a":"#e5e7eb"}`,background:ativo?"#fdf2f0":"#fff",color:ativo?"#7b1a0a":"#555",fontWeight:700,fontSize:13,cursor:"pointer"});
+
+  return (
+    <div style={{background:T.cream,minHeight:"100%"}}>
+      <div style={{background:"linear-gradient(135deg,#6b1c0e,#8b2510)",color:"#fff",padding:"12px 16px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={onVoltar} style={{background:"rgba(255,255,255,0.2)",border:"none",color:"#fff",borderRadius:8,padding:"5px 10px",fontWeight:700,fontSize:13,cursor:"pointer"}}>← Voltar</button>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:800,fontSize:18}}>🔀 Trocar de mesa</div>
+            <div style={{fontSize:12,opacity:0.8}}>{nomeDaMesa(mesa)} · {fmtR(totMesaCompleta(mesa))}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{padding:"12px 14px"}}>
+        {comandas.length > 1 && (
+          <div style={card}>
+            <div style={titulo}>O que vai mudar de mesa?</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={() => { setModo("tudo"); setErro(""); }} style={opcao(modo === "tudo")}>A mesa inteira</button>
+              <button onClick={() => { setModo("algumas"); setErro(""); }} style={opcao(modo === "algumas")}>Só algumas comandas</button>
+            </div>
+            {modo === "algumas" && (
+              <div style={{marginTop:10}}>
+                {comandas.map(c => {
+                  const marcada = escolhidas.includes(c.id);
+                  return (
+                    <label key={c.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 4px",borderBottom:"1px dashed #f0f0f0",cursor:"pointer",fontSize:14}}>
+                      <input type="checkbox" checked={marcada} onChange={() => setEscolhidas(p => marcada ? p.filter(x => x !== c.id) : [...p, c.id])} style={{width:18,height:18,accentColor:"#7b1a0a"}} />
+                      <span style={{flex:1}}><strong>{c.label}</strong>{c.cliente ? ` · ${c.cliente}` : ""}</span>
+                      <span style={{fontWeight:700,color:"#7b1a0a"}}>{fmtR(totalComanda(c))}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={card}>
+          <div style={titulo}>Para qual mesa?</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(64px,1fr))",gap:8}}>
+            {opcoes.map(m => {
+              const sel = m.id === destinoId, ocup = ocupada(m);
+              return (
+                <button key={m.id} onClick={() => { setDestinoId(m.id); setErro(""); }} style={{background:sel?"#7b1a0a":"#fff",color:sel?"#fff":"#1a1a1a",border:`2px solid ${sel?"#7b1a0a":ocup?"#93c5fd":"#e5e7eb"}`,borderRadius:12,padding:"8px 4px",cursor:"pointer",textAlign:"center"}}>
+                  <div style={{fontWeight:800,fontSize:17}}>{m.id}</div>
+                  <div style={{fontSize:10,fontWeight:700,color:sel?"#fde68a":ocup?"#1d4ed8":"#10b981"}}>{ocup ? "Ocupada" : "Livre"}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {resumo && (
+          <div style={{background:destino && ocupada(destino) ? "#eff6ff" : "#ecfdf5",border:`1.5px solid ${destino && ocupada(destino) ? "#93c5fd" : "#6ee7b7"}`,borderRadius:12,padding:"12px 14px",fontSize:13,lineHeight:1.5,color:"#1f2937",marginBottom:10}}>
+            {resumo}
+          </div>
+        )}
+
+        {destino && temPedidoNaCozinha && (
+          <label style={{display:"flex",alignItems:"flex-start",gap:10,background:"#fff",borderRadius:12,padding:"12px 14px",marginBottom:10,cursor:"pointer",fontSize:13,boxShadow:"0 2px 10px rgba(0,0,0,0.05)"}}>
+            <input type="checkbox" checked={avisar} onChange={e => setAvisarManual(e.target.checked)} style={{width:18,height:18,marginTop:1,accentColor:"#7b1a0a"}} />
+            <span>🖨️ <strong>Avisar a cozinha</strong> que os pedidos agora são da mesa {destino.id}
+              <span style={{display:"block",fontSize:11,color:"#888",marginTop:2}}>Imprime um aviso curto. Vem marcado quando tem pedido enviado nos últimos {AVISO_COZINHA_MIN} minutos.</span>
+            </span>
+          </label>
+        )}
+
+        {erro && <div style={{background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:10,padding:"10px 12px",fontSize:13,color:"#991b1b",marginBottom:10}}>{erro}</div>}
+
+        <button onClick={confirmar} disabled={!pronto} style={{width:"100%",background:pronto?"linear-gradient(135deg,#7b1a0a,#c0392b)":"#ccc",color:"#fff",border:"none",borderRadius:12,padding:"14px 0",fontWeight:800,fontSize:15,cursor:pronto?"pointer":"not-allowed",marginBottom:8}}>
+          {enviando ? "Trocando..." : destino ? `🔀 Confirmar: ${nomeDaMesa(mesa)} → mesa ${destino.id}` : "Escolha a mesa"}
+        </button>
+        <button onClick={onVoltar} style={{width:"100%",background:"none",border:"none",color:"#999",fontSize:13,cursor:"pointer",padding:"6px 0"}}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
 // ── LIBERAR MESA SEM COBRAR (so o adm) ───────────────────────
 // Para mesa presa com conta ja paga, ou pedido cancelado. Nao gera venda.
 function BotaoLiberarMesa({ mesa, onLiberada }) {
@@ -5301,7 +5435,7 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir }) {
   );
 }
 
-function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada, onMesaRemovida, onMesaAtualizada }) {
+function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada, onMesaRemovida, onMesaAtualizada, onTransferirMesa }) {
   // ── MODO EVENTO (preços promocionais) ──
   const modoEvento = configExterna?.modoEvento || {};
   const emModoEvento = (() => {
@@ -5573,6 +5707,29 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     return previa;
   }
   const temItens = (m) => (m?.subComandas || []).some(s => (s.itens || []).length || (s.rodadas || []).length);
+
+  // Troca de mesa confirmada na tela: o servidor muda as duas mesas e o
+  // painel vai direto para a mesa nova.
+  async function trocarDeMesa(destinoId, scIds, avisar) {
+    const origem = mesa;
+    const d = await onTransferirMesa(origem.id, destinoId, scIds);
+    if (avisar) {
+      const ticket = {
+        mesa: destinoId, label: "", garcom: garcomLogado?.nome || origem.garcom || "—",
+        cliente: (d.movidas || []).map(m => m.cliente).filter(Boolean).join(", "),
+        itens: [], hora: new Date().toISOString(), aviso: "TROCA DE MESA",
+        obs: `Pedidos da ${nomeDaMesa(origem)} agora sao da MESA ${destinoId}`,
+      };
+      imprimirOuEnfileirar("cozinha", ticket).catch(e => avisarSemTermica(e.message));
+    }
+    const novo = migrarMesa(d.destino.dados);
+    const idx = novo.subComandas.findIndex(x => x.label === d.movidas?.[0]?.para);
+    setSel(destinoId); setSelSC(Math.max(0, idx)); setTelaSalao("comanda");
+    const soAlgumas = scIds.length > 0 && scIds.length < (origem.subComandas || []).length;
+    msgSalao(soAlgumas
+      ? `🔀 ${(d.movidas || []).map(m => m.cliente || m.de).join(", ")} → mesa ${destinoId}`
+      : d.juntou ? `🔀 ${nomeDaMesa(origem)} juntou com a mesa ${destinoId}` : `🔀 ${nomeDaMesa(origem)} → mesa ${destinoId}`);
+  }
 
   // Sub-comanda ativa (com segurança para índice fora do range)
   const scIdx = Math.min(selSC, (mesa?.subComandas?.length||1)-1);
@@ -6470,6 +6627,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     );
   }
 
+  // TELA TROCA DE MESA
+  if(telaSalao==="trocar"&&mesa) {
+    return <TrocaDeMesa mesa={mesa} mesas={mesas} onVoltar={() => setTelaSalao("comanda")} onConfirmar={trocarDeMesa} />;
+  }
+
   // TELA COMANDA
   if(telaSalao==="comanda"&&mesa) {
     return (
@@ -6692,6 +6854,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 {mesa.status==="conta"?"✅ Fechamento já solicitado":"📨 Solicitar fechamento ao caixa"}
               </button>
             )
+          )}
+          {podeLancar && onTransferirMesa && mesa.tipo !== "funcionarios" && (temItens(mesa) || mesa.status !== "livre") && (
+            <button onClick={()=>setTelaSalao("trocar")} style={{background:"#fff",color:"#7b1a0a",border:"1.5px solid #e8d5cf",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer",width:"100%"}}>
+              🔀 Trocar de mesa
+            </button>
           )}
           <button onClick={()=>{setSel(null);setTelaSalao("mapa");}} style={{background:"none",border:"none",color:"#aaa",fontSize:13,cursor:"pointer",padding:"6px 0"}}>← Voltar ao Salão</button>
           {isDono && (temItens(mesa) || mesa.status !== "livre") && (
@@ -7258,6 +7425,29 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     protegidasMesa.current[id] = { versao, ate: Date.now() + 15000 };
     setMesasSalao(prev => prev.map(m => m.id === id ? migrarMesa(dados) : m));
   }, []);
+
+  // Troca de mesa: o servidor muda as duas de uma vez. Antes espera sair o
+  // que este aparelho ainda nao enviou dessas mesas — senao o ultimo item
+  // lancado ficaria para tras na mesa velha.
+  const transferirMesa = useCallback(async (origemId, destinoId, scIds) => {
+    const pendente = () => [origemId, destinoId].some(id => sujasMesa.current.has(id) || enviandoMesa.current.has(id));
+    for (let i = 0; i < 40 && pendente(); i++) await new Promise(r => setTimeout(r, 150));
+    if (pendente()) throw new Error("Sem conexão com o servidor agora. Tente de novo em instantes.");
+    let r;
+    try {
+      r = await authFetch(BACKEND_URL + "/mesas/" + origemId + "/transferir", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destino: destinoId, scIds: scIds?.length ? scIds : undefined, versao: versaoMesa.current[origemId], versaoDestino: versaoMesa.current[destinoId] ?? null }),
+      });
+    } catch { throw new Error("Sem conexão com o servidor. Nada foi trocado."); }
+    const d = await r.json().catch(() => ({}));
+    // Certo ou recusado, o servidor devolve como as mesas estao: a tela passa a mostrar isso
+    if (d.origem) aplicarMesaAutoritativa(origemId, d.origem.versao, d.origem.dados);
+    if (d.destino) aplicarMesaAutoritativa(destinoId, d.destino.versao, d.destino.dados);
+    if (r.status === 404) throw new Error("O servidor ainda não tem a troca de mesa. Atualize o servidor (git pull na VPS).");
+    if (!r.ok) throw new Error(d.erro || "Não foi possível trocar de mesa.");
+    return d;
+  }, [aplicarMesaAutoritativa]);
 
   // Remover mesa extra: some daqui e do servidor; os outros aparelhos
   // deixam de ve-la no proximo poll.
@@ -7838,7 +8028,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} onMesaRemovida={removerMesaExtra} onMesaAtualizada={aplicarMesaAutoritativa} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} onMesaRemovida={removerMesaExtra} onMesaAtualizada={aplicarMesaAutoritativa} onTransferirMesa={transferirMesa} />}
           {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
         </div>

@@ -153,6 +153,16 @@ console.log("\n=== 6) parada, a conexao recebe sinal de vida ===");
   ok(!texto(semComandos).trim(), "sem imprimir nada no papel (so ESC @)");
 }
 
+console.log("\n=== 6b) aviso de troca de mesa: destaque no topo, sem itens ===");
+{
+  aparelho.recebido = [];
+  await impressora.imprimirComanda({ mesa: 7, label: "", garcom: "Maria", cliente: "Ana", itens: [], hora: new Date().toISOString(),
+    aviso: "TROCA DE MESA", obs: "Pedidos da Mesa 3 agora sao da MESA 7" });
+  const t = texto(aparelho.recebido);
+  ok(t.includes("** TROCA DE MESA **") && t.indexOf("TROCA DE MESA") < t.indexOf("Mesa 7"), "aviso em destaque antes do numero da mesa");
+  ok(t.includes("Mesa 7") && t.includes("Pedidos da Mesa 3 agora sao da MESA 7"), "diz de onde veio e para onde foi");
+}
+
 console.log("\n=== 7) sem impressora pareada: erro claro, sem ficar esperando ===");
 {
   await impressora.desconectar();

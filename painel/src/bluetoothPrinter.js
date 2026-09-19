@@ -412,7 +412,7 @@ class ImpressoraBT {
   // ── IMPRIMIR COMANDA DA COZINHA ──
   // Foco: cozinha/churrasqueira ver O QUE preparar.
   // SEM preços, SEM totais, SEM nome do estabelecimento.
-  async imprimirComanda({ mesa, label, garcom, cliente, itens, hora, obs, reimpressao }) {
+  async imprimirComanda({ mesa, label, garcom, cliente, itens, hora, obs, reimpressao, aviso }) {
     const agora = hora ? new Date(hora) : new Date();
     const cmds = [
       INIT,
@@ -421,6 +421,8 @@ class ImpressoraBT {
       texto("COZINHA / GRILL"), NL,
       // Reimpressao: a cozinha precisa saber que NAO e pedido novo
       ...(reimpressao ? [SIZE_DOUBLE_H, texto("** REIMPRESSAO **"), NL, SIZE_NORMAL] : []),
+      // Aviso sem itens (ex.: troca de mesa)
+      ...(aviso ? [SIZE_DOUBLE_H, texto(`** ${aviso} **`), NL, SIZE_NORMAL] : []),
       BOLD_OFF,
       texto("--------------------------------"), NL,
       NL,

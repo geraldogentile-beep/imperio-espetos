@@ -50,7 +50,9 @@ for (const [metodo, rota] of [["GET", "/mesas"], ["GET", "/cardapio"], ["GET", "
   ok(r.status === 200, `${metodo} ${rota} -> ${r.status}`);
 }
 {
-  const r = await garcom("PUT", "/mesas/15", { dados: { id: 15, status: "ocupada", abertura: new Date().toISOString(), subComandas: [{ id: 1, label: "Comanda 1", itens: [{ nome: "Alcatra", qty: 1, preco: 10 }], rodadas: [] }] } });
+  // Mesa que ja existe no dia so aceita gravacao com a versao atual
+  const versao = ((await garcom("GET", "/mesas")).corpo.mesas || []).find(m => m.mesaId === 15)?.versao;
+  const r = await garcom("PUT", "/mesas/15", { versao, dados: { id: 15, status: "ocupada", abertura: new Date().toISOString(), subComandas: [{ id: 1, label: "Comanda 1", itens: [{ nome: "Alcatra", qty: 1, preco: 10 }], rodadas: [] }] } });
   ok(r.status === 200 || r.status === 201, `PUT /mesas/15 (abrir mesa) -> ${r.status}`);
   const t = await garcom("POST", "/impressao", { tipo: "cozinha", dados: { mesa: 15, itens: [{ nome: "Alcatra", qty: 1 }], hora: new Date().toISOString() } });
   ok(t.status === 201, `POST /impressao (ticket para o caixa) -> ${t.status}`);
