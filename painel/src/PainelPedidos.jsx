@@ -5338,7 +5338,7 @@ function ResumoMesa({ mesa }) {
 }
 
 // ── EDITOR DE RODADAS (ITENS JÁ ENVIADOS À COZINHA) ─────────
-function RodadasEditor({ rodadas, isDono, onSave, onReimprimir }) {
+function RodadasEditor({ rodadas, isDono, onSave, onReimprimir, onMandarCozinha }) {
   // Detecta rodada recém-adicionada (últimos 5 segundos)
   const agora = Date.now();
   function isRecente(hora) { return agora - new Date(hora).getTime() < 5000; }
@@ -5347,10 +5347,11 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir }) {
   const [reimprimindo, setReimprimindo] = useState(null);
 
   // Segura o botao uns segundos: dois toques nao mandam dois tickets
-  async function reimprimir(r, ri) {
+  async function imprimir(r, ri) {
     if (reimprimindo !== null) return;
     setReimprimindo(ri);
-    try { await onReimprimir(r); } finally { setTimeout(() => setReimprimindo(null), 2500); }
+    try { await (r.semCozinha ? onMandarCozinha(r, ri) : onReimprimir(r)); }
+    finally { setTimeout(() => setReimprimindo(null), 2500); }
   }
 
   function iniciarEdicao(ri) {
@@ -5370,7 +5371,7 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir }) {
 
   return (
     <div style={{background:"#fff",borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 10px rgba(0,0,0,0.07)",marginBottom:8}}>
-      <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Enviados à cozinha</div>
+      <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>📋 Lançados na conta</div>
       {rodadas.map((r, ri) => {
         const recente = isRecente(r.hora);
         return (
@@ -5378,14 +5379,17 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir }) {
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
             <div style={{fontSize:11,color:recente?"#065f46":"#aaa"}}>
               {recente && "✅ "} Rodada {ri+1} — {new Date(r.hora).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
-              {recente && <span style={{fontWeight:700,marginLeft:6}}>Enviado!</span>}
+              {/* Item lancado direto na conta (bebida, porcao ja entregue) nao passou pela cozinha */}
+              <span style={{marginLeft:6,fontWeight:700,color:r.semCozinha?"#0e7490":"#6d28d9"}}>{r.semCozinha ? "· só na conta" : "· cozinha"}</span>
+              {recente && <span style={{fontWeight:700,marginLeft:6}}>{r.semCozinha ? "Lançado!" : "Enviado!"}</span>}
               {r.editadoEm && <span style={{color:"#f59e0b",marginLeft:6}}>(editado)</span>}
             </div>
             {editIdx !== ri && (
               <div style={{display:"flex",gap:6,flexShrink:0}}>
-                {onReimprimir && (
-                  <button onClick={() => reimprimir(r, ri)} disabled={reimprimindo !== null} style={{background:"#f5f3ff",color:"#6d28d9",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:600,cursor:"pointer",opacity:reimprimindo !== null && reimprimindo !== ri ? 0.5 : 1}}>
-                    {reimprimindo === ri ? "🖨️ Enviado" : "🖨️ Reimprimir"}
+                {(r.semCozinha ? onMandarCozinha : onReimprimir) && (
+                  <button onClick={() => imprimir(r, ri)} disabled={reimprimindo !== null}
+                    style={{background:r.semCozinha?"#ecfeff":"#f5f3ff",color:r.semCozinha?"#0e7490":"#6d28d9",border:"none",borderRadius:6,padding:"3px 8px",fontSize:11,fontWeight:600,cursor:"pointer",opacity:reimprimindo !== null && reimprimindo !== ri ? 0.5 : 1}}>
+                    {reimprimindo === ri ? "🖨️ Enviado" : r.semCozinha ? "🔥 Mandar p/ cozinha" : "🖨️ Reimprimir"}
                   </button>
                 )}
                 {isDono && (
@@ -5432,7 +5436,7 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir }) {
       })}
       {rodadas.length > 1 && (
         <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:800,color:"#7b1a0a",paddingTop:4}}>
-          <span>Total enviado à cozinha</span>
+          <span>Total lançado</span>
           <span>{fmtR(rodadas.reduce((t, r) => t + totMesa(r.itens), 0))}</span>
         </div>
       )}
@@ -5849,6 +5853,16 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 </body></html>`);
     win.document.close();
     setTimeout(()=>win.print(),400);
+  }
+
+  // Rodada que estava "so na conta" e agora precisa ir para a churrasqueira
+  async function mandarRodadaCozinha(rodada, ri) {
+    const atual = mesa.subComandas[scIdx];
+    upd({...mesa, subComandas: mesa.subComandas.map((s,i)=>i===scIdx
+      ? {...s, rodadas: (s.rodadas||[]).map((r,j)=> j===ri ? { ...r, semCozinha: false, enviadoEm: new Date().toISOString() } : r)}
+      : s)});
+    msgSalao(`🔥 ${atual?.cliente || atual?.label || "Comanda"}: pedido enviado à cozinha!`);
+    await imprimirCozinha({ ...rodada, semCozinha: false }, mesa.id, sc.label);
   }
 
   async function fecharComanda(idxSC, pagamentos, descInfo, gorjInfo){
@@ -6739,7 +6753,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           {(sc.rodadas||[]).length>0&&(
             <RodadasEditor rodadas={sc.rodadas} isDono={isDono} onSave={(novasRodadas) => {
               upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,rodadas:novasRodadas}:s)});
-            }} onReimprimir={podeLancar ? (rodada) => imprimirCozinha(rodada, mesa.id, sc.label, { reimpressao: true }) : null} />
+            }} onReimprimir={podeLancar ? (rodada) => imprimirCozinha(rodada, mesa.id, sc.label, { reimpressao: true }) : null}
+              onMandarCozinha={podeLancar ? (rodada, ri) => mandarRodadaCozinha(rodada, ri) : null} />
           )}
           <ResumoMesa mesa={mesa} />
           <div style={{...card2}}>
@@ -6760,6 +6775,18 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               }} style={{...BP2("linear-gradient(135deg,#1d4ed8,#2563eb)",true)}}>🔥 Cozinha</button>
             )}
           </div>
+          {/* Bebida, porcao ja entregue, doce: entra na conta sem gastar papel
+              nem mandar a cozinha preparar de novo. Antes, o unico jeito de
+              tirar o item da lista de pendentes era imprimir. */}
+          {podeLancar&&sc.itens.length>0&&(
+            <button onClick={()=>{
+              const rodada={hora:new Date().toISOString(),itens:[...sc.itens],semCozinha:true};
+              upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens:[],rodadas:[...(s.rodadas||[]),rodada]}:s)});
+              msgSalao(`📝 Lançado na conta de ${sc.cliente || sc.label} — sem imprimir`, "#0e7490");
+            }} style={{background:"#fff",color:"#0e7490",border:"1.5px solid #a5f3fc",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer",width:"100%"}}>
+              📝 Só lançar na conta (não imprime)
+            </button>
+          )}
           {/* Botão enviar TODAS as comandas de uma vez — só aparece com 2+ comandas com itens pendentes */}
           {podeLancar&&mesa.subComandas.length>1&&mesa.subComandas.filter(s=>s.itens.length>0).length>1&&(
             <button onClick={()=>{
