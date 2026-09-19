@@ -573,7 +573,7 @@ function Cardapio({ cardapio, onReload }) {
   const [saving, setSaving] = useState(false);
   const [novoItem, setNovoItem] = useState({ categoria: "", nome: "", preco: "", tempoPreparo: 10, obs: "" });
 
-  const categorias = ["todos", ...new Set(cardapio.map(i => i.categoria))];
+  const categorias = ordenarCategorias(cardapio.map(i => i.categoria));
   const itens = ordenarCardapio(
     cardapio.filter(i => filtro === "todos" || i.categoria === filtro).filter(i => i.nome.toLowerCase().includes(busca.toLowerCase())),
     categorias
@@ -5006,6 +5006,13 @@ function removerItensPagos(mesa, indices, pagos) {
 // cadastro: cada item novo entrava no fim e o garcom perdia a referencia.
 // Em "Todos" as categorias seguem a ordem das abas, e dentro delas o nome.
 const compNome = (a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR", { sensitivity: "base" });
+// Abas de categoria em ordem alfabetica, com "Todos" preso na frente. Antes
+// era a ordem de cadastro e quem procurava "Cervejas" varria a barra inteira.
+function ordenarCategorias(lista) {
+  const resto = [...new Set(lista)].filter(c => c && c !== "todos")
+    .sort((a, b) => String(a).localeCompare(String(b), "pt-BR", { sensitivity: "base" }));
+  return ["todos", ...resto];
+}
 function ordenarCardapio(lista, ordemCats = []) {
   const idx = (c) => { const i = ordemCats.indexOf(c); return i < 0 ? 999 : i; };
   return [...lista].sort((a, b) => (idx(a.cat || a.categoria) - idx(b.cat || b.categoria)) || compNome(a, b));
@@ -6072,7 +6079,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const fat = faturado + mesas.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
   const ocup = mesas.filter(m=>m.status!=="livre").length;
   const alertas = mesas.filter(m=>m.status==="chamando"||m.status==="conta");
-  const cats = ["todos",...new Set(cardapio.map(i=>i.cat||i.categoria))];
+  const cats = ordenarCategorias(cardapio.map(i=>i.cat||i.categoria));
   const catIcons = {"todos":"📋","Tradicionais":"🍢","Especiais":"⭐","Doces":"🍫","Acompanhamentos":"🥗","Água":"💧","Suco":"🥤","Refrigerantes":"🥫","Cervejas":"🍺","Energético":"⚡"};
 
   const H2 = {background:"linear-gradient(135deg,#6b1c0e,#8b2510)",color:"#fff",padding:"12px 16px"};
@@ -6084,7 +6091,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   // TELA ADICIONAR
   if(telaSalao==="adicionar") {
     const espetoCats = ["Tradicionais","Especiais","Doces","Churrasco Grego"];
-    const catsComEspetos = ["todos","Espetos",...new Set(cardapio.map(i=>i.cat||i.categoria).filter(c=>!espetoCats.includes(c)))];
+    // "Todos" e "Espetos" ficam presos na frente; o resto em ordem alfabetica
+    const catsComEspetos = ["todos","Espetos",
+      ...ordenarCategorias(cardapio.map(i=>i.cat||i.categoria).filter(c=>!espetoCats.includes(c))).filter(c=>c!=="todos")];
     const catIconsExt = {...catIcons, "Espetos":"🍢"};
     const filtrarCardapio = (item) => {
       if(catFiltro==="todos") return true;
