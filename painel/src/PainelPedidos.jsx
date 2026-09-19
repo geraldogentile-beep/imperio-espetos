@@ -4918,6 +4918,11 @@ function migrarMesa(m) {
   return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
 }
 function fmtR(v) { return "R$ "+v.toFixed(2); }
+// "Comanda 2 · Ana": com o nome da pessoa, quando tiver
+function rotuloComanda(sc) {
+  const nome = String(sc?.cliente || "").trim();
+  return nome ? `${sc.label} · ${nome}` : (sc?.label || "");
+}
 // O que uma mesa perde quando volta a ficar livre sem passar pelo initMesa
 const MESA_LIBERADA = { status:"livre", abertura:null, garcom:"", solicitadoPor:null, solicitadoEm:null };
 
@@ -6078,7 +6083,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15,flex:1}}>{mesa.nome || `Mesa ${mesa.id}`} — {sc.label}</div>
+          <div style={{fontWeight:800,fontSize:15,flex:1}}>{mesa.nome || `Mesa ${mesa.id}`} — {rotuloComanda(sc)}</div>
           <div style={{fontWeight:800,color:"#f0c040"}}>{fmtR(totMesa(sc.itens))}</div>
         </div>
       </div>
@@ -6230,7 +6235,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       <div style={H2}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <button style={BK2} onClick={()=>setTelaSalao("comanda")}>← Voltar</button>
-          <div style={{fontWeight:800,fontSize:15}}>{mesa.nome || `Mesa ${mesa.id}`}{fecharUma?` — ${sc.label}`:""} — Fechar</div>
+          <div style={{fontWeight:800,fontSize:15}}>{mesa.nome || `Mesa ${mesa.id}`}{fecharUma?` — ${rotuloComanda(sc)}`:""} — Fechar</div>
         </div>
       </div>
       <div style={{padding:"14px",display:"flex",flexDirection:"column",gap:10}}>
@@ -6239,7 +6244,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           <div style={{background:"#ede9fe",borderRadius:12,padding:"10px 12px"}}>
             <div style={{fontSize:11,fontWeight:800,color:"#7c3aed",textTransform:"uppercase",marginBottom:8}}>📋 O que vai ser pago agora</div>
             <div style={{display:"flex",gap:8}}>
-              {[[false, sc.label, totalSCAtual], [true, `Mesa inteira (${mesa.subComandas.length} comandas)`, totalAcumulado]].map(([tudo, rotulo, valor])=>{
+              {[[false, rotuloComanda(sc), totalSCAtual], [true, `Mesa inteira (${mesa.subComandas.length} comandas)`, totalAcumulado]].map(([tudo, rotulo, valor])=>{
                 const ativo = tudo === fecharTudo;
                 return (
                   <button key={String(tudo)} onClick={()=>setFecharTudo(tudo)} style={{
@@ -6644,8 +6649,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.7}}>Total mesa</div><div style={{fontWeight:800,fontSize:18,color:"#f0c040"}}>{fmtR(totalAcumulado)}</div></div>
           </div>
 
-          {/* Tabs de sub-comandas */}
-          <div style={{display:"flex",gap:5,flexWrap:"nowrap",overflowX:"auto",marginBottom:8,paddingBottom:2}}>
+          {/* Tabs de sub-comandas. Quebram linha (com o nome da pessoa elas
+              ficaram maiores e o "+ Comanda" sumia para fora da tela) */}
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8,paddingBottom:2}}>
             {(mesa.subComandas||[]).map((s,i)=>(
               <div key={s.id} style={{flexShrink:0,display:"flex",alignItems:"center",gap:0}}>
                 <button onClick={()=>setSelSC(i)} style={{
@@ -6655,6 +6661,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                   color:i===scIdx?"#7b1a0a":"rgba(255,255,255,0.85)",
                 }}>
                   {s.label}
+                  {/* Nome de quem e a comanda: so "Comanda 1, Comanda 2" nao dizia de quem era */}
+                  {s.cliente?.trim() && (
+                    <span style={{marginLeft:4,fontWeight:800,display:"inline-block",maxWidth:110,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",verticalAlign:"bottom"}}>· {s.cliente.trim()}</span>
+                  )}
                   {(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))>0 &&
                     <span style={{marginLeft:4,fontSize:10,opacity:0.8}}>
                       {fmtR(totMesa(s.itens)+(s.rodadas||[]).reduce((ss,r)=>ss+totMesa(r.itens),0))}
@@ -6710,7 +6720,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={{textAlign:"center",padding:"30px 0",color:"#ccc"}}><div style={{fontSize:36}}>🍢</div><div style={{marginTop:6,fontSize:14}}>{sc.label} vazia</div></div>
           ):(
             <div style={card2}>
-              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>{sc.label} — Itens</div>
+              <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>{rotuloComanda(sc)} — Itens</div>
               {sc.itens.map((it,i)=>(
                 <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
                   <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{it.nome}</div><div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div></div>
@@ -6834,7 +6844,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 </button>
               )}
               <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
-                {mesa.status==="conta"?"💳 Receber pagamento":mesa.subComandas.length>1?`✅ Fechar ${sc.label}`:  "✅ Fechar comanda"}{totalSCAtual>0?` — ${fmtR(totalSCAtual)}`:""}
+                {mesa.status==="conta"?"💳 Receber pagamento":mesa.subComandas.length>1?`✅ Fechar ${rotuloComanda(sc)}`:  "✅ Fechar comanda"}{totalSCAtual>0?` — ${fmtR(totalSCAtual)}`:""}
               </button>
               {mesa.status==="conta"&&mesa.solicitadoPor&&(
                 <div style={{background:"#ede9fe",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#7c3aed",fontWeight:600,textAlign:"center"}}>
