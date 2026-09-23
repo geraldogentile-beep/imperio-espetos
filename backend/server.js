@@ -10,6 +10,7 @@ import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaile
 import * as focus from "./fiscal/focusnfe.js";
 import { aplicarPagamentoNaMesa, mesaZeradaServidor } from "./salao/fechamento.js";
 import { transferirMesa } from "./salao/transferencia.js";
+import { ehMontado, opcoesMontado, lerItemMontado, textoMontado } from "./cardapio/montado.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -209,6 +210,12 @@ const CardapioSchema = new mongoose.Schema({
     }],
     default: [],
   },
+  // ── Lanche montado (base + espetinho) ──
+  // O preco do item e so a BASE (pao, molhos, salada); o preco final soma o
+  // espeto que o cliente escolher. Assim o lanche acompanha sozinho qualquer
+  // mudanca de preco do espeto. Vazio = item comum.
+  montarCom:    { type: [String], default: [] },   // categorias de onde vem a escolha
+  montarRotulo: { type: String, default: "" },     // "Escolha o espetinho"
   // ── Dados fiscais (NFC-e) ──
   // Quem define esses valores e o CONTADOR. Vazio = usa o padrao da config fiscal.
   fiscal: {
@@ -827,10 +834,30 @@ function cardapioTexto() {
       const precoTxt = temPromo
         ? `~R$${item.preco.toFixed(2)}~ *R$${preco.toFixed(2)}* 🏆`
         : `R$${preco.toFixed(2)}`;
-      acc[item.categoria].push(`  • ${item.nome}${item.obs ? ` (${item.obs})` : ""}: ${precoTxt}`);
+      // Lanche montado: o cliente escolhe o espeto e o preco soma
+      const linhaPreco = ehMontado(item) ? textoMontado(item, CARDAPIO, precoAtual) : precoTxt;
+      acc[item.categoria].push(`  • ${item.nome}${item.obs ? ` (${item.obs})` : ""}: ${linhaPreco}`);
       return acc;
     }, {})
   ).map(([cat, items]) => `${cat}:\n${items.join("\n")}`).join("\n\n");
+}
+
+// Instrucao da IA para o lanche que leva o espeto escolhido pelo cliente.
+// Sem isso ela inventava um preco fixo e o pedido era recusado na validacao.
+function regraMontados() {
+  const montados = CARDAPIO.filter(i => i.ativo && ehMontado(i));
+  if (!montados.length) return "";
+  const linhas = montados.map(i => {
+    const ops = opcoesMontado(i, CARDAPIO, precoAtual);
+    const exemplo = ops.length ? ` Ex.: "${i.nome} (${ops[0].nome})" = R$${ops[0].preco.toFixed(2)}.` : "";
+    return `  • ${i.nome}: R$${precoAtual(i).toFixed(2)} (base) + o espetinho escolhido.${exemplo}`;
+  }).join("\n");
+  return `
+🥪 LANCHES MONTADOS — o preço é a base MAIS o espetinho escolhido:
+${linhas}
+  Pergunte qual espetinho o cliente quer ANTES de fechar o pedido.
+  No JSON, escreva o nome assim: "Nome do lanche (Nome do espetinho)", com o preço já somado.
+`;
 }
 
 function buildSystemPrompt(tel) {
@@ -860,7 +887,7 @@ Seu trabalho (apenas quando ABERTO):
 
 CARDÁPIO:
 ${cardapioTexto()}
-
+${regraMontados()}
 Taxa de entrega: R$ ${CONFIG.taxaEntrega.toFixed(2)}
 Tempo estimado: ${CONFIG.tempoEntregaMin} a ${CONFIG.tempoEntregaMax} minutos
 
@@ -1127,18 +1154,19 @@ async function processarMensagemCliente(tel, texto) {
         const itensValidados = [];
         for (const it of dadosPedido.itens) {
           const cardapioItem = CARDAPIO.find(c => c.nome.toLowerCase() === String(it.nome).toLowerCase());
-          if (!cardapioItem) {
+          // "Lanche Imperial (Picanha meia lua)": base + espeto, preco somado aqui
+          const montado = cardapioItem ? null : lerItemMontado(it.nome, CARDAPIO, precoAtual);
+          if (!cardapioItem && !montado) {
             console.error(`Item fora do cardapio recusado: "${it.nome}" (tel ${tel})`);
             await enviarMsg(tel, `😕 Não encontrei *${it.nome}* no cardápio. Pode conferir o pedido?`);
             itensValidados.length = 0;
             break;
           }
-          itensValidados.push({
-            nome: cardapioItem.nome,
-            qty: Math.min(99, Math.max(1, Math.floor(Number(it.qty) || 1))),
-            preco: precoAtual(cardapioItem),
-            obs: typeof it.obs === "string" ? it.obs.slice(0, 120) : undefined,
-          });
+          const qty = Math.min(99, Math.max(1, Math.floor(Number(it.qty) || 1)));
+          const obs = typeof it.obs === "string" ? it.obs.slice(0, 120) : undefined;
+          itensValidados.push(montado
+            ? { nome: montado.nome, nomeBase: montado.base.nome, espeto: montado.espeto, qty, preco: montado.preco, obs }
+            : { nome: cardapioItem.nome, qty, preco: precoAtual(cardapioItem), obs });
         }
         if (!itensValidados.length) return;
 
@@ -1653,7 +1681,7 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   // Apenas campos permitidos
-  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs", "fiscal", "variacaoRotulo", "variacoes"];
+  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs", "fiscal", "variacaoRotulo", "variacoes", "montarCom", "montarRotulo"];
   const update = {};
   for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
   if (update.preco !== undefined) update.preco = parseFloat(update.preco);
@@ -1674,6 +1702,13 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
       limpas.push({ nome, preco: parseFloat(preco.toFixed(2)) });
     }
     update.variacoes = limpas;
+  }
+  if (update.montarCom !== undefined) {
+    if (!Array.isArray(update.montarCom)) return res.status(400).json({ erro: "montarCom deve ser uma lista de categorias" });
+    update.montarCom = [...new Set(update.montarCom.map(c => String(c || "").trim()).filter(Boolean))].slice(0, 15);
+  }
+  if (update.montarRotulo !== undefined) {
+    update.montarRotulo = typeof update.montarRotulo === "string" ? update.montarRotulo.trim().slice(0, 40) : "";
   }
   if (update.variacaoRotulo !== undefined) {
     update.variacaoRotulo = typeof update.variacaoRotulo === "string" ? update.variacaoRotulo.trim().slice(0, 40) : "";
@@ -2124,12 +2159,18 @@ async function baixarEstoqueVenda(itens, vendaId) {
   if (!itens?.length) return;
   try {
     const estoques = await EstoqueDB.find({ ativo: true }).lean();
-    for (const item of itens) {
+    // Um item pode consumir dois estoques: o lanche (pao) e o espeto escolhido
+    const alvos = itens.flatMap(item => {
+      const nomes = [item.nomeBase || item.nome];
+      if (item.espeto) nomes.push(item.espeto);
+      return nomes.filter(Boolean).map(nome => ({ nome, qty: item.qty || 1 }));
+    });
+    for (const item of alvos) {
       const qty = item.qty || 1;
       // Encontra estoque vinculado a este item do cardápio.
       // Item com variação vira "Lanche Imperial (Picanha)" no nome, então o
       // vínculo tem que ser pelo nome base — senão a baixa nunca acontece.
-      const nomeCard = String(item.nomeBase || item.nome || "").toLowerCase();
+      const nomeCard = String(item.nome || "").toLowerCase();
       const est = estoques.find(e =>
         e.cardapioNomes.some(n => n.toLowerCase() === nomeCard)
       );

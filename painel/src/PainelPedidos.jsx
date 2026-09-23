@@ -674,6 +674,39 @@ function Cardapio({ cardapio, onReload }) {
                 </div>
               </div>
 
+              {/* Lanche montado: a base + o espetinho que o cliente escolher */}
+              <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#666", marginBottom: 2 }}>🥪 Monta com espetinho (opcional)</div>
+                <div style={{ fontSize: 10, color: "#aaa", marginBottom: 6, lineHeight: 1.5 }}>
+                  Para lanche que leva o espeto escolhido pelo cliente. O <strong>preço lá em cima passa a ser só a base</strong> (pão,
+                  molhos, salada) e o sistema soma o preço do espeto escolhido. Marque de quais categorias o cliente pode escolher.
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {categorias.filter(c => c !== "todos" && c !== editando.categoria).map(c => {
+                    const on = (editando.montarCom || []).includes(c);
+                    return (
+                      <button key={c} onClick={() => setEditando(p => ({ ...p, montarCom: on ? (p.montarCom || []).filter(x => x !== c) : [...(p.montarCom || []), c] }))}
+                        style={{ padding: "5px 10px", borderRadius: 20, border: `1.5px solid ${on ? "#7b1a0a" : "#e5e7eb"}`, background: on ? "#fdf2f0" : "#fff", color: on ? "#7b1a0a" : "#666", fontSize: 11, fontWeight: on ? 700 : 500, cursor: "pointer" }}>
+                        {on ? "✅ " : ""}{c}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(editando.montarCom || []).length > 0 && (
+                  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>Título da escolha</div>
+                      <input value={editando.montarRotulo || ""} placeholder="Escolha o espetinho"
+                        onChange={e => setEditando(p => ({ ...p, montarRotulo: e.target.value }))}
+                        style={{ ...inputStyle, fontSize: 12 }} />
+                    </div>
+                    <div style={{ fontSize: 11, color: "#0e7490", background: "#ecfeff", borderRadius: 8, padding: "7px 10px" }}>
+                      Base R$ {(Number(editando.preco) || 0).toFixed(2)} + espetinho
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Variações — mesmo prato, preço diferente conforme a escolha */}
               <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginBottom: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#666", marginBottom: 2 }}>🍖 Variações (opcional)</div>
@@ -5758,7 +5791,12 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     // nomeBase preserva o nome do cardápio: o backend liga estoque e dados
     // fiscais por ele, já que o nome exibido ganha o sufixo da variação
     const base = variacao
-      ? { ...item, nome: `${item.nome} (${variacao.nome})`, nomeBase: item.nome, variacao: variacao.nome, precoPromocional: null }
+      ? { ...item, nome: `${item.nome} (${variacao.nome})`, nomeBase: item.nome, variacao: variacao.nome, precoPromocional: null,
+          // Cadastro do item nao precisa viajar na mesa (ela vai e volta do
+          // servidor a cada edicao); o que importa e nome, preco e o espeto.
+          variacoes: undefined, montarCom: undefined, montarRotulo: undefined,
+          // Lanche montado: guarda o espeto para dar baixa no estoque dele tambem
+          ...(variacao.espeto ? { espeto: variacao.espeto } : {}) }
       : item;
     const precoAgora = variacao ? Number(variacao.preco) || 0 : precoItem(item);
     const chave = chaveItem(base);
@@ -6131,7 +6169,16 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           inteira) e do tanto que o garcom rolava para achar o item. */}
       <div style={{padding:"10px 14px 80px",display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))",gap:8,alignItems:"start"}}>
         {ordenarCardapio(cardapio.filter(filtrarCardapio), cats).map(item=>{
-          const variacoes = Array.isArray(item.variacoes) ? item.variacoes : [];
+          // Lanche montado: as opcoes sao os espetos do cardapio e o preco e
+          // base + espeto, entao ele acompanha sozinho o preco do espeto.
+          const montarCom = Array.isArray(item.montarCom) ? item.montarCom : [];
+          const opcoesMontar = montarCom.length
+            ? cardapio
+                .filter(e => e.id !== item.id && montarCom.includes(e.cat || e.categoria))
+                .sort(compNome)
+                .map(e => ({ nome: e.nome, preco: parseFloat((precoItem(item) + precoItem(e)).toFixed(2)), espeto: e.nome, detalhe: `${fmtR(precoItem(item))} + ${fmtR(precoItem(e))}` }))
+            : [];
+          const variacoes = opcoesMontar.length ? opcoesMontar : (Array.isArray(item.variacoes) ? item.variacoes : []);
           const temVariacao = variacoes.length > 0;
           const precoExibido = precoItem(item);
           const temPromo = emModoEvento && item.precoPromocional && item.precoPromocional > 0 && item.precoPromocional < item.preco;
@@ -6185,7 +6232,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               {temVariacao && aberto && (
                 <div style={{marginTop:4,paddingTop:8,borderTop:"1px dashed #e8e8e8"}}>
                   <div style={{fontSize:11,color:"#888",fontWeight:700,textTransform:"uppercase",marginBottom:6}}>
-                    {item.variacaoRotulo || "Escolha"}
+                    {opcoesMontar.length ? (item.montarRotulo || "Escolha o espetinho") : (item.variacaoRotulo || "Escolha")}
                   </div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))",gap:6}}>
                     {variacoes.map(v=>{
@@ -6195,6 +6242,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                         <div key={v.nome} style={{display:"flex",flexDirection:"column",gap:4,background:qtd?"#fef0ed":"#faf9f8",borderRadius:10,padding:"8px 10px",border:`1.5px solid ${qtd?"#7b1a0a":"transparent"}`}}>
                           <div style={{fontSize:13,fontWeight:qtd?700:500,color:"#333",lineHeight:1.2}}>{v.nome}</div>
                           <div style={{fontSize:12,color:"#7b1a0a",fontWeight:700}}>{fmtR(Number(v.preco)||0)}</div>
+                          {v.detalhe && <div style={{fontSize:10,color:"#999",marginTop:-2}}>{v.detalhe}</div>}
                           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
                             <button onClick={()=>qtd&&chgQty(chaveItem({id:item.id,variacao:v.nome}),-1)}
                               style={{width:28,height:28,borderRadius:"50%",border:"none",background:qtd?"#fee2e2":"#f0f0f0",color:qtd?"#ef4444":"#ccc",fontWeight:800,fontSize:16,cursor:qtd?"pointer":"default"}}>−</button>
