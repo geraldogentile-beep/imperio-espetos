@@ -210,6 +210,17 @@ function Badge({ status }) {
   return <span style={{ background: c.bg, color: c.color, border: `1px solid ${c.color}40`, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3, fontFamily:"'DM Sans',sans-serif" }}>{c.icon} {c.label}</span>;
 }
 
+// O que conta como espeto na casa: usado no agrupamento "Espetos" do salao e
+// na chavinha do lanche montado (assim a dona nao precisa marcar categoria).
+const CATEGORIAS_ESPETO = ["Tradicionais", "Especiais", "Doces", "Churrasco Grego"];
+// Categorias de espeto que existem hoje no cardapio; se nenhuma bater (nomes
+// diferentes), vale qualquer categoria fora a do proprio item.
+function categoriasDeEspeto(cardapio, exceto) {
+  const existentes = [...new Set((cardapio || []).map(i => i.categoria || i.cat).filter(Boolean))];
+  const espetos = existentes.filter(c => CATEGORIAS_ESPETO.includes(c) && c !== exceto);
+  return espetos.length ? espetos : existentes.filter(c => c !== exceto);
+}
+
 function Toggle({ value, onChange, label, sub }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
@@ -674,35 +685,22 @@ function Cardapio({ cardapio, onReload }) {
                 </div>
               </div>
 
-              {/* Lanche montado: a base + o espetinho que o cliente escolher */}
-              <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginBottom: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#666", marginBottom: 2 }}>🥪 Monta com espetinho (opcional)</div>
-                <div style={{ fontSize: 10, color: "#aaa", marginBottom: 6, lineHeight: 1.5 }}>
-                  Para lanche que leva o espeto escolhido pelo cliente. O <strong>preço lá em cima passa a ser só a base</strong> (pão,
-                  molhos, salada) e o sistema soma o preço do espeto escolhido. Marque de quais categorias o cliente pode escolher.
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {categorias.filter(c => c !== "todos" && c !== editando.categoria).map(c => {
-                    const on = (editando.montarCom || []).includes(c);
-                    return (
-                      <button key={c} onClick={() => setEditando(p => ({ ...p, montarCom: on ? (p.montarCom || []).filter(x => x !== c) : [...(p.montarCom || []), c] }))}
-                        style={{ padding: "5px 10px", borderRadius: 20, border: `1.5px solid ${on ? "#7b1a0a" : "#e5e7eb"}`, background: on ? "#fdf2f0" : "#fff", color: on ? "#7b1a0a" : "#666", fontSize: 11, fontWeight: on ? 700 : 500, cursor: "pointer" }}>
-                        {on ? "✅ " : ""}{c}
-                      </button>
-                    );
-                  })}
-                </div>
+              {/* Lanche montado: a base + o espetinho que o cliente escolher.
+                  Uma chavinha so: marcar categoria uma a uma era trabalhoso. */}
+              <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 4, marginBottom: 8 }}>
+                <Toggle
+                  value={(editando.montarCom || []).length > 0}
+                  onChange={v => setEditando(p => ({
+                    ...p,
+                    montarCom: v ? categoriasDeEspeto(cardapio, p.categoria) : [],
+                    montarRotulo: v ? "Escolha o espetinho" : "",
+                  }))}
+                  label="🥪 Monta com espetinho"
+                  sub="O cliente escolhe o espeto e o sistema soma o preço dele" />
                 {(editando.montarCom || []).length > 0 && (
-                  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-                    <div style={{ flex: 1, minWidth: 180 }}>
-                      <div style={{ fontSize: 10, color: "#888", marginBottom: 2 }}>Título da escolha</div>
-                      <input value={editando.montarRotulo || ""} placeholder="Escolha o espetinho"
-                        onChange={e => setEditando(p => ({ ...p, montarRotulo: e.target.value }))}
-                        style={{ ...inputStyle, fontSize: 12 }} />
-                    </div>
-                    <div style={{ fontSize: 11, color: "#0e7490", background: "#ecfeff", borderRadius: 8, padding: "7px 10px" }}>
-                      Base R$ {(Number(editando.preco) || 0).toFixed(2)} + espetinho
-                    </div>
+                  <div style={{ fontSize: 12, color: "#0e7490", background: "#ecfeff", borderRadius: 8, padding: "8px 10px", lineHeight: 1.5 }}>
+                    O preço acima passa a ser só a <strong>base</strong> (pão, molhos, salada).
+                    Cada lanche sai por <strong>R$ {(Number(editando.preco) || 0).toFixed(2)} + o espeto escolhido</strong>.
                   </div>
                 )}
               </div>
@@ -6128,7 +6126,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
   // TELA ADICIONAR
   if(telaSalao==="adicionar") {
-    const espetoCats = ["Tradicionais","Especiais","Doces","Churrasco Grego"];
+    const espetoCats = CATEGORIAS_ESPETO;
     // "Todos" e "Espetos" ficam presos na frente; o resto em ordem alfabetica
     const catsComEspetos = ["todos","Espetos",
       ...ordenarCategorias(cardapio.map(i=>i.cat||i.categoria).filter(c=>!espetoCats.includes(c))).filter(c=>c!=="todos")];
