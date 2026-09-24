@@ -8,7 +8,19 @@
 // item.montarCom  = ["Tradicionais", "Especiais", ...]  (vazio = item comum)
 // item.montarRotulo = "Escolha o espetinho"
 
-export const ehMontado = (item) => Array.isArray(item?.montarCom) && item.montarCom.length > 0;
+// Categorias que valem como espeto na casa
+export const CATEGORIAS_ESPETO = ["Tradicionais", "Especiais", "Doces", "Churrasco Grego"];
+
+// Lanche é base + espeto por natureza: quem se chama "Lanche..." já entra
+// assim, sem ninguém precisar configurar nada. montarCom continua valendo
+// para quem quiser escolher categorias diferentes.
+export const ehMontado = (item) =>
+  (Array.isArray(item?.montarCom) && item.montarCom.length > 0) || /^\s*lanche/i.test(item?.nome || "");
+
+// De quais categorias vem a escolha deste item
+const categoriasDo = (item) => (Array.isArray(item?.montarCom) && item.montarCom.length
+  ? item.montarCom
+  : CATEGORIAS_ESPETO.filter(c => c !== (item?.categoria ?? item?.cat)));
 
 // Nomes vêm do cardápio, do painel e da IA: comparar sem acento e sem caixa
 const chave = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
@@ -18,7 +30,7 @@ const categoriaDe = (i) => i?.categoria ?? i?.cat;
 // Espetos que podem entrar neste lanche, já com o preço somado
 export function opcoesMontado(item, cardapio, preco = precoSimples) {
   if (!ehMontado(item)) return [];
-  const cats = item.montarCom.map(chave);
+  const cats = categoriasDo(item).map(chave);
   return (cardapio || [])
     .filter(e => e.ativo !== false && e.id !== item.id && cats.includes(chave(categoriaDe(e))))
     .map(e => ({

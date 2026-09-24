@@ -27,7 +27,15 @@ const preco = (i) => Number(i.preco) || 0;
 
 console.log("\n=== parte 1: regras do lanche montado ===");
 {
-  ok(ehMontado(lanche) && !ehMontado(CARDAPIO[7]), "so e montado o item com categorias marcadas");
+  ok(ehMontado(lanche) && !ehMontado(CARDAPIO[7]), "o lanche e montado; a jantinha nao");
+
+  // Sem configurar nada: quem se chama "Lanche..." ja e base + espeto
+  const semConfig = { id: 9, categoria: "Refeições", nome: "Lanche Imperial", preco: 6, ativo: true };
+  ok(ehMontado(semConfig), "lanche funciona sem cadastro nenhum");
+  const opsAuto = opcoesMontado(semConfig, [...CARDAPIO.filter(i => i.id !== 7), semConfig], preco);
+  ok(opsAuto.find(o => o.nome === "Picanha meia lua")?.preco === 21, "e ja soma base + espeto (R$ 21,00)");
+  ok(!opsAuto.some(o => o.nome === "Chopp"), "sem cerveja na lista");
+  ok(!ehMontado({ nome: "Jantinha Imperial", preco: 18 }), "outro item de Refeicoes segue com preco fixo");
 
   const ops = opcoesMontado(lanche, CARDAPIO, preco);
   ok(ops.map(o => o.nome).join() === "Frango,Kafta com queijo,Linguiça,Picanha meia lua", `opcoes em ordem alfabetica (${ops.map(o => o.nome).join(", ")})`);

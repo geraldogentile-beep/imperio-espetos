@@ -213,8 +213,13 @@ function Badge({ status }) {
 // O que conta como espeto na casa: usado no agrupamento "Espetos" do salao e
 // na chavinha do lanche montado (assim a dona nao precisa marcar categoria).
 const CATEGORIAS_ESPETO = ["Tradicionais", "Especiais", "Doces", "Churrasco Grego"];
-// Categorias de espeto que existem hoje no cardapio; se nenhuma bater (nomes
-// diferentes), vale qualquer categoria fora a do proprio item.
+// Lanche e base + espeto por natureza: o preco cadastrado nele e a base (pao,
+// molhos, salada) e o cliente escolhe o espeto, que soma. Vale por si so, sem
+// chavinha nem cadastro: quem se chama "Lanche..." ja entra assim.
+function ehLanche(item) {
+  return /^\s*lanche/i.test(item?.nome || "");
+}
+// De quais categorias sai a escolha do espeto
 function categoriasDeEspeto(cardapio, exceto) {
   const existentes = [...new Set((cardapio || []).map(i => i.categoria || i.cat).filter(Boolean))];
   const espetos = existentes.filter(c => CATEGORIAS_ESPETO.includes(c) && c !== exceto);
@@ -683,26 +688,6 @@ function Cardapio({ cardapio, onReload }) {
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>🎉 Preço promocional (modo evento)</div>
                   <input type="number" step="0.50" value={editando.precoPromocional || ""} onChange={e => setEditando(p => ({ ...p, precoPromocional: e.target.value === "" ? null : parseFloat(e.target.value) }))} placeholder="Deixe vazio para não entrar no evento" style={inputStyle} />
                 </div>
-              </div>
-
-              {/* Lanche montado: a base + o espetinho que o cliente escolher.
-                  Uma chavinha so: marcar categoria uma a uma era trabalhoso. */}
-              <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 4, marginBottom: 8 }}>
-                <Toggle
-                  value={(editando.montarCom || []).length > 0}
-                  onChange={v => setEditando(p => ({
-                    ...p,
-                    montarCom: v ? categoriasDeEspeto(cardapio, p.categoria) : [],
-                    montarRotulo: v ? "Escolha o espetinho" : "",
-                  }))}
-                  label="🥪 Monta com espetinho"
-                  sub="O cliente escolhe o espeto e o sistema soma o preço dele" />
-                {(editando.montarCom || []).length > 0 && (
-                  <div style={{ fontSize: 12, color: "#0e7490", background: "#ecfeff", borderRadius: 8, padding: "8px 10px", lineHeight: 1.5 }}>
-                    O preço acima passa a ser só a <strong>base</strong> (pão, molhos, salada).
-                    Cada lanche sai por <strong>R$ {(Number(editando.preco) || 0).toFixed(2)} + o espeto escolhido</strong>.
-                  </div>
-                )}
               </div>
 
               {/* Variações — mesmo prato, preço diferente conforme a escolha */}
@@ -6169,7 +6154,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
         {ordenarCardapio(cardapio.filter(filtrarCardapio), cats).map(item=>{
           // Lanche montado: as opcoes sao os espetos do cardapio e o preco e
           // base + espeto, entao ele acompanha sozinho o preco do espeto.
-          const montarCom = Array.isArray(item.montarCom) ? item.montarCom : [];
+          const montarCom = (Array.isArray(item.montarCom) && item.montarCom.length)
+            ? item.montarCom
+            : (ehLanche(item) ? categoriasDeEspeto(cardapio, item.cat || item.categoria) : []);
           const opcoesMontar = montarCom.length
             ? cardapio
                 .filter(e => e.id !== item.id && montarCom.includes(e.cat || e.categoria))
@@ -6189,11 +6176,15 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           const aberto = varAberta === item.id;
 
           const precos = variacoes.map(v=>Number(v.preco)||0);
-          const faixa = temVariacao
-            ? (Math.min(...precos) === Math.max(...precos)
-                ? fmtR(Math.min(...precos))
-                : `${fmtR(Math.min(...precos))} a ${fmtR(Math.max(...precos))}`)
-            : null;
+          // No lanche, a faixa "R$ 12,00 a R$ 24,00" nao dizia nada ao garcom:
+          // o que ele precisa saber e que sai a base mais o espeto.
+          const faixa = opcoesMontar.length
+            ? `${fmtR(precoItem(item))} + espeto`
+            : temVariacao
+              ? (Math.min(...precos) === Math.max(...precos)
+                  ? fmtR(Math.min(...precos))
+                  : `${fmtR(Math.min(...precos))} a ${fmtR(Math.max(...precos))}`)
+              : null;
 
           return(
             <div key={item.id} style={{
