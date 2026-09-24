@@ -43,16 +43,38 @@ export function opcoesMontado(item, cardapio, preco = precoSimples) {
     .sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR", { sensitivity: "base" }));
 }
 
-// "Lanche Imperial (Picanha meia lua)" -> { base, espeto, nome, preco }
+// "Lanche Imperial (Picanha meia lua)" -> { base, espetos, nome, preco }
+// Aceita mais de um espeto no mesmo lanche: "(Picanha meia lua + Frango)" ou
+// "(2x Frango)". A BASE entra uma vez só — cobrar duas era o erro de antes.
 // null quando não é um lanche montado válido (o pedido é recusado nesse caso).
 export function lerItemMontado(nome, cardapio, preco = precoSimples) {
   const m = String(nome || "").match(/^(.+?)\s*\(([^()]+)\)\s*$/);
   if (!m) return null;
   const base = (cardapio || []).find(c => c.ativo !== false && ehMontado(c) && chave(c.nome) === chave(m[1]));
   if (!base) return null;
-  const opcao = opcoesMontado(base, cardapio, preco).find(o => chave(o.nome) === chave(m[2]));
-  if (!opcao) return null;
-  return { base, espeto: opcao.nome, nome: `${base.nome} (${opcao.nome})`, preco: opcao.preco, opcao };
+  const opcoes = opcoesMontado(base, cardapio, preco);
+
+  const espetos = [];
+  for (const parte of m[2].split("+")) {
+    const p = parte.trim().match(/^(?:(\d{1,2})\s*x\s*)?(.+)$/i);
+    if (!p) return null;
+    const opcao = opcoes.find(o => chave(o.nome) === chave(p[2]));
+    if (!opcao) return null;
+    const vezes = Math.min(10, Math.max(1, parseInt(p[1] || "1", 10)));
+    for (let i = 0; i < vezes; i++) espetos.push(opcao);
+  }
+  if (!espetos.length) return null;
+
+  const total = espetos.reduce((s, o) => s + o.precoEspeto, preco(base));
+  const contagem = espetos.reduce((acc, o) => { acc[o.nome] = (acc[o.nome] || 0) + 1; return acc; }, {});
+  const rotulo = Object.entries(contagem).map(([n, q]) => (q > 1 ? `${q}x ${n}` : n)).join(" + ");
+  return {
+    base,
+    espetos: espetos.map(o => o.nome),
+    espeto: espetos[0].nome,                    // compatibilidade com o formato antigo
+    nome: `${base.nome} (${rotulo})`,
+    preco: Math.round(total * 100) / 100,
+  };
 }
 
 // Linha do cardápio do WhatsApp para um lanche montado

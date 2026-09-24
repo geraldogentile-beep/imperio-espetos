@@ -58,11 +58,28 @@ console.log("\n=== parte 1: regras do lanche montado ===");
   ok(opcoesMontado(lanche, comPromo, promo).find(o => o.nome === "Picanha meia lua").preco === 18, "preco promocional do espeto vale no lanche");
 }
 
-console.log("\n=== parte 1b: pedido do WhatsApp ===");
+console.log("\n=== parte 1b: mais de um espeto no mesmo lanche ===");
+{
+  // O erro que a dona pegou: dois espetos cobravam dois lanches inteiros
+  const dois = lerItemMontado("Lanche Imperial (Picanha meia lua + Frango)", CARDAPIO, preco);
+  ok(dois?.preco === 30, `6 de base + 15 + 9 = R$ ${dois?.preco} (e nao 36, com duas bases)`);
+  ok(dois?.espetos.join(", ") === "Picanha meia lua, Frango", "guarda os dois espetos para o estoque");
+
+  const repetido = lerItemMontado("Lanche Imperial (2x Frango)", CARDAPIO, preco);
+  ok(repetido?.preco === 24, `6 + 9 + 9 = R$ ${repetido?.preco} com "2x"`);
+  ok(repetido?.espetos.length === 2 && repetido.nome === "Lanche Imperial (2x Frango)", "dois frangos, um lanche so");
+
+  const tres = lerItemMontado("Lanche Imperial (Frango + Linguiça + Kafta com queijo)", CARDAPIO, preco);
+  ok(tres?.preco === 6 + 9 + 9 + 11, `tres espetos: R$ ${tres?.preco}`);
+
+  ok(lerItemMontado("Lanche Imperial (Frango + Chopp)", CARDAPIO, preco) === null, "recusa se um dos espetos nao vale");
+}
+
+console.log("\n=== parte 1c: pedido do WhatsApp ===");
 {
   const r = lerItemMontado("Lanche Imperial (Picanha meia lua)", CARDAPIO, preco);
   ok(r?.preco === 21 && r.nome === "Lanche Imperial (Picanha meia lua)", `le o nome composto e calcula (R$ ${r?.preco})`);
-  ok(r?.base.nome === "Lanche Imperial" && r?.espeto === "Picanha meia lua", "separa base e espeto (estoque e cozinha)");
+  ok(r?.base.nome === "Lanche Imperial" && r?.espetos.join() === "Picanha meia lua", "separa base e espeto (estoque e cozinha)");
   ok(lerItemMontado("lanche imperial (picanha meia lua)", CARDAPIO, preco)?.preco === 21, "sem ligar para maiusculas");
   ok(lerItemMontado("Lanche Imperial (Linguica)", CARDAPIO, preco)?.preco === 15, "sem ligar para acento");
   ok(lerItemMontado("Lanche Imperial (Chopp)", CARDAPIO, preco) === null, "recusa espeto de categoria nao permitida");
@@ -117,7 +134,7 @@ if (!BASE) {
     const estPao = await criar(`TESTE pao ${Date.now()}`, lanche.nome);
     const estEsp = await criar(`TESTE espeto ${Date.now()}`, espeto.nome);
 
-    const item = { id: lanche.id, nome: `${lanche.nome} (${espeto.nome})`, nomeBase: lanche.nome, espeto: espeto.nome, preco: 21, qty: 2 };
+    const item = { id: lanche.id, nome: `${lanche.nome} (${espeto.nome})`, nomeBase: lanche.nome, espetos: [espeto.nome], preco: 21, qty: 2 };
     const venda = await api("POST", "/vendas-salao", {
       mesa: 12, itens: [item], subtotal: 42, total: 42, desconto: 0, pagamento: "pix", fechamento: new Date().toISOString(),
     });
@@ -129,9 +146,24 @@ if (!BASE) {
     ok(pao?.quantidade === 8, `baixou 2 do pao (ficou ${pao?.quantidade})`);
     ok(esp?.quantidade === 8, `baixou 2 do espeto escolhido (ficou ${esp?.quantidade})`);
 
+    // Lanche com dois espetos diferentes: baixa um de cada, e o pao uma vez
+    const outro = cardapio.find(i => i.categoria === "Tradicionais" && i.nome !== espeto.nome) || cardapio[2];
+    const estOutro = await criar(`TESTE espeto2 ${Date.now()}`, outro.nome);
+    const duplo = { id: lanche.id, nome: `${lanche.nome} (${espeto.nome} + ${outro.nome})`, nomeBase: lanche.nome, espetos: [espeto.nome, outro.nome], preco: 30, qty: 1 };
+    const venda2 = await api("POST", "/vendas-salao", {
+      mesa: 12, itens: [duplo], subtotal: 30, total: 30, desconto: 0, pagamento: "pix", fechamento: new Date().toISOString(),
+    });
+    ok(venda2.status === 201, `venda do lanche com dois espetos (HTTP ${venda2.status})`);
+    await new Promise(r => setTimeout(r, 600));
+    const est2 = (await api("GET", "/estoque")).corpo;
+    ok(est2.find(e => e._id === estPao._id)?.quantidade === 7, "o pao baixou so 1");
+    ok(est2.find(e => e._id === estEsp._id)?.quantidade === 7 && est2.find(e => e._id === estOutro._id)?.quantidade === 9, "e cada espeto baixou o seu");
+
     await api("DELETE", `/estoque/${estPao._id}`);
     await api("DELETE", `/estoque/${estEsp._id}`);
+    await api("DELETE", `/estoque/${estOutro._id}`);
     if (venda.corpo?._id) await api("DELETE", `/vendas-salao/${venda.corpo._id}`);
+    if (venda2.corpo?._id) await api("DELETE", `/vendas-salao/${venda2.corpo._id}`);
   }
 }
 

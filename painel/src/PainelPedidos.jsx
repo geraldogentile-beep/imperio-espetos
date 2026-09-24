@@ -5559,6 +5559,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const [catFiltro, setCatFiltro] = useState("todos");
   const [pagSalao, setPagSalao] = useState("pix");
   const [varAberta, setVarAberta] = useState(null);   // item com a escolha de carne aberta
+  // Lanche sendo montado: espeto -> quantidade. Enquanto nao confirma, nao
+  // entra na comanda. Antes cada toque lancava um lanche inteiro e a base era
+  // cobrada de novo; o certo e uma base so, com 1, 2 ou 3 espetos.
+  const [montagem, setMontagem] = useState({});
+  const abrirEscolha = (id) => { setVarAberta(id); setMontagem({}); };
   // Comanda paga em mais de uma forma (metade dinheiro, metade pix)
   const [pagDividido, setPagDividido] = useState(false);
   // Lista de lancamentos: [{tipo, valor}]. Era um campo fixo por forma, e
@@ -5794,6 +5799,34 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     upd({...mesa, garcom:nomeGarcom, status:novoStatus, abertura:novaAbertura,
          subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
   }
+  // Lanche fechado: uma base + os espetos escolhidos, num item so.
+  function addLanche(item, escolha, opcoes){
+    const partes = Object.entries(escolha).filter(([,q])=>q>0);
+    if (!partes.length) return;
+    const precoEspeto = (nome) => Number(opcoes.find(o=>o.nome===nome)?.precoEspeto) || 0;
+    const total = parseFloat((precoItem(item) + partes.reduce((s,[nome,q])=>s+q*precoEspeto(nome),0)).toFixed(2));
+    const rotulo = partes.map(([nome,q])=>q>1?`${q}x ${nome}`:nome).join(" + ");
+    // espetos expandido: e por ele que o estoque baixa cada espeto usado
+    const espetos = partes.flatMap(([nome,q])=>Array(q).fill(nome));
+    const novo = {
+      ...item, nome: `${item.nome} (${rotulo})`, nomeBase: item.nome, variacao: rotulo,
+      preco: total, qty: 1, precoPromocional: null, espetos,
+      variacoes: undefined, montarCom: undefined, montarRotulo: undefined,
+    };
+    const chave = chaveItem(novo);
+    const existe = sc.itens.find(i=>chaveItem(i)===chave);
+    const itens = existe
+      ? sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+1,preco:total}:i)
+      : [...sc.itens, novo];
+    upd({...mesa,
+      garcom: mesa.garcom || (garcomLogado?.nome) || "",
+      status: mesa.status==="livre"?"ocupada":mesa.status,
+      abertura: mesa.abertura||new Date().toISOString(),
+      subComandas: mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens}:s)});
+    setMontagem({}); setVarAberta(null);
+    msgSalao(`🥪 ${rotulo} no lanche — ${fmtR(total)}`);
+  }
+
   function chgQty(chave,d){
     const itens=sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+d}:i).filter(i=>i.qty>0);
     const allEmpty = mesa.subComandas.every((s,i)=>i===scIdx?itens.length===0:s.itens.length===0&&(s.rodadas||[]).length===0);
@@ -6161,7 +6194,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             ? cardapio
                 .filter(e => e.id !== item.id && montarCom.includes(e.cat || e.categoria))
                 .sort(compNome)
-                .map(e => ({ nome: e.nome, preco: parseFloat((precoItem(item) + precoItem(e)).toFixed(2)), espeto: e.nome, detalhe: `${fmtR(precoItem(item))} + ${fmtR(precoItem(e))}` }))
+                .map(e => ({ nome: e.nome, preco: parseFloat((precoItem(item) + precoItem(e)).toFixed(2)), precoEspeto: precoItem(e), espeto: e.nome, detalhe: `${fmtR(precoItem(item))} + ${fmtR(precoItem(e))}` }))
             : [];
           const variacoes = opcoesMontar.length ? opcoesMontar : (Array.isArray(item.variacoes) ? item.variacoes : []);
           const temVariacao = variacoes.length > 0;
@@ -6204,7 +6237,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               {temVariacao ? (
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontWeight:800,fontSize:15,minWidth:18,textAlign:"center"}}>{qtdTotal}</span>
-                  <button onClick={()=>setVarAberta(aberto?null:item.id)}
+                  <button onClick={()=>aberto?setVarAberta(null):abrirEscolha(item.id)}
                     style={{flex:1,padding:"6px 8px",borderRadius:20,border:"none",background:aberto?"#f0f0f0":"#7b1a0a",color:aberto?"#555":"#fff",fontWeight:700,fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>
                     {aberto ? "Fechar" : "Escolher"}
                   </button>
@@ -6225,24 +6258,59 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                   </div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))",gap:6}}>
                     {variacoes.map(v=>{
+                      // No lanche a conta e local (montagem); na variacao comum
+                      // continua sendo a quantidade que ja esta na comanda.
                       const linha = sc.itens.find(i=>i.id===item.id && i.variacao===v.nome);
-                      const qtd = linha ? linha.qty||1 : 0;
+                      const qtd = opcoesMontar.length ? (montagem[v.nome] || 0) : (linha ? linha.qty||1 : 0);
+                      const mais = () => opcoesMontar.length
+                        ? setMontagem(p=>({...p,[v.nome]:(p[v.nome]||0)+1}))
+                        : addItem(item,v);
+                      const menos = () => opcoesMontar.length
+                        ? setMontagem(p=>{const n={...p};if(!n[v.nome])return p;n[v.nome]--;if(!n[v.nome])delete n[v.nome];return n;})
+                        : (qtd && chgQty(chaveItem({id:item.id,variacao:v.nome}),-1));
                       return (
                         <div key={v.nome} style={{display:"flex",flexDirection:"column",gap:4,background:qtd?"#fef0ed":"#faf9f8",borderRadius:10,padding:"8px 10px",border:`1.5px solid ${qtd?"#7b1a0a":"transparent"}`}}>
                           <div style={{fontSize:13,fontWeight:qtd?700:500,color:"#333",lineHeight:1.2}}>{v.nome}</div>
-                          <div style={{fontSize:12,color:"#7b1a0a",fontWeight:700}}>{fmtR(Number(v.preco)||0)}</div>
-                          {v.detalhe && <div style={{fontSize:10,color:"#999",marginTop:-2}}>{v.detalhe}</div>}
+                          <div style={{fontSize:12,color:"#7b1a0a",fontWeight:700}}>{opcoesMontar.length ? fmtR(Number(v.precoEspeto)||0) : fmtR(Number(v.preco)||0)}</div>
+                          {!opcoesMontar.length && v.detalhe && <div style={{fontSize:10,color:"#999",marginTop:-2}}>{v.detalhe}</div>}
                           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
-                            <button onClick={()=>qtd&&chgQty(chaveItem({id:item.id,variacao:v.nome}),-1)}
+                            <button onClick={menos}
                               style={{width:28,height:28,borderRadius:"50%",border:"none",background:qtd?"#fee2e2":"#f0f0f0",color:qtd?"#ef4444":"#ccc",fontWeight:800,fontSize:16,cursor:qtd?"pointer":"default"}}>−</button>
                             <span style={{fontWeight:800,fontSize:15,minWidth:18,textAlign:"center"}}>{qtd}</span>
-                            <button onClick={()=>addItem(item,v)}
+                            <button onClick={mais}
                               style={{width:28,height:28,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:16,cursor:"pointer"}}>+</button>
                           </div>
                         </div>
                       );
                     })}
                   </div>
+
+                  {/* Fecha o lanche: a base entra UMA vez, com os espetos escolhidos */}
+                  {opcoesMontar.length > 0 && (() => {
+                    const escolhidos = Object.entries(montagem).filter(([,q])=>q>0);
+                    const qtdEspetos = escolhidos.reduce((s,[,q])=>s+q,0);
+                    const somaEspetos = escolhidos.reduce((s,[nome,q])=>{
+                      const o = opcoesMontar.find(x=>x.nome===nome);
+                      return s + q * (Number(o?.precoEspeto)||0);
+                    },0);
+                    const totalLanche = parseFloat((precoItem(item) + somaEspetos).toFixed(2));
+                    return (
+                      <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #f0f0f0",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <div style={{flex:1,minWidth:160,fontSize:12,color:"#555",lineHeight:1.5}}>
+                          {qtdEspetos === 0
+                            ? <>Escolha os espetos deste lanche. A base de <strong>{fmtR(precoItem(item))}</strong> entra uma vez só.</>
+                            : <><strong>{fmtR(precoItem(item))}</strong> de base + {qtdEspetos} espeto{qtdEspetos>1?"s":""} = <strong style={{color:"#7b1a0a",fontSize:14}}>{fmtR(totalLanche)}</strong></>}
+                        </div>
+                        {qtdEspetos>0 && (
+                          <button onClick={()=>setMontagem({})} style={{background:"#f0f0f0",color:"#666",border:"none",borderRadius:9,padding:"9px 12px",fontWeight:600,fontSize:12,cursor:"pointer"}}>Limpar</button>
+                        )}
+                        <button onClick={()=>addLanche(item, montagem, opcoesMontar)} disabled={!qtdEspetos}
+                          style={{background:qtdEspetos?"linear-gradient(135deg,#7b1a0a,#c0392b)":"#ddd",color:"#fff",border:"none",borderRadius:9,padding:"10px 14px",fontWeight:800,fontSize:13,cursor:qtdEspetos?"pointer":"not-allowed"}}>
+                          ✅ Adicionar lanche{qtdEspetos?` — ${fmtR(totalLanche)}`:""}
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>

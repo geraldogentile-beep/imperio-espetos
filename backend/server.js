@@ -878,6 +878,9 @@ function regraMontados() {
 ${linhas}
   Pergunte qual espetinho o cliente quer ANTES de fechar o pedido.
   No JSON, escreva o nome assim: "Nome do lanche (Nome do espetinho)", com o preço já somado.
+  Pode ir mais de um espeto no mesmo lanche: "Nome do lanche (Picanha meia lua + Frango)"
+  ou "Nome do lanche (2x Frango)". Nesse caso a base entra UMA vez só:
+  preço = base + a soma dos espetos escolhidos.
 `;
 }
 
@@ -1186,7 +1189,7 @@ async function processarMensagemCliente(tel, texto) {
           const qty = Math.min(99, Math.max(1, Math.floor(Number(it.qty) || 1)));
           const obs = typeof it.obs === "string" ? it.obs.slice(0, 120) : undefined;
           itensValidados.push(montado
-            ? { nome: montado.nome, nomeBase: montado.base.nome, espeto: montado.espeto, qty, preco: montado.preco, obs }
+            ? { nome: montado.nome, nomeBase: montado.base.nome, espetos: montado.espetos, qty, preco: montado.preco, obs }
             : { nome: cardapioItem.nome, qty, preco: precoAtual(cardapioItem), obs });
         }
         if (!itensValidados.length) return;
@@ -2214,9 +2217,14 @@ async function baixarEstoqueVenda(itens, vendaId) {
     const estoques = await EstoqueDB.find({ ativo: true }).lean();
     // Um item pode consumir dois estoques: o lanche (pao) e o espeto escolhido
     const alvos = itens.flatMap(item => {
-      const nomes = [item.nomeBase || item.nome];
-      if (item.espeto) nomes.push(item.espeto);
-      return nomes.filter(Boolean).map(nome => ({ nome, qty: item.qty || 1 }));
+      // Lanche com mais de um espeto baixa cada um deles (espetos[]); o
+      // formato antigo trazia so "espeto".
+      const espetos = Array.isArray(item.espetos) && item.espetos.length
+        ? item.espetos
+        : (item.espeto ? [item.espeto] : []);
+      return [item.nomeBase || item.nome, ...espetos]
+        .filter(Boolean)
+        .map(nome => ({ nome, qty: item.qty || 1 }));
     });
     for (const item of alvos) {
       const qty = item.qty || 1;
