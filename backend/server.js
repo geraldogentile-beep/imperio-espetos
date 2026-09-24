@@ -576,7 +576,9 @@ async function inicializarDados() {
 let sock = null;
 let qrCodeBase64 = null;
 let whatsappStatus = "disconnected"; // disconnected | qr | connected
-let authDir = "./auth_info";
+// Pasta da sessao do WhatsApp. Configuravel para o teste automatico nao
+// encostar na sessao de verdade.
+let authDir = process.env.WHATSAPP_AUTH_DIR || "./auth_info";
 // Cache simples (get/set/del/flushAll) no formato que o Baileys espera para
 // o contador de reenvios. Guarda por 1h e limpa sozinho.
 function criarCacheRetry() {
@@ -591,6 +593,25 @@ function criarCacheRetry() {
 }
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
+let motivoWhatsapp = "";        // por que caiu, em portugues, para o painel
+
+// Sessao morta (numero desligado no celular, sessao expirada) faz o Baileys
+// tentar restaurar e NUNCA emitir QR: o painel fica pedindo o QR para sempre.
+// A saida e tirar a sessao da frente. Nunca apagamos: renomeia, para dar
+// para voltar atras se for engano.
+function arquivarSessaoWhatsapp() {
+  try {
+    if (!fs.existsSync(authDir)) return false;
+    const destino = `${authDir}.old-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    fs.renameSync(authDir, destino);
+    console.log(`📱 Sessao do WhatsApp arquivada em ${destino}`);
+    return true;
+  } catch (e) {
+    console.error("Nao consegui arquivar a sessao do WhatsApp:", e.message);
+    return false;
+  }
+}
+const temSessaoWhatsapp = () => { try { return fs.existsSync(authDir); } catch { return false; } };
 
 // ── CONFIG ────────────────────────────────────────────────────
 let CONFIG = {
@@ -1303,11 +1324,27 @@ async function conectarWhatsApp() {
     }
 
     if (connection === "close") {
-      const shouldReconnect = (lastDisconnect?.error instanceof Boom)
-        ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
-        : true;
+      const codigo = lastDisconnect?.error?.output?.statusCode;
+      // Sessao que nao volta mais: desligada no celular, expirada ou trocada.
+      // Sem arquivar, o Baileys fica tentando restaurar e nunca mostra o QR.
+      const sessaoMorta = codigo === DisconnectReason.loggedOut
+        || codigo === DisconnectReason.badSession
+        || codigo === 401;
+      const shouldReconnect = (lastDisconnect?.error instanceof Boom) ? !sessaoMorta : true;
       whatsappStatus = "disconnected";
       qrCodeBase64 = null;
+      motivoWhatsapp = sessaoMorta
+        ? "A sessao do WhatsApp expirou ou foi desconectada no celular"
+        : (lastDisconnect?.error?.message || "Conexao fechada");
+
+      if (sessaoMorta) {
+        console.log("📱 Sessao invalida (codigo " + codigo + "): arquivando para gerar QR novo");
+        arquivarSessaoWhatsapp();
+        reconnectAttempts = 0;
+        setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reconectar apos sessao morta:", e.message)); }, 2000);
+        return;
+      }
+
       if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
         // Teto de 60s: com 5min de espera o QR ficava indisponivel por minutos
@@ -1324,6 +1361,7 @@ async function conectarWhatsApp() {
       console.log("✅ WhatsApp conectado!");
       whatsappStatus = "connected";
       qrCodeBase64 = null;
+      motivoWhatsapp = "";
       reconnectAttempts = 0; // reset no sucesso
     }
     });
@@ -1557,11 +1595,17 @@ app.put("/pedidos/:id", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── WHATSAPP STATUS API ───────────────────────────────────────
-app.get("/whatsapp/status", authMiddleware(["dono", "garcom"]), (req, res) => res.json({ status: whatsappStatus }));
+app.get("/whatsapp/status", authMiddleware(["dono", "garcom"]), (req, res) =>
+  res.json({ status: whatsappStatus, motivo: motivoWhatsapp, temSessao: temSessaoWhatsapp() }));
 
 // GET /whatsapp/qr — o QR em JSON, para o painel poder ficar consultando
 app.get("/whatsapp/qr", authMiddleware(["dono"]), (req, res) => {
-  res.json({ status: whatsappStatus, qr: whatsappStatus === "qr" ? qrCodeBase64 : null });
+  res.json({
+    status: whatsappStatus,
+    qr: whatsappStatus === "qr" ? qrCodeBase64 : null,
+    motivo: motivoWhatsapp,
+    temSessao: temSessaoWhatsapp(),   // com sessao guardada, o QR pode nunca nascer
+  });
 });
 
 // POST /whatsapp/reconectar — zera o contador e abre uma conexao nova.
@@ -1571,24 +1615,33 @@ app.post("/whatsapp/reconectar", authMiddleware(["dono"]), async (req, res) => {
   if (whatsappStatus === "connected") {
     return res.status(409).json({ erro: "WhatsApp ja esta conectado. Desconecte antes de parear outro numero." });
   }
+  // limparSessao: tira da frente a sessao antiga. E o que destrava o caso do
+  // QR que nunca aparece — com credencial velha o Baileys nem chega a emitir.
+  const limpou = req.body?.limparSessao ? arquivarSessaoWhatsapp() : false;
   reconnectAttempts = 0;
   qrCodeBase64 = null;
   whatsappStatus = "disconnected";
   conectarWhatsApp().catch(e => console.error("Falha ao reconectar sob demanda:", e.message));
-  res.json({ ok: true, mensagem: "Gerando QR Code novo. Aguarde alguns segundos." });
+  res.json({
+    ok: true, sessaoLimpa: limpou,
+    mensagem: limpou ? "Sessao antiga arquivada. Gerando QR Code novo." : "Gerando QR Code novo. Aguarde alguns segundos.",
+  });
 });
 
+// Desconectar tem de funcionar mesmo com a conexao ja morta: antes, o
+// sock.logout() estourava, o erro subia como 500 e a pasta da sessao ficava
+// onde estava — entao o QR nunca vinha, por mais que a dona clicasse.
 app.post("/whatsapp/logout", authMiddleware(["dono"]), async (req, res) => {
-  try {
-    if (sock) await sock.logout();
-    if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true });
-    whatsappStatus = "disconnected";
-    qrCodeBase64 = null;
-    setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reconectar apos logout:", e.message)); }, 2000);
-    res.json({ ok: true, message: "Desconectado. Novo QR Code será gerado." });
-  } catch (err) {
-    res.status(500).json({ erro: err.message });
-  }
+  try { if (sock) await sock.logout(); } catch (e) { console.warn("Logout do WhatsApp falhou (seguindo assim mesmo):", e.message); }
+  try { if (sock) { sock.ev.removeAllListeners(); sock.end(undefined); } } catch {}
+  sock = null;
+  const arquivada = arquivarSessaoWhatsapp();
+  whatsappStatus = "disconnected";
+  qrCodeBase64 = null;
+  motivoWhatsapp = "Desconectado pelo painel";
+  reconnectAttempts = 0;
+  setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reconectar apos logout:", e.message)); }, 2000);
+  res.json({ ok: true, sessaoArquivada: arquivada, message: "Desconectado. Novo QR Code sera gerado." });
 });
 
 // ── CUPONS API ────────────────────────────────────────────────

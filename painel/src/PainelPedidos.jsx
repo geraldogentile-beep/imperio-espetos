@@ -7114,6 +7114,7 @@ function WhatsAppConexao({ conexao, backendUrl }) {
   const [desconectando, setDesconectando] = useState(false);
   const [msgQR, setMsgQR] = useState(null);
   const [statusIA, setStatusIA] = useState(null);
+  const [infoWA, setInfoWA] = useState(null);   // motivo da queda e se ha sessao guardada
 
   async function carregarStatus() {
     try {
@@ -7126,6 +7127,11 @@ function WhatsAppConexao({ conexao, backendUrl }) {
       const r2 = await authFetch(backendUrl + "/ia/status");
       if (r2.ok) setStatusIA(await r2.json());
     } catch {}
+    // Por que o WhatsApp caiu: sem isso a tela so dizia "desconectado"
+    try {
+      const r3 = await authFetch(backendUrl + "/whatsapp/status");
+      if (r3.ok) setInfoWA(await r3.json());
+    } catch {}
   }
 
   // O backend so guarda o QR enquanto a conexao esta viva. Entre uma tentativa
@@ -7134,25 +7140,31 @@ function WhatsAppConexao({ conexao, backendUrl }) {
     try {
       const r = await authFetch(backendUrl + "/whatsapp/qr");
       if (!r.ok) return null;
-      const d = await r.json();
-      return d.qr || null;
+      return await r.json();   // { status, qr, motivo, temSessao }
     } catch { return null; }
   }
 
   async function carregarQR() {
     setLoading(true); setMsgQR(null);
-    const qr = await buscarQR();
+    const d = await buscarQR();
     setLoading(false);
-    if (qr) setQrCode(qr);
+    if (d?.qr) setQrCode(d.qr);
     else await gerarNovoQR();   // nao tinha QR guardado: pede um novo
   }
 
   // Forca uma conexao nova. Depois de 10 tentativas sem ninguem escanear, o
   // Baileys desistia e o QR so voltava reiniciando o servidor.
-  async function gerarNovoQR() {
-    setLoading(true); setQrCode(null); setMsgQR("Gerando QR Code, aguarde...");
+  // limparSessao: arquiva a sessao antiga. Enquanto ela existe e esta morta,
+  // o WhatsApp tenta restaurar e NUNCA emite QR — era o caso do QR que nunca
+  // aparecia. Primeiro tentamos sem limpar; se nao vier, limpamos e repetimos.
+  async function gerarNovoQR(limparSessao = false) {
+    setLoading(true); setQrCode(null);
+    setMsgQR(limparSessao ? "Limpando a sessao antiga e gerando um QR novo..." : "Gerando QR Code, aguarde...");
     try {
-      const r = await authFetch(backendUrl + "/whatsapp/reconectar", { method: "POST" });
+      const r = await authFetch(backendUrl + "/whatsapp/reconectar", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limparSessao }),
+      });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
         // 404 = servidor ainda sem a rota, ou seja, backend nao atualizado
@@ -7165,13 +7177,19 @@ function WhatsAppConexao({ conexao, backendUrl }) {
       setMsgQR("Erro de conexao com o servidor."); setLoading(false); return;
     }
     // O QR leva alguns segundos para nascer — consulta ate aparecer
-    for (let i = 0; i < 20; i++) {
+    let ultimo = null;
+    for (let i = 0; i < 12; i++) {
       await new Promise(r => setTimeout(r, 1500));
-      const qr = await buscarQR();
-      if (qr) { setQrCode(qr); setMsgQR(null); setLoading(false); carregarStatus(); return; }
+      ultimo = await buscarQR();
+      if (ultimo?.qr) { setQrCode(ultimo.qr); setMsgQR(null); setLoading(false); carregarStatus(); return; }
     }
-    setMsgQR("O QR Code nao apareceu. Tente de novo em alguns segundos.");
+    // Nao veio e ainda existe sessao guardada: e ela que esta segurando o QR
+    if (!limparSessao && ultimo?.temSessao) return gerarNovoQR(true);
+    setMsgQR(limparSessao
+      ? "O QR Code nao apareceu nem depois de limpar a sessao. Veja se o servidor esta no ar e tente de novo."
+      : "O QR Code nao apareceu. Tente de novo em alguns segundos.");
     setLoading(false);
+    carregarStatus();
   }
 
   async function desconectar() {
@@ -7221,8 +7239,13 @@ function WhatsAppConexao({ conexao, backendUrl }) {
               {conectado ? "WhatsApp Conectado" : esperandoQR ? "Aguardando pareamento" : "WhatsApp Desconectado"}
             </div>
             <div style={{ fontSize: 13, color: T.gray, marginTop: 3 }}>
-              {conectado ? "Bot respondendo normalmente" : esperandoQR ? "QR Code disponível — escaneie no WhatsApp" : "Carregando status..."}
+              {conectado ? "Bot respondendo normalmente" : esperandoQR ? "QR Code disponível — escaneie no WhatsApp" : (infoWA?.motivo || "Carregando status...")}
             </div>
+            {!conectado && !esperandoQR && infoWA?.temSessao && (
+              <div style={{ fontSize: 12, color: T.amber, marginTop: 4 }}>
+                Há uma sessão antiga guardada. Se o QR não aparecer, o botão abaixo limpa ela sozinho.
+              </div>
+            )}
           </div>
         </div>
         {status && (
