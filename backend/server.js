@@ -1324,6 +1324,10 @@ async function conectarWhatsApp() {
       console.log("📱 QR Code gerado — acesse /qrcode para escanear");
       qrCodeBase64 = await qrcode.toDataURL(qr);
       whatsappStatus = "qr";
+      // Esperar alguem escanear nao e falha de conexao: sem zerar aqui, o
+      // ciclo normal do QR gastava as 10 tentativas e o servidor desistia,
+      // ficando sem QR ate reiniciar.
+      reconnectAttempts = 0;
     }
 
     if (connection === "close") {
@@ -1345,6 +1349,15 @@ async function conectarWhatsApp() {
         arquivarSessaoWhatsapp();
         reconnectAttempts = 0;
         setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reconectar apos sessao morta:", e.message)); }, 2000);
+        return;
+      }
+
+      // Sem sessao guardada, a conexao existe so para mostrar o QR: volta
+      // rapido e sem contar tentativa, senao o QR fica minutos fora do ar.
+      if (!temSessaoWhatsapp()) {
+        reconnectAttempts = 0;
+        motivoWhatsapp = "Aguardando leitura do QR Code";
+        setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reabrir para o QR:", e.message)); }, 4000);
         return;
       }
 
