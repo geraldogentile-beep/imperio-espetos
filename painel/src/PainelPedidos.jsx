@@ -111,7 +111,8 @@ const CHAVE_ESTACAO = "imperio_estacao_impressao";
 // Ligada por padrao em quem ja pareou a impressora — se depender de alguem
 // lembrar de ativar, os tickets ficam parados na fila.
 function estacaoLigada() {
-  if (ehCelular()) return false;   // a estacao e o notebook do caixa
+  // A estacao e o notebook do caixa; o celular so assume em emergencia
+  if (ehCelular()) return impressora.emEmergencia();
   try {
     const v = localStorage.getItem(CHAVE_ESTACAO);
     if (v === null) return impressora.temDispositivoSalvo();
@@ -1920,10 +1921,18 @@ function ImpressoraConfig() {
         </div>
       )}
 
-      {supported && ehCelular() && (
+      {supported && ehCelular() && !impressora.emEmergencia() && (
         <div style={{ padding: "12px 14px", borderRadius: 12, background: "#eff6ff", border: "1.5px solid #93c5fd", color: "#1e3a8a", fontSize: 13, lineHeight: 1.4, marginBottom: 10 }}>
           📌 <strong>A impressora é do notebook do caixa.</strong> Neste celular os pedidos vão para a fila e saem lá.
-          Conecte aqui só numa emergência, com o notebook desligado — senão o celular "rouba" a impressora do caixa.
+          <br /><strong>Emergência:</strong> se o notebook não estiver conseguindo imprimir, desligue o Bluetooth dele e toque
+          em "Conectar impressora" aqui. Este celular passa a imprimir tudo, inclusive os pedidos dos garçons,
+          enquanto esta tela ficar aberta.
+        </div>
+      )}
+      {supported && impressora.emEmergencia() && (
+        <div style={{ padding: "12px 14px", borderRadius: 12, background: "#fef2f2", border: "1.5px solid #fca5a5", color: "#991b1b", fontSize: 13, lineHeight: 1.4, marginBottom: 10 }}>
+          🚨 <strong>Este celular está imprimindo no lugar do notebook.</strong> Deixe o painel aberto nele e o celular
+          perto da impressora. Para devolver a impressora ao notebook, toque em "Desconectar" aqui.
         </div>
       )}
 
@@ -1994,8 +2003,8 @@ function ImpressoraConfig() {
             <Toggle value={autoImprimir} onChange={setAutoImprimir} label="🛵 Imprimir pedidos delivery automaticamente" sub="Quando chegar pedido novo via WhatsApp, imprime imediatamente" />
           </div>
 
-          {/* Estação de impressão */}
-          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
+          {/* Estação de impressão (no celular não se escolhe: só em emergência) */}
+          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12, display: ehCelular() ? "none" : "block" }}>
             <Toggle value={estacao} onChange={setEstacao}
               label="🖨️ Este aparelho é a estação de impressão"
               sub="Imprime aqui os tickets que os garçons mandarem dos celulares deles" />

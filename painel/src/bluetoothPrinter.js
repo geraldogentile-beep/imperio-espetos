@@ -108,6 +108,7 @@ class ImpressoraBT {
     this._timerReconexao = null;
     this._tentativasSeguidas = 0;
     this._manterViva = null;
+    this._emergencia = false;       // celular conectado NA MAO neste carregamento da pagina
     this._setupVisibilityListener();
   }
 
@@ -149,7 +150,7 @@ class ImpressoraBT {
   // Se tem dispositivo salvo (foi pareado antes). No celular, nunca: é isso
   // que desliga a reconexão automática, a estação e o aviso vermelho nele.
   temDispositivoSalvo() {
-    if (EH_CELULAR) return false;
+    if (EH_CELULAR && !this._emergencia) return false;
     try { return !!localStorage.getItem("imperio_printer_name"); } catch { return false; }
   }
   nomeSalvo() {
@@ -157,7 +158,12 @@ class ImpressoraBT {
   }
   // Recarregar a pagina apaga a impressora da memoria; sem getDevices (quase
   // todo Chrome de celular) ela so volta pareando de novo.
-  perderiaAoRecarregar() { return !!this.device && !EH_CELULAR; }
+  perderiaAoRecarregar() { return !!this.device && (!EH_CELULAR || this._emergencia); }
+  // Emergencia: o notebook nao consegue imprimir e alguem conectou a
+  // impressora neste celular, na mao. Enquanto a pagina ficar aberta ele
+  // faz tudo o que o notebook faria (reconecta, puxa a fila dos garcons).
+  // Recarregou ou tocou em Desconectar: volta a nao disputar a impressora.
+  emEmergencia() { return EH_CELULAR && this._emergencia; }
   // Pareada antes, mas este carregamento da pagina nao tem como reconectar
   // sozinho: precisa de um toque em "Conectar impressora".
   precisaParear() {
@@ -290,6 +296,7 @@ class ImpressoraBT {
       this.device = escolhido;
       this._naoAchou = false;
       await this._emSerie(() => this._setupConexao());
+      if (EH_CELULAR) this._emergencia = true;
 
       // Salva dados para reconexão automática
       try {
@@ -382,6 +389,7 @@ class ImpressoraBT {
     this.characteristic = null;
     this.device = null;
     this.ultimoErro = null;
+    this._emergencia = false;
     try {
       localStorage.removeItem("imperio_printer_name");
       localStorage.removeItem("imperio_printer_id");

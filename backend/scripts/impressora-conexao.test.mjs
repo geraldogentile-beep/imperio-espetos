@@ -246,15 +246,29 @@ console.log("\n=== 9) celular nao rouba a impressora do notebook do caixa ===");
   ok(!cel.temDispositivoSalvo() && !cel.status().precisaParear, "nao se considera dono da impressora nem mostra o aviso vermelho");
   const r = await cel.reconectarAuto();
   ok(!aparelho.gatt.connected && !!r?.erro, "nao tenta conectar sozinho");
-  // Emergencia: alguem conecta na mao. Imprime, mas se cair nao fica tentando.
+  ok(!cel.emEmergencia(), "e nao esta em emergencia");
+
+  // Emergencia: o notebook nao imprime e alguem conecta o celular NA MAO.
+  // Ai ele faz tudo o que o notebook faria, enquanto a pagina ficar aberta.
   await cel.conectar();
+  ok(cel.emEmergencia() && cel.temDispositivoSalvo(), "conectado na mao: assume a impressao (vira estacao)");
   aparelho.recebido = [];
   await cel.imprimirComanda(ticket(90));
-  ok(texto(aparelho.recebido).includes("Espeto 90"), "conectado na mao, imprime");
-  ok(!cel.perderiaAoRecarregar(), "e pode recarregar com versao nova (solta a impressora)");
+  ok(texto(aparelho.recebido).includes("Espeto 90"), "imprime");
+  ok(cel.perderiaAoRecarregar(), "nao recarrega sozinho no meio da emergencia");
   aparelho.cair();
+  ok(await esperarAte(() => cel.isConnected()), "se cair, reconecta sozinho (a noite depende dele)");
+
+  // Devolver ao notebook: Desconectar solta a impressora e ele para de disputar
+  await cel.desconectar();
+  ok(!cel.emEmergencia() && !aparelho.gatt.connected, "Desconectar devolve a impressora");
   await dormir(400);   // varias janelas de reconexao (40/60/80 ms)
-  ok(!aparelho.gatt.connected, "depois da queda NAO reconecta sozinho (a impressora fica livre para o notebook)");
+  ok(!aparelho.gatt.connected, "e depois disso NAO reconecta sozinho");
+
+  // Pagina recarregada no celular: volta a nao disputar, mesmo com o nome salvo
+  localStorage.setItem("imperio_printer_name", "MY-7779");
+  const { impressora: cel2 } = await import("../../painel/src/bluetoothPrinter.js?celular=2");
+  ok(!cel2.temDispositivoSalvo() && !cel2.emEmergencia(), "celular recarregado nao disputa a impressora");
   Object.defineProperty(navigator, "userAgent", { configurable: true, value: uaOriginal });
 }
 
