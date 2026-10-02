@@ -5257,13 +5257,15 @@ function AvisoConectarImpressora() {
   useEffect(() => { const sair = impressora.onStatus(setSt); return () => { sair(); }; }, []);
   if (!st.precisaParear || fechado) return null;
 
-  async function conectar(soASalva) {
+  // Lista completa do Chrome, a mesma do primeiro pareamento: a lista
+  // filtrada pelo nome nao foi testada com a impressora de verdade.
+  async function conectar() {
     setErro(""); setOcupado(true);
-    try { await impressora.conectar({ soASalva }); }
+    try { await impressora.conectar(); }
     catch (e) {
       const cancelou = e?.name === "NotFoundError" || String(e).toLowerCase().includes("cancel");
       setErro(cancelou
-        ? "A impressora não apareceu na lista? Confira se está ligada e toque em \"Ver todos\"."
+        ? "A impressora não apareceu na lista? Confira se ela está ligada e perto, e toque de novo."
         : (e.message || "Não foi possível conectar"));
     }
     setOcupado(false);
@@ -5275,8 +5277,7 @@ function AvisoConectarImpressora() {
         <div style={{ flex: "1 1 200px", fontSize: 13, lineHeight: 1.35 }}>
           <strong>🖨️ Impressora desligada deste aparelho.</strong> Os pedidos ficam guardados e saem assim que ela voltar.
         </div>
-        <button onClick={() => conectar(true)} disabled={ocupado} style={botao}>{ocupado ? "Conectando..." : "Conectar impressora"}</button>
-        {erro && <button onClick={() => conectar(false)} disabled={ocupado} style={{ ...botao, background: "rgba(255,255,255,0.2)", color: "#fff" }}>Ver todos</button>}
+        <button onClick={conectar} disabled={ocupado} style={botao}>{ocupado ? "Conectando..." : "Conectar impressora"}</button>
         <button onClick={() => setFechado(true)} aria-label="Fechar aviso" style={{ background: "none", border: "none", color: "#fff", fontSize: 20, cursor: "pointer", padding: "0 4px", flexShrink: 0 }}>×</button>
       </div>
       {erro && <div style={{ fontSize: 12, marginTop: 6, color: "#fde68a" }}>{erro}</div>}
@@ -5317,7 +5318,7 @@ function ChipImpressora({ podeReenviar }) {
   }
   async function parear() {
     setAviso("");
-    try { await impressora.conectar({ soASalva: st.precisaParear }); }
+    try { await impressora.conectar(); }
     catch (e) { if (!String(e).includes("cancel")) setAviso(e.message || "Não foi possível conectar"); }
   }
   async function reenviar() {
