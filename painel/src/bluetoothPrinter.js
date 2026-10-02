@@ -69,6 +69,14 @@ const TEMPO_ESCRITA_MS = TEMPOS.escrita ?? 5000;
 const INTERVALO_MANTER_VIVA_MS = TEMPOS.manterViva ?? 40000;
 const ESPERAS_RECONEXAO_MS = TEMPOS.esperas ?? [2000, 5000, 10000, 20000, 30000];
 
+// A impressora é do notebook do caixa. Celular e tablet nunca seguram a
+// impressora por conta própria: um celular que tinha conectado uma vez
+// ficava tentando reconectar sozinho e "roubava" a impressora do notebook
+// (ela some da lista do Chrome quando está presa em outro aparelho).
+// Neles o ticket vai para a fila e o notebook imprime.
+const EH_CELULAR = typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+export const ehCelular = () => EH_CELULAR;
+
 function comTempo(promessa, ms, mensagem) {
   let t;
   return Promise.race([
@@ -138,8 +146,10 @@ class ImpressoraBT {
   isConnected() { return !!(this.device?.gatt?.connected && this.characteristic); }
   // Considera "disponível" se conectada OU se tem dispositivo salvo (vai reconectar automaticamente)
   isDisponivel() { return this.isConnected() || this.temDispositivoSalvo(); }
-  // Se tem dispositivo salvo (foi pareado antes)
+  // Se tem dispositivo salvo (foi pareado antes). No celular, nunca: é isso
+  // que desliga a reconexão automática, a estação e o aviso vermelho nele.
   temDispositivoSalvo() {
+    if (EH_CELULAR) return false;
     try { return !!localStorage.getItem("imperio_printer_name"); } catch { return false; }
   }
   nomeSalvo() {
@@ -147,7 +157,7 @@ class ImpressoraBT {
   }
   // Recarregar a pagina apaga a impressora da memoria; sem getDevices (quase
   // todo Chrome de celular) ela so volta pareando de novo.
-  perderiaAoRecarregar() { return !!this.device; }
+  perderiaAoRecarregar() { return !!this.device && !EH_CELULAR; }
   // Pareada antes, mas este carregamento da pagina nao tem como reconectar
   // sozinho: precisa de um toque em "Conectar impressora".
   precisaParear() {

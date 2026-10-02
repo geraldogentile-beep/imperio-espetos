@@ -235,5 +235,28 @@ console.log("\n=== 8b) Chrome com getDevices que nao acha a impressora: tambem p
   navigator.bluetooth.getDevices = getDevices;
 }
 
+console.log("\n=== 9) celular nao rouba a impressora do notebook do caixa ===");
+{
+  const uaOriginal = navigator.userAgent;
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Linux; Android 14; SM-A155M) Chrome/129 Mobile Safari/537.36" });
+  localStorage.setItem("imperio_printer_name", "MY-7779");   // celular que pareou um dia
+  localStorage.setItem("imperio_printer_id", "imp1");
+  const { impressora: cel, ehCelular } = await import("../../painel/src/bluetoothPrinter.js?celular=1");
+  ok(ehCelular(), "reconhece o celular");
+  ok(!cel.temDispositivoSalvo() && !cel.status().precisaParear, "nao se considera dono da impressora nem mostra o aviso vermelho");
+  const r = await cel.reconectarAuto();
+  ok(!aparelho.gatt.connected && !!r?.erro, "nao tenta conectar sozinho");
+  // Emergencia: alguem conecta na mao. Imprime, mas se cair nao fica tentando.
+  await cel.conectar();
+  aparelho.recebido = [];
+  await cel.imprimirComanda(ticket(90));
+  ok(texto(aparelho.recebido).includes("Espeto 90"), "conectado na mao, imprime");
+  ok(!cel.perderiaAoRecarregar(), "e pode recarregar com versao nova (solta a impressora)");
+  aparelho.cair();
+  await dormir(400);   // varias janelas de reconexao (40/60/80 ms)
+  ok(!aparelho.gatt.connected, "depois da queda NAO reconecta sozinho (a impressora fica livre para o notebook)");
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: uaOriginal });
+}
+
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);
 process.exit(falhas === 0 ? 0 : 1);

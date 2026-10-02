@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { authFetch } from "./auth.js";
-import { impressora } from "./bluetoothPrinter.js";
+import { impressora, ehCelular } from "./bluetoothPrinter.js";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
 
@@ -111,6 +111,7 @@ const CHAVE_ESTACAO = "imperio_estacao_impressao";
 // Ligada por padrao em quem ja pareou a impressora — se depender de alguem
 // lembrar de ativar, os tickets ficam parados na fila.
 function estacaoLigada() {
+  if (ehCelular()) return false;   // a estacao e o notebook do caixa
   try {
     const v = localStorage.getItem(CHAVE_ESTACAO);
     if (v === null) return impressora.temDispositivoSalvo();
@@ -1864,7 +1865,7 @@ function ImpressoraConfig() {
 
   // Estacao de impressao: este aparelho imprime o que os garcons mandarem
   const [estacao, setEstacaoState] = useState(() => estacaoLigada());
-  function setEstacao(v) { setEstacaoState(v); setEstacaoLigada(v); }
+  function setEstacao(v) { if (ehCelular()) return; setEstacaoState(v); setEstacaoLigada(v); }
   const [fila, setFila] = useState({ pendentes: 0, erros: 0 });
   useEffect(() => {
     let vivo = true;
@@ -1916,6 +1917,13 @@ function ImpressoraConfig() {
         <div style={{ padding: "12px", background: "#fee2e2", borderRadius: 10, border: "1px solid #ef4444", fontSize: 13, color: "#991b1b" }}>
           ❌ Seu navegador não suporta Bluetooth Web.<br />
           Use <strong>Chrome</strong> ou <strong>Edge</strong> no Android ou desktop. Safari/iOS não tem suporte.
+        </div>
+      )}
+
+      {supported && ehCelular() && (
+        <div style={{ padding: "12px 14px", borderRadius: 12, background: "#eff6ff", border: "1.5px solid #93c5fd", color: "#1e3a8a", fontSize: 13, lineHeight: 1.4, marginBottom: 10 }}>
+          📌 <strong>A impressora é do notebook do caixa.</strong> Neste celular os pedidos vão para a fila e saem lá.
+          Conecte aqui só numa emergência, com o notebook desligado — senão o celular "rouba" a impressora do caixa.
         </div>
       )}
 
