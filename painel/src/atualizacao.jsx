@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { impressora } from "./bluetoothPrinter.js";
 
 // ── AVISO DE NOVA VERSÃO ─────────────────────────────────────
 // Toda correção do painel dependia de alguém dar F5 em cada aparelho. Quando
@@ -61,9 +62,13 @@ export default function AvisoAtualizacao() {
 
   // Recarrega sozinho só com o aparelho parado e ninguém digitando: no meio de
   // um fechamento isso apagaria o que o operador acabou de preencher.
+  // Nunca no aparelho que está com a impressora: ao recarregar, o Chrome
+  // esquece a impressora e ela só volta pareando de novo — a cada publicação
+  // o caixa ficava sem imprimir até alguém perceber.
   useEffect(() => {
     if (!nova) return;
     const t = setInterval(() => {
+      if (impressora.perderiaAoRecarregar()) return;
       const digitando = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
       if (!digitando && Date.now() - ultimoToque.current > OCIOSO_PARA_RECARREGAR) window.location.reload();
     }, 15000);
@@ -71,6 +76,7 @@ export default function AvisoAtualizacao() {
   }, [nova]);
 
   if (!nova) return null;
+  const comImpressora = impressora.perderiaAoRecarregar();
 
   return (
     <div style={{
@@ -80,7 +86,10 @@ export default function AvisoAtualizacao() {
       boxShadow: "0 -4px 16px rgba(0,0,0,0.25)", fontFamily: "'DM Sans',sans-serif",
     }}>
       <div style={{ flex: 1, fontSize: 13, lineHeight: 1.35 }}>
-        <strong>Nova versão disponível.</strong> Atualize para usar as correções mais recentes.
+        <strong>Nova versão disponível.</strong>{" "}
+        {comImpressora
+          ? "Atualize quando o movimento acalmar: depois é preciso tocar em \"Conectar impressora\"."
+          : "Atualize para usar as correções mais recentes."}
       </div>
       <button onClick={() => window.location.reload()} style={{
         background: "#fff", color: "#1d4ed8", border: "none", borderRadius: 10,

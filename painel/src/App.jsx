@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import PainelPedidos from "./PainelPedidos.jsx";
 import AvisoAtualizacao from "./atualizacao.jsx";
-import { getToken, setToken, clearToken, getSavedLogin, saveLogin } from "./auth.js";
+import { getToken, setToken, clearToken, getSavedLogin, saveLogin, renovarToken, EVENTO_SESSAO_EXPIRADA } from "./auth.js";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
 
@@ -224,6 +224,22 @@ function AppInterno() {
   });
   const [installPrompt, setInstallPrompt] = useState(null);
   const [showInstall, setShowInstall] = useState(false);
+
+  // Login vencido: tela do PIN sem recarregar (a impressora segue conectada)
+  useEffect(() => {
+    const sair = () => setLogin(null);
+    window.addEventListener(EVENTO_SESSAO_EXPIRADA, sair);
+    return () => window.removeEventListener(EVENTO_SESSAO_EXPIRADA, sair);
+  }, []);
+
+  // Com o app aberto, renova o login a cada 30 min: ele vencia em 8h e
+  // derrubava o caixa (e a impressora) no meio do servico.
+  useEffect(() => {
+    if (!login) return;
+    renovarToken(BACKEND_URL);
+    const t = setInterval(() => renovarToken(BACKEND_URL), 30 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [login]);
 
   useEffect(() => {
     const handler = (e) => { e.preventDefault(); setInstallPrompt(e); setShowInstall(true); };

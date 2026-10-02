@@ -145,6 +145,15 @@ class ImpressoraBT {
   nomeSalvo() {
     try { return localStorage.getItem("imperio_printer_name") || null; } catch { return null; }
   }
+  // Recarregar a pagina apaga a impressora da memoria; sem getDevices (quase
+  // todo Chrome de celular) ela so volta pareando de novo.
+  perderiaAoRecarregar() { return !!this.device; }
+  // Pareada antes, mas este carregamento da pagina nao tem como reconectar
+  // sozinho: precisa de um toque em "Conectar impressora".
+  precisaParear() {
+    if (!this.isSupported() || !this.temDispositivoSalvo() || this.isConnected() || this.device) return false;
+    return !navigator.bluetooth.getDevices || this._naoAchou;
+  }
 
   onStatus(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
   status() {
@@ -153,6 +162,7 @@ class ImpressoraBT {
       nome: this.device?.name || this.nomeSalvo(),
       reconectando: this.tentandoReconectar,
       salva: this.temDispositivoSalvo(),
+      precisaParear: this.precisaParear(),
       erro: this.ultimoErro,
     };
   }
@@ -247,15 +257,28 @@ class ImpressoraBT {
     this._iniciarManterViva();
   }
 
-  async conectar() {
+  // soASalva: a lista do Chrome mostra so a impressora ja usada aqui (um
+  // toque), em vez de todo aparelho Bluetooth por perto.
+  async conectar({ soASalva = false } = {}) {
     if (!this.isSupported()) {
       throw new Error("Seu navegador não suporta Bluetooth Web. Use Chrome ou Edge no Android/desktop.");
     }
+    const nome = soASalva ? this.nomeSalvo() : null;
+    // Fechar a lista sem escolher nao mexe na conexao que ja existe
+    const escolhido = await navigator.bluetooth.requestDevice(nome
+      ? { filters: [{ name: nome }], optionalServices: SERVICES_CONHECIDOS }
+      : { acceptAllDevices: true, optionalServices: SERVICES_CONHECIDOS });
     try {
-      this.device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: SERVICES_CONHECIDOS,
-      });
+      // Outra impressora: solta a antiga antes (senao a queda dela agendava
+      // reconexao na impressora errada)
+      if (this.device && this.device !== escolhido) {
+        if (this._onDisconnect && this._deviceOuvido) {
+          try { this._deviceOuvido.removeEventListener("gattserverdisconnected", this._onDisconnect); } catch {}
+        }
+        try { if (this.device.gatt?.connected) this.device.gatt.disconnect(); } catch {}
+      }
+      this.device = escolhido;
+      this._naoAchou = false;
       await this._emSerie(() => this._setupConexao());
 
       // Salva dados para reconexão automática
@@ -295,7 +318,7 @@ class ImpressoraBT {
     if (!this.isSupported()) return Promise.resolve({ erro: "Este navegador não tem Bluetooth" });
     if (!this.temDispositivoSalvo()) return Promise.resolve({ erro: "Nenhuma impressora pareada neste aparelho" });
     if (!this.device && !navigator.bluetooth.getDevices) {
-      return Promise.resolve({ erro: "Reconexão automática não suportada neste navegador. Use \"Parear de novo\"." });
+      return Promise.resolve({ erro: "Toque em \"Conectar impressora\" para ligar de novo." });
     }
     if (this._reconexao) return this._reconexao;
 
@@ -314,7 +337,8 @@ class ImpressoraBT {
         const devices = await navigator.bluetooth.getDevices();
         device = devices.find(d => d.id === idSalvo) || devices.find(d => d.name === nomeSalvo);
         if (!device) {
-          return { erro: "Impressora pareada não encontrada. Use \"Parear de novo\"." };
+          this._naoAchou = true;
+          return { erro: "Toque em \"Conectar impressora\" para ligar de novo." };
         }
         this.device = device;
       }

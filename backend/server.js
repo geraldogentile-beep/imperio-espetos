@@ -1486,6 +1486,25 @@ app.post("/auth/login", loginLimiter, async (req, res) => {
   return res.status(401).json({ erro: "PIN incorreto" });
 });
 
+// Renova o login de quem esta com o app aberto. O token vale 8h e, ao vencer
+// no meio do servico, o painel recarregava: o tablet do caixa perdia a
+// impressora Bluetooth e so voltava pareando de novo.
+app.post("/auth/renovar", authMiddleware([]), async (req, res) => {
+  const { role, nome, id } = req.user || {};
+  if (!role) return res.status(401).json({ erro: "Token inválido" });
+  // Garcom com PIN proprio desativado nao renova
+  if (id && mongoPronto()) {
+    try {
+      const garcom = await GarcomDB.findOne({ _id: id, ativo: true }).lean();
+      if (!garcom) return res.status(401).json({ erro: "Login desativado" });
+    } catch {}
+  }
+  const payload = { role };
+  if (nome) payload.nome = nome;
+  if (id) payload.id = id;
+  res.json({ token: gerarToken(payload) });
+});
+
 app.put("/auth/pins", authMiddleware(["dono"]), async (req, res) => {
   const { dono, garcom } = req.body;
   if (dono && !/^\d{4}$/.test(dono)) return res.status(400).json({ erro: "PIN do administrador deve ter 4 dígitos" });

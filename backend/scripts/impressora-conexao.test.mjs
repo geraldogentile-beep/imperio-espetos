@@ -57,9 +57,17 @@ class Impressora extends EventTarget {
 }
 
 const aparelho = new Impressora();
+const lista = { ultimoPedido: null, cancelar: false };   // a lista de aparelhos do Chrome
 Object.defineProperty(globalThis.navigator, "bluetooth", {
   configurable: true,
-  value: { requestDevice: async () => aparelho, getDevices: async () => [aparelho] },
+  value: {
+    requestDevice: async (opcoes) => {
+      lista.ultimoPedido = opcoes;
+      if (lista.cancelar) { const e = new Error("User cancelled the requestDevice() chooser."); e.name = "NotFoundError"; throw e; }
+      return aparelho;
+    },
+    getDevices: async () => [aparelho],
+  },
 });
 
 const { impressora } = await import("../../painel/src/bluetoothPrinter.js");
@@ -163,6 +171,21 @@ console.log("\n=== 6b) aviso de troca de mesa: destaque no topo, sem itens ===")
   ok(t.includes("Mesa 7") && t.includes("Pedidos da Mesa 3 agora sao da MESA 7"), "diz de onde veio e para onde foi");
 }
 
+console.log("\n=== 6c) abrir a lista e fechar sem escolher nao derruba a impressora ===");
+{
+  ok(impressora.isConnected(), "conectada antes");
+  ok(impressora.perderiaAoRecarregar(), "app sabe que recarregar a pagina perderia a impressora");
+  lista.cancelar = true;
+  let erro = null;
+  try { await impressora.conectar({ soASalva: true }); } catch (e) { erro = e; }
+  lista.cancelar = false;
+  ok(!!erro, "a lista fechada devolve erro para a tela");
+  ok(impressora.isConnected(), "e a impressora continua conectada");
+  aparelho.recebido = [];
+  await impressora.imprimirComanda(ticket(61));
+  ok(texto(aparelho.recebido).includes("Espeto 61"), "e imprimindo");
+}
+
 console.log("\n=== 7) sem impressora pareada: erro claro, sem ficar esperando ===");
 {
   await impressora.desconectar();
@@ -171,6 +194,45 @@ console.log("\n=== 7) sem impressora pareada: erro claro, sem ficar esperando ==
   try { await impressora.imprimirComanda(ticket(9)); } catch (e) { erro = e; }
   ok(erro?.semConexao && /pareada/i.test(erro.message), `erro: "${erro?.message}"`);
   ok(Date.now() - t0 < 100, "responde na hora");
+}
+
+console.log("\n=== 8) pagina recarregada num Chrome sem getDevices: um toque reconecta ===");
+{
+  // O caixa recarregou (versao nova ou login vencido): a impressora some da memoria
+  localStorage.setItem("imperio_printer_name", "MY-7779");
+  localStorage.setItem("imperio_printer_id", "imp1");
+  const getDevices = navigator.bluetooth.getDevices;
+  delete navigator.bluetooth.getDevices;
+  aparelho.gatt.connected = false;
+  const { impressora: depois } = await import("../../painel/src/bluetoothPrinter.js?recarregou=1");
+  ok(depois.status().precisaParear, "o painel sabe que precisa de um toque (mostra \"Conectar impressora\")");
+  ok(!depois.perderiaAoRecarregar(), "sem impressora na memoria, recarregar de novo nao perde nada");
+  const r = await depois.reconectarAuto();
+  ok(/Conectar impressora/.test(r?.erro || ""), `reconexao sozinha explica o que fazer ("${r?.erro}")`);
+  await depois.conectar({ soASalva: true });
+  ok(JSON.stringify(lista.ultimoPedido?.filters) === JSON.stringify([{ name: "MY-7779" }]),
+     `a lista do Chrome mostra so a impressora da casa (${JSON.stringify(lista.ultimoPedido?.filters)})`);
+  ok(depois.isConnected() && !depois.status().precisaParear, "conectou e o aviso some");
+  aparelho.recebido = [];
+  await depois.imprimirComanda(ticket(80));
+  ok(texto(aparelho.recebido).includes("Espeto 80"), "e imprime");
+  await depois.desconectar();
+  navigator.bluetooth.getDevices = getDevices;
+}
+
+console.log("\n=== 8b) Chrome com getDevices que nao acha a impressora: tambem pede o toque ===");
+{
+  localStorage.setItem("imperio_printer_name", "MY-7779");
+  localStorage.setItem("imperio_printer_id", "imp1");
+  const getDevices = navigator.bluetooth.getDevices;
+  navigator.bluetooth.getDevices = async () => [];
+  aparelho.gatt.connected = false;
+  const { impressora: depois } = await import("../../painel/src/bluetoothPrinter.js?recarregou=2");
+  ok(!depois.status().precisaParear, "antes de tentar, ainda espera reconectar sozinho");
+  await depois.reconectarAuto();
+  ok(depois.status().precisaParear, "depois de nao achar, mostra \"Conectar impressora\"");
+  await depois.desconectar();
+  navigator.bluetooth.getDevices = getDevices;
 }
 
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);

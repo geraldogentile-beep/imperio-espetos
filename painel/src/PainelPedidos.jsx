@@ -5244,6 +5244,46 @@ function BotaoLiberarMesa({ mesa, onLiberada }) {
   );
 }
 
+// ── AVISO: CONECTAR A IMPRESSORA DE NOVO ─────────────────────
+// Depois que a pagina recarrega, o Chrome do celular nao deixa reconectar
+// sozinho — so com um toque de alguem. Antes isso ficava escondido atras de
+// "Reconectar" -> erro -> "Parear de novo", e os tickets paravam na fila sem
+// ninguem perceber. Aparece em qualquer aba, so no aparelho da impressora.
+function AvisoConectarImpressora() {
+  const [st, setSt] = useState(() => impressora.status());
+  const [fechado, setFechado] = useState(false);
+  const [erro, setErro] = useState("");
+  const [ocupado, setOcupado] = useState(false);
+  useEffect(() => { const sair = impressora.onStatus(setSt); return () => { sair(); }; }, []);
+  if (!st.precisaParear || fechado) return null;
+
+  async function conectar(soASalva) {
+    setErro(""); setOcupado(true);
+    try { await impressora.conectar({ soASalva }); }
+    catch (e) {
+      const cancelou = e?.name === "NotFoundError" || String(e).toLowerCase().includes("cancel");
+      setErro(cancelou
+        ? "A impressora não apareceu na lista? Confira se está ligada e toque em \"Ver todos\"."
+        : (e.message || "Não foi possível conectar"));
+    }
+    setOcupado(false);
+  }
+  const botao = { background: "#fff", color: "#b91c1c", border: "none", borderRadius: 9, padding: "8px 14px", fontWeight: 800, fontSize: 13, cursor: "pointer", flexShrink: 0 };
+  return (
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 99990, background: "linear-gradient(135deg,#b91c1c,#dc2626)", color: "#fff", padding: "10px 14px", boxShadow: "0 4px 16px rgba(0,0,0,0.25)", fontFamily: "'DM Sans',sans-serif" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 200px", fontSize: 13, lineHeight: 1.35 }}>
+          <strong>🖨️ Impressora desligada deste aparelho.</strong> Os pedidos ficam guardados e saem assim que ela voltar.
+        </div>
+        <button onClick={() => conectar(true)} disabled={ocupado} style={botao}>{ocupado ? "Conectando..." : "Conectar impressora"}</button>
+        {erro && <button onClick={() => conectar(false)} disabled={ocupado} style={{ ...botao, background: "rgba(255,255,255,0.2)", color: "#fff" }}>Ver todos</button>}
+        <button onClick={() => setFechado(true)} aria-label="Fechar aviso" style={{ background: "none", border: "none", color: "#fff", fontSize: 20, cursor: "pointer", padding: "0 4px", flexShrink: 0 }}>×</button>
+      </div>
+      {erro && <div style={{ fontSize: 12, marginTop: 6, color: "#fde68a" }}>{erro}</div>}
+    </div>
+  );
+}
+
 // ── SITUAÇÃO DA IMPRESSORA NO MAPA DO SALÃO ──────────────────
 // Quem cuida do caixa ve na hora se a impressora caiu e quantos tickets estao
 // esperando, sem precisar entrar em Config.
@@ -5277,7 +5317,7 @@ function ChipImpressora({ podeReenviar }) {
   }
   async function parear() {
     setAviso("");
-    try { await impressora.conectar(); }
+    try { await impressora.conectar({ soASalva: st.precisaParear }); }
     catch (e) { if (!String(e).includes("cancel")) setAviso(e.message || "Não foi possível conectar"); }
   }
   async function reenviar() {
@@ -5301,11 +5341,11 @@ function ChipImpressora({ podeReenviar }) {
       <span style={{ fontWeight: 700 }}>🖨️ {texto}</span>
       {pendentes > 0 && <span style={{ opacity: 0.9 }}>· {pendentes} na fila</span>}
       {erros > 0 && <span style={{ color: "#fecaca", fontWeight: 700 }}>· {erros} não saíram</span>}
-      {st.salva && !st.conectada && !st.reconectando && (
+      {st.salva && !st.conectada && !st.reconectando && !st.precisaParear && (
         <button onClick={reconectar} disabled={ocupado} style={botao}>{ocupado ? "..." : "Reconectar"}</button>
       )}
-      {st.salva && !st.conectada && !st.reconectando && aviso && impressora.isSupported() && (
-        <button onClick={parear} style={botao}>Parear de novo</button>
+      {st.salva && !st.conectada && !st.reconectando && (aviso || st.precisaParear) && impressora.isSupported() && (
+        <button onClick={parear} style={botao}>{st.precisaParear ? "Conectar impressora" : "Parear de novo"}</button>
       )}
       {podeReenviar && erros > 0 && <button onClick={reenviar} style={botao}>Imprimir de novo</button>}
       {aviso && <span style={{ width: "100%", fontSize: 11, color: "#fde68a" }}>{aviso}</span>}
@@ -8037,6 +8077,8 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
 
   return (
     <div style={{ fontFamily: "'DM Sans','Segoe UI',sans-serif", minHeight: "100vh", background: T.cream, display: "flex", flexDirection: "column" }}>
+
+      <AvisoConectarImpressora />
 
       {/* HEADER DESKTOP — oculta para garçom/caixa */}
       {!abrirSalao && <div className="header-desktop" style={{ background: "rgba(255,255,255,0.94)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderBottom: `1px solid ${T.grayL}`, color: T.dark, padding: "0 32px", position: "sticky", top: 0, zIndex: 20, height: 72 }}>
