@@ -8,6 +8,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import * as focus from "./fiscal/focusnfe.js";
+import * as sefapr from "./fiscal/sefapr.js";
 import { aplicarPagamentoNaMesa, mesaZeradaServidor } from "./salao/fechamento.js";
 import { transferirMesa } from "./salao/transferencia.js";
 import { ehMontado, opcoesMontado, lerItemMontado, textoMontado } from "./cardapio/montado.js";
@@ -327,6 +328,13 @@ const NotaFiscalSchema = new mongoose.Schema({
   motivoCancelamento: { type: String, default: "" },
 
   emitidoPor: { type: String, default: "" },  // role/nome de quem clicou
+
+  // Emissão direta na SEFA-PR: o XML fica aqui (não há provedor guardando)
+  cNF:                   { type: String, default: null },
+  xml:                   { type: String, default: null },  // nfeProc (nota + protocolo) depois de autorizada; NFe assinada enquanto processa
+  xmlCancelamento:       { type: String, default: null },  // procEventoNFe
+  protocoloCancelamento: { type: String, default: null },
+  prazoCancelamentoMin:  { type: Number, default: null },  // PR: 24h na emissão direta; provedores: 30 min
 }, { timestamps: true });
 
 const GarcomSchema = new mongoose.Schema({
@@ -3027,7 +3035,39 @@ const CONFIG_FISCAL_PADRAO = {
   pixCodigo: "20",      // 20 = pix estatico (QR/chave fixa), 17 = dinamico (maquininha)
   pisCst: "49",         // Simples Nacional: PIS/COFINS vao no DAS
   cofinsCst: "49",
+  // Responsável técnico pelo sistema (uso próprio = a própria empresa). Só vai
+  // na nota quando houver e-mail e telefone; o PR ainda não exige para NFC-e.
+  respTec: { contato: "", email: "", fone: "" },
 };
+
+// ── Numeração da NFC-e (emissão direta) ──────────────────────
+// Sequencial por ambiente e série, reservada antes de montar a nota. Se a
+// SEFAZ recusar sem gastar o número, ele volta; se gastou (duplicidade,
+// denegada), fica. Documento: { chave: "nfce_numero_<amb>_<serie>", valor: { ultimo } }
+const chaveNumeracao = (cfg) => `nfce_numero_${cfg.ambiente}_${Number(cfg.serie) || 1}`;
+async function reservarNumero(cfg) {
+  const doc = await ConfigDB.findOneAndUpdate(
+    { chave: chaveNumeracao(cfg) }, { $inc: { "valor.ultimo": 1 } }, { upsert: true, new: true }
+  ).lean();
+  return Number(doc?.valor?.ultimo) || 1;
+}
+async function devolverNumero(cfg, numero) {
+  try {
+    await ConfigDB.updateOne({ chave: chaveNumeracao(cfg), "valor.ultimo": numero }, { $inc: { "valor.ultimo": -1 } });
+  } catch (e) { console.error("Erro ao devolver numero da NFC-e:", e.message); }
+}
+async function proximoNumero(cfg) {
+  try {
+    const doc = await ConfigDB.findOne({ chave: chaveNumeracao(cfg) }).lean();
+    return (Number(doc?.valor?.ultimo) || 0) + 1;
+  } catch { return null; }
+}
+// Para continuar a sequência de outro sistema (último número + 1)
+async function definirProximoNumero(cfg, proximo) {
+  const n = parseInt(proximo, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 999999999) throw new Error("Próximo número inválido");
+  await ConfigDB.updateOne({ chave: chaveNumeracao(cfg) }, { $set: { valor: { ultimo: n - 1 } } }, { upsert: true });
+}
 
 // Dados cadastrais do Império dos Espetos, do cartão CNPJ e da consulta de IE
 // da Receita/PR (03/08/2026). O sistema é de uso próprio do restaurante, então
@@ -3078,7 +3118,8 @@ function configFiscalSegura(cfg) {
 }
 
 app.get("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
-  res.json(configFiscalSegura(await getConfigFiscal()));
+  const cfg = await getConfigFiscal();
+  res.json({ ...configFiscalSegura(cfg), proximoNumero: await proximoNumero(cfg) });
 });
 
 app.put("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
@@ -3116,10 +3157,24 @@ app.put("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
       if (typeof b.padroes[k] === "string") novo.padroes[k] = b.padroes[k].trim();
     }
   }
+  if (b.respTec && typeof b.respTec === "object") {
+    novo.respTec = { ...(atual.respTec || CONFIG_FISCAL_PADRAO.respTec) };
+    for (const k of Object.keys(CONFIG_FISCAL_PADRAO.respTec)) {
+      if (typeof b.respTec[k] === "string") novo.respTec[k] = b.respTec[k].trim();
+    }
+  }
 
   try {
     await ConfigDB.updateOne({ chave: "fiscal" }, { valor: novo }, { upsert: true });
-    res.json(configFiscalSegura(novo));
+    // Numeração: só mexe se o painel mandou um valor diferente do atual
+    if (b.proximoNumero !== undefined && b.proximoNumero !== null && b.proximoNumero !== "") {
+      const atualProx = await proximoNumero(novo);
+      if (parseInt(b.proximoNumero, 10) !== atualProx) {
+        try { await definirProximoNumero(novo, b.proximoNumero); }
+        catch (e) { return res.status(400).json({ erro: e.message }); }
+      }
+    }
+    res.json({ ...configFiscalSegura(novo), proximoNumero: await proximoNumero(novo) });
   } catch (e) {
     console.error("Erro ao salvar config fiscal:", e.message);
     res.status(500).json({ erro: "Erro ao salvar configuracao fiscal" });
@@ -3127,11 +3182,17 @@ app.put("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // Diz o que ainda falta configurar antes de conseguir emitir
-function pendenciasFiscais(cfg) {
+async function pendenciasFiscais(cfg) {
   const faltando = [];
-  if (!cfg.provedor) faltando.push("provedor da API fiscal");
-  if (!cfg.apiToken) faltando.push("token da API");
+  if (!cfg.provedor) faltando.push("forma de emissão (SEFA-PR direto ou provedor)");
+  if (cfg.provedor && cfg.provedor !== "sefapr" && !cfg.apiToken) faltando.push("token da API");
   if (!cfg.cnpj) faltando.push("CNPJ");
+  if (cfg.provedor === "sefapr") {
+    // Emissão direta: quem assina é o certificado da empresa, guardado aqui
+    let temCert = false;
+    try { const doc = await ConfigDB.findOne({ chave: "certificado" }).lean(); temCert = !!doc?.valor?.pfx; } catch {}
+    if (!temCert) faltando.push("certificado A1 (envie o .pfx em Certificado)");
+  }
   // Na Focus NFe, certificado, CSC, IE e endereco ficam no cadastro da empresa
   // la no painel deles; aqui nao sao usados.
   if (cfg.provedor !== "focusnfe") {
@@ -3149,7 +3210,7 @@ function pendenciasFiscais(cfg) {
 
 app.get("/config/fiscal/status", authMiddleware(["dono"]), async (req, res) => {
   const cfg = await getConfigFiscal();
-  const faltando = pendenciasFiscais(cfg);
+  const faltando = await pendenciasFiscais(cfg);
   res.json({
     ativo: cfg.ativo,
     ambiente: cfg.ambiente,
@@ -3517,6 +3578,8 @@ app.post("/fiscal/sugestoes/aplicar", authMiddleware(["dono"]), async (req, res)
 // endpoint, headers e formato do payload saem da documentação de cada um.
 async function emitirNoProvedor(cfg, { nota, itens, pagamentos, entrega }) {
   switch (cfg.provedor) {
+    case "sefapr":
+      return emitirDiretoSefaPr(cfg, { nota, itens, pagamentos, entrega });
     case "focusnfe": {
       const nfce = focus.montarNfce({
         cfg, itens, valorNota: nota.valorTotal, pagamentos,
@@ -3536,24 +3599,88 @@ async function emitirNoProvedor(cfg, { nota, itens, pagamentos, entrega }) {
   }
 }
 
+// ── Emissão direta na SEFA-PR ─────────────────────────────────
+// Certificado e CSC ficam no nosso banco (cifrados); o módulo fiscal/sefapr.js
+// monta, assina e transmite. O número é reservado aqui e devolvido se a
+// SEFAZ recusar sem gastá-lo.
+async function certificadoParaSefaPr(cfg) {
+  let cert;
+  try { cert = await carregarCertificado(); }
+  catch (e) { throw new sefapr.ErroFiscal("Certificado A1: " + e.message, { definitivo: true }); }
+  const cnpjCfg = String(cfg.cnpj || "").replace(/\D/g, "");
+  if (cert.cnpj && cnpjCfg && cert.cnpj !== cnpjCfg) {
+    throw new sefapr.ErroFiscal(`O certificado é do CNPJ ${cert.cnpj}, diferente do CNPJ configurado (${cnpjCfg})`, { definitivo: true });
+  }
+  if (cert.validoAte && new Date(cert.validoAte) < new Date()) {
+    throw new sefapr.ErroFiscal("O certificado A1 venceu em " + new Date(cert.validoAte).toLocaleDateString("pt-BR") + ". Renove com a certificadora.", { definitivo: true });
+  }
+  return cert;
+}
+
+function completarDadosSefaPr(cfg, nota, dados) {
+  return {
+    ...dados,
+    xmlUrl: `/notas/${nota._id}/xml`,
+    danfeUrl: null,
+    qrCode: dados.qrCode || nota.qrCode || null,
+    urlConsulta: sefapr.ambiente(cfg.ambiente).consulta,
+  };
+}
+
+async function emitirDiretoSefaPr(cfg, { nota, itens, pagamentos, entrega }) {
+  const cert = await certificadoParaSefaPr(cfg);
+  const serie = Number(cfg.serie) || 1;
+  const numero = await reservarNumero(cfg);
+  try {
+    const montada = sefapr.montarNfce({
+      cfg, itens, valorNota: nota.valorTotal, pagamentos, cpf: nota.cpfCliente, nome: nota.nomeCliente, entrega,
+      numero, serie, cert, csc: cfg.csc, cscId: cfg.cscId,
+    });
+    // Guarda a nota assinada ANTES de transmitir: se a rede cair, a consulta
+    // pela chave ainda consegue montar o XML completo depois.
+    await NotaFiscalDB.findByIdAndUpdate(nota._id, {
+      numero, serie, chave: montada.chave, cNF: montada.cNF, xml: montada.xml, qrCode: montada.qrCode, refExterna: montada.chave,
+    });
+    const r = await sefapr.emitir({ ambiente: cfg.ambiente, cert }, montada);
+    return completarDadosSefaPr(cfg, nota, { ...r, qrCode: montada.qrCode });
+  } catch (e) {
+    if (!e.incerto && !e.numeroConsumido) await devolverNumero(cfg, numero);
+    throw e;
+  }
+}
+
 async function cancelarNoProvedor(cfg, nota, motivo) {
+  if (cfg.provedor === "sefapr") {
+    const cert = await certificadoParaSefaPr(cfg);
+    return sefapr.cancelar({ ambiente: cfg.ambiente, cert }, { chave: nota.chave, protocolo: nota.protocolo, cnpj: cfg.cnpj, justificativa: motivo });
+  }
   if (cfg.provedor === "focusnfe") return focus.cancelar(cfg, nota.refExterna, motivo);
   throw new Error("Cancelamento nao implementado para o provedor \"" + cfg.provedor + "\".");
 }
 
 async function consultarNoProvedor(cfg, nota) {
+  if (cfg.provedor === "sefapr") {
+    const cert = await certificadoParaSefaPr(cfg);
+    const xmlNFe = nota.xml ? (sefapr.bloco(nota.xml, "NFe") || "") : "";
+    const c = await sefapr.consultar({ ambiente: cfg.ambiente, cert }, nota.chave, xmlNFe);
+    if (c.situacao === "autorizada") c.dados = completarDadosSefaPr(cfg, nota, c.dados);
+    return c;
+  }
   if (cfg.provedor === "focusnfe") return focus.consultar(cfg, nota.refExterna);
   throw new Error("Consulta nao implementada para o provedor \"" + cfg.provedor + "\".");
 }
 
 // Grava o resultado da SEFAZ na nota e no cache da venda
 async function registrarAutorizada(nota, r) {
+  const quando = r.dataAutorizacao ? new Date(r.dataAutorizacao) : new Date();
   await NotaFiscalDB.findByIdAndUpdate(nota._id, {
     status: "autorizada", mensagemErro: "",
     numero: r.numero, serie: r.serie, chave: r.chave, protocolo: r.protocolo,
     xmlUrl: r.xmlUrl, danfeUrl: r.danfeUrl, qrCode: r.qrCode,
     urlConsulta: r.urlConsulta || null, statusSefaz: r.statusSefaz || "100",
-    dataAutorizacao: new Date(),
+    dataAutorizacao: isNaN(quando) ? new Date() : quando,
+    ...(r.xml ? { xml: r.xml } : {}),
+    ...(r.prazoCancelamentoMin ? { prazoCancelamentoMin: r.prazoCancelamentoMin } : {}),
   });
   if (nota.vendaId) await VendaSalaoDB.findByIdAndUpdate(nota.vendaId, { notaFiscalId: nota._id, notaFiscalStatus: "autorizada" });
 }
@@ -3650,7 +3777,7 @@ app.post("/notas/emitir", authMiddleware(["dono"]), async (req, res) => {
 
   const cfg = await getConfigFiscal();
   if (!cfg.ativo) return res.status(400).json({ erro: "Emissao de NFC-e desativada nas configuracoes" });
-  const faltando = pendenciasFiscais(cfg);
+  const faltando = await pendenciasFiscais(cfg);
   if (faltando.length) return res.status(400).json({ erro: "Configuracao fiscal incompleta", faltando });
 
   const r = await emitirUmaNota({
@@ -3678,7 +3805,7 @@ app.post("/notas/emitir-lote", authMiddleware(["dono"]), async (req, res) => {
   // Configuracao se confere UMA vez, nao a cada comanda
   const cfg = await getConfigFiscal();
   if (!cfg.ativo) return res.status(400).json({ erro: "Emissao de NFC-e desativada nas configuracoes" });
-  const faltando = pendenciasFiscais(cfg);
+  const faltando = await pendenciasFiscais(cfg);
   if (faltando.length) return res.status(400).json({ erro: "Configuracao fiscal incompleta", faltando });
 
   const usuario = req.user?.nome || req.user?.role || "";
@@ -3776,12 +3903,32 @@ app.get("/notas/resumo", authMiddleware(["dono"]), async (req, res) => {
 app.get("/notas/:id", authMiddleware(["dono"]), async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id invalido" });
   try {
-    const nota = await NotaFiscalDB.findById(req.params.id).select("-itens").lean();
+    const nota = await NotaFiscalDB.findById(req.params.id).select("-itens -xml -xmlCancelamento").lean();
     if (!nota) return res.status(404).json({ erro: "Nota nao encontrada" });
     res.json(nota);
   } catch (e) {
     console.error("Erro ao ler nota:", e.message);
     res.status(500).json({ erro: "Erro ao ler a nota" });
+  }
+});
+
+// GET /notas/:id/xml[?tipo=cancelamento] — o XML autorizado (emissão direta),
+// para o contador e para guarda fiscal. Sai como download.
+app.get("/notas/:id/xml", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id invalido" });
+  try {
+    const nota = await NotaFiscalDB.findById(req.params.id).select("chave xml xmlCancelamento status").lean();
+    if (!nota) return res.status(404).json({ erro: "Nota nao encontrada" });
+    const cancelamento = req.query.tipo === "cancelamento";
+    const xml = cancelamento ? nota.xmlCancelamento : nota.xml;
+    if (!xml) return res.status(404).json({ erro: cancelamento ? "Esta nota nao tem XML de cancelamento" : "Esta nota nao tem XML guardado aqui" });
+    const nome = `NFCe-${nota.chave || nota._id}${cancelamento ? "-cancelamento" : ""}.xml`;
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${nome}"`);
+    res.send(xml);
+  } catch (e) {
+    console.error("Erro ao ler XML da nota:", e.message);
+    res.status(500).json({ erro: "Erro ao ler o XML" });
   }
 });
 
@@ -3811,15 +3958,25 @@ app.post("/notas/:id/consultar", authMiddleware(["dono"]), async (req, res) => {
   }
 });
 
-// POST /config/fiscal/testar — confere o token sem emitir nada
+// POST /config/fiscal/testar — confere a ligação sem emitir nada:
+// SEFA-PR direto = certificado + status do serviço; Focus = token.
 app.post("/config/fiscal/testar", authMiddleware(["dono"]), async (req, res) => {
   const cfg = await getConfigFiscal();
+  if (cfg.provedor === "sefapr") {
+    let cert;
+    try { cert = await certificadoParaSefaPr(cfg); }
+    catch (e) { return res.json({ ok: false, mensagem: e.message }); }
+    const s = await sefapr.statusServico({ ambiente: cfg.ambiente, cert });
+    const amb = cfg.ambiente === "producao" ? "produção" : "homologação";
+    return res.json({ ...s, mensagem: `Certificado de ${cert.titular || "?"} válido até ${new Date(cert.validoAte).toLocaleDateString("pt-BR")}. ${s.mensagem} [${amb}]` });
+  }
   if (!cfg.apiToken) return res.status(400).json({ ok: false, mensagem: "Salve o token antes de testar." });
   if (cfg.provedor !== "focusnfe") return res.status(400).json({ ok: false, mensagem: "Teste disponivel so para a Focus NFe." });
   res.json(await focus.testarToken(cfg));
 });
 
-// POST /notas/:id/cancelar — prazo legal da NFC-e é de 30 minutos
+// POST /notas/:id/cancelar — prazo: 24h na SEFA-PR direta (NPF 100/2014),
+// 30 min pelos provedores (regra nacional que eles aplicam)
 app.post("/notas/:id/cancelar", authMiddleware(["dono"]), async (req, res) => {
   const { motivo } = req.body || {};
   if (!motivo || String(motivo).trim().length < 15) {
@@ -3830,16 +3987,20 @@ app.post("/notas/:id/cancelar", authMiddleware(["dono"]), async (req, res) => {
     if (!nota) return res.status(404).json({ erro: "Nota nao encontrada" });
     if (nota.status !== "autorizada") return res.status(400).json({ erro: "So e possivel cancelar nota autorizada" });
 
+    const prazo = Number(nota.prazoCancelamentoMin) || 30;
     const minutos = (Date.now() - new Date(nota.dataAutorizacao).getTime()) / 60000;
-    if (minutos > 30) {
-      return res.status(400).json({ erro: "Prazo de cancelamento da NFC-e (30 min) expirado. Fale com o contador." });
+    if (minutos > prazo) {
+      const texto = prazo >= 60 ? `${Math.round(prazo / 60)} h` : `${prazo} min`;
+      return res.status(400).json({ erro: `Prazo de cancelamento da NFC-e (${texto}) expirado. Fale com o contador.` });
     }
 
     const cfg = await getConfigFiscal();
-    await cancelarNoProvedor(cfg, nota, String(motivo).trim());
+    const r = await cancelarNoProvedor(cfg, nota, String(motivo).trim());
 
     await NotaFiscalDB.findByIdAndUpdate(nota._id, {
       status: "cancelada", dataCancelamento: new Date(), motivoCancelamento: String(motivo).trim(),
+      ...(r?.protocolo ? { protocoloCancelamento: r.protocolo } : {}),
+      ...(r?.xml ? { xmlCancelamento: r.xml } : {}),
     });
     if (nota.vendaId) await VendaSalaoDB.findByIdAndUpdate(nota.vendaId, { notaFiscalStatus: "cancelada" });
     res.json({ ok: true });

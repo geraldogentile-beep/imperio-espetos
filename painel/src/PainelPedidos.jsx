@@ -1037,17 +1037,34 @@ function BotaoEmitirNota({ venda, onEmitido }) {
     </>
   );
 
+  // XML guardado no nosso servidor (emissão direta): baixa com o login
+  async function baixarXml() {
+    try {
+      const r = await authFetch(BACKEND_URL + nota.xmlUrl);
+      if (!r.ok) { const d = await r.json().catch(() => ({})); setErro(d.erro || "Não foi possível baixar o XML"); return; }
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = `NFCe-${nota.chave || nota._id}.xml`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch { setErro("Erro de conexão ao baixar o XML."); }
+  }
+
   // Autorizada: numero, DANFE e cancelamento dentro do prazo
   if (status === "autorizada") {
     const minutos = nota?.dataAutorizacao ? (Date.now() - new Date(nota.dataAutorizacao).getTime()) / 60000 : 999;
+    const prazo = Number(nota?.prazoCancelamentoMin) || 30;   // PR direto: 24h; provedores: 30 min
+    const resta = Math.max(0, prazo - minutos);
+    const restaTexto = resta >= 60 ? `${Math.floor(resta / 60)} h` : `${Math.floor(resta)} min`;
     return (
       <div onClick={e => e.stopPropagation()}>
         <div style={caixa("#d1fae5", "#a7f3d0", "#065f46")}>
           <div style={{ fontWeight: 700 }}>🧾 NFC-e {nota?.numero ? `nº ${nota.numero}` : ""} autorizada{nota?.ambiente === "homologacao" ? " (homologação, sem valor fiscal)" : ""}</div>
+          {nota?.chave && <div style={{ fontSize: 10.5, fontFamily: "monospace", color: "#047857", marginTop: 3, wordBreak: "break-all" }}>chave {nota.chave}</div>}
           <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
             {nota?.danfeUrl && <a href={nota.danfeUrl} target="_blank" rel="noreferrer" style={{ ...botaoPeq("#065f46", "#fff"), textDecoration: "none" }}>Abrir DANFE</a>}
+            {nota?.xmlUrl?.startsWith("/") && <button onClick={baixarXml} style={botaoPeq("#065f46", "#fff")}>Baixar XML</button>}
             {nota?.urlConsulta && nota?.chave && <a href={nota.urlConsulta} target="_blank" rel="noreferrer" style={{ ...botaoPeq("#fff", "#065f46"), textDecoration: "none", border: "1px solid #a7f3d0" }}>Consultar na SEFAZ</a>}
-            {minutos <= 30 && !cancelando && <button onClick={() => setCancelando(true)} style={botaoPeq("#fff", "#b91c1c")}>Cancelar nota ({Math.max(0, Math.floor(30 - minutos))} min)</button>}
+            {minutos <= prazo && !cancelando && <button onClick={() => setCancelando(true)} style={botaoPeq("#fff", "#b91c1c")}>Cancelar nota ({restaTexto})</button>}
           </div>
           {cancelando && (
             <div style={{ marginTop: 8 }}>
@@ -1374,25 +1391,48 @@ function FiscalConfig() {
         <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Teste tudo em homologacao antes de virar para producao.</div>
       </div>
 
-      {/* Provedor */}
+      {/* Forma de emissão */}
       <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>API fiscal</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>Como a nota é emitida</div>
         <div style={{ display: "flex", gap: 8 }}>
           <div style={{ flex: 1 }}>
-            <div style={lbl}>Provedor</div>
+            <div style={lbl}>Emissão</div>
             <select value={cfg.provedor} onChange={e => set("provedor", e.target.value)} style={inp}>
               <option value="">— escolher —</option>
-              <option value="focusnfe">Focus NFe</option>
+              <option value="sefapr">Direto na SEFA-PR (sem custo)</option>
+              <option value="focusnfe">Focus NFe (provedor pago)</option>
               <option value="plugnotas">PlugNotas</option>
               <option value="webmania">WebmaniaBR</option>
               <option value="nfeio">NFe.io</option>
             </select>
           </div>
-          <div style={{ flex: 2 }}>
-            <div style={lbl}>Token da API {cfg.apiTokenPreenchido && <span style={{ color: "#10b981" }}>✓ salvo</span>}</div>
-            <input type="password" value={cfg.apiToken || ""} onChange={e => set("apiToken", e.target.value)} placeholder="cole o token" style={inp} />
-          </div>
+          {cfg.provedor !== "sefapr" && (
+            <div style={{ flex: 2 }}>
+              <div style={lbl}>Token da API {cfg.apiTokenPreenchido && <span style={{ color: "#10b981" }}>✓ salvo</span>}</div>
+              <input type="password" value={cfg.apiToken || ""} onChange={e => set("apiToken", e.target.value)} placeholder="cole o token" style={inp} />
+            </div>
+          )}
         </div>
+        {cfg.provedor === "sefapr" && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button onClick={testarToken} disabled={testando} style={{ background: "#fff", color: "#1d4ed8", border: "1.5px solid #93c5fd", borderRadius: 8, padding: "6px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                {testando ? "Testando..." : "Testar certificado e conexão com a SEFA-PR"}
+              </button>
+              {teste && <span style={{ fontSize: 12, fontWeight: 600, color: teste.ok ? "#065f46" : "#b91c1c" }}>{teste.ok ? "✅ " : "❌ "}{teste.mensagem}</span>}
+            </div>
+            <div style={{ marginTop: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#1e3a8a", lineHeight: 1.6 }}>
+              <strong>Emissão direta: o sistema assina e envia a nota à SEFA-PR, sem intermediário.</strong>
+              <ol style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                <li>Enviar o <strong>certificado A1</strong> (.pfx e senha) na seção Certificado, aqui embaixo.</li>
+                <li>Gerar o <strong>CSC</strong> no portal Receita/PR (DF-e → NFC-e → CSC → Controle) e colar com o ID no campo CSC. Um para homologação, outro para produção.</li>
+                <li>No portal Receita/PR, pedir no <strong>UPD</strong> o cadastro do sistema de uso próprio e a Autorização de Uso para o modelo 65 (quem faz é a empresa ou o contador).</li>
+                <li>Com tudo salvo, usar "Testar" acima. Depois emitir uma nota em homologação antes de virar para produção.</li>
+              </ol>
+              <div style={{ marginTop: 6 }}>O XML de cada nota fica guardado aqui (botão "Baixar XML" na venda) para o contador. No Paraná a NFC-e pode ser cancelada em até 24 horas.</div>
+            </div>
+          </>
+        )}
         {cfg.provedor === "focusnfe" && (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
@@ -1454,21 +1494,33 @@ function FiscalConfig() {
       <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: "#666", marginBottom: 8 }}>
           CSC (gerado no portal da SEFAZ){cfg.provedor === "focusnfe" && <span style={{ fontWeight: 500, color: "#1d4ed8" }}> — na Focus NFe vai no painel deles</span>}
+          {cfg.provedor === "sefapr" && <span style={{ fontWeight: 500, color: "#1d4ed8" }}> — o do ambiente escolhido acima ({cfg.ambiente === "producao" ? "produção" : "homologação"})</span>}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <div style={{ flex: 2 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ flex: 2, minWidth: 180 }}>
             <div style={lbl}>CSC {cfg.cscPreenchido && <span style={{ color: "#10b981" }}>✓ salvo</span>}</div>
             <input type="password" value={cfg.csc || ""} onChange={e => set("csc", e.target.value)} placeholder="codigo de seguranca" style={inp} />
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 90 }}>
             <div style={lbl}>ID do CSC</div>
             <input value={cfg.cscId || ""} onChange={e => set("cscId", e.target.value)} placeholder="000001" style={inp} />
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 70 }}>
             <div style={lbl}>Serie</div>
             <input type="number" value={cfg.serie || 1} onChange={e => set("serie", e.target.value)} style={inp} />
           </div>
+          {cfg.provedor === "sefapr" && (
+            <div style={{ flex: 1, minWidth: 110 }}>
+              <div style={lbl}>Próximo nº da nota</div>
+              <input type="number" min="1" value={cfg.proximoNumero ?? ""} onChange={e => set("proximoNumero", e.target.value)} style={inp} />
+            </div>
+          )}
         </div>
+        {cfg.provedor === "sefapr" && (
+          <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>
+            Se a empresa já emitiu NFC-e por outro sistema nesta série, informe aqui o último número + 1 para continuar a sequência. Senão, deixe 1.
+          </div>
+        )}
       </div>
 
       {/* Emitente */}
