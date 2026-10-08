@@ -3029,12 +3029,36 @@ const CONFIG_FISCAL_PADRAO = {
   cofinsCst: "49",
 };
 
+// Dados cadastrais do Império dos Espetos, do cartão CNPJ e da consulta de IE
+// da Receita/PR (03/08/2026). O sistema é de uso próprio do restaurante, então
+// já nascem preenchidos; o painel continua podendo alterar qualquer um.
+const DADOS_EMPRESA = {
+  cnpj: "46.672.345/0001-92",
+  ie: "9124970463",
+  razaoSocial: "IMPERIO DOS ESPETOS GRILL LTDA",
+  nomeFantasia: "IMPERIO DOS ESPETOS GRILL",
+  crt: "1",                       // Simples Nacional
+  endereco: {
+    logradouro: "Rua Governador Paulo Cruz Pimentel", numero: "279", complemento: "Sala A",
+    bairro: "Cidade Alta", municipio: "Ibaiti", codigoMunicipio: "4109708", uf: "PR", cep: "84900-000",
+  },
+};
+
+// Campo em branco no banco recebe o dado da empresa (a config salva antes
+// de existir este cadastro guardou tudo como "")
+function completarEmpresa(cfg) {
+  const out = { ...cfg, endereco: { ...(cfg.endereco || {}) } };
+  for (const k of ["cnpj", "ie", "razaoSocial", "nomeFantasia", "crt"]) if (!out[k]) out[k] = DADOS_EMPRESA[k];
+  for (const k of Object.keys(DADOS_EMPRESA.endereco)) if (!out.endereco[k]) out.endereco[k] = DADOS_EMPRESA.endereco[k];
+  return out;
+}
+
 async function getConfigFiscal() {
   try {
     const doc = await ConfigDB.findOne({ chave: "fiscal" }).lean();
-    if (doc?.valor) return { ...CONFIG_FISCAL_PADRAO, ...doc.valor };
+    if (doc?.valor) return completarEmpresa({ ...CONFIG_FISCAL_PADRAO, ...doc.valor });
   } catch (e) { console.error("Erro ao ler config fiscal:", e.message); }
-  return { ...CONFIG_FISCAL_PADRAO };
+  return completarEmpresa({ ...CONFIG_FISCAL_PADRAO });
 }
 
 // Remove segredos antes de mandar para o painel. Mostra só os últimos 4
