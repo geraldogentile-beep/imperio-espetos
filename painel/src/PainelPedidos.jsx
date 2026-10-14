@@ -602,9 +602,12 @@ function Cardapio({ cardapio, onReload }) {
     try { await authFetch(BACKEND_URL + "/cardapio/" + item.id + "/ativo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo: !item.ativo }) }); onReload(); } catch { onReload(); }
   }
   async function salvarEdicao(item) {
+    // Campo de preço apagado virava NaN e o item saía "R$ NaN" no cardápio
+    if (!String(item.nome || "").trim()) return alert("O nome do item não pode ficar em branco.");
+    if (!Number.isFinite(Number(item.preco)) || Number(item.preco) < 0) return alert("Informe um preço válido.");
     setSaving(true);
     // Variação em branco é rascunho do formulário, não erro: some no salvamento
-    const limpo = { ...item, variacoes: (item.variacoes || []).filter(v => String(v.nome || "").trim() !== "") };
+    const limpo = { ...item, tempoPreparo: Number.isFinite(Number(item.tempoPreparo)) ? Number(item.tempoPreparo) : 10, variacoes: (item.variacoes || []).filter(v => String(v.nome || "").trim() !== "") };
     try {
       const r = await authFetch(BACKEND_URL + "/cardapio/" + item.id, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(limpo),
@@ -625,9 +628,18 @@ function Cardapio({ cardapio, onReload }) {
     try { await authFetch(BACKEND_URL + "/cardapio/" + id, { method: "DELETE" }); onReload(); } catch { onReload(); }
   }
   async function adicionarItem() {
-    if (!novoItem.categoria || !novoItem.nome || !novoItem.preco) return;
+    if (!novoItem.categoria.trim() || !novoItem.nome.trim() || !novoItem.preco) return alert("Preencha categoria, nome e preço.");
     setSaving(true);
-    try { await authFetch(BACKEND_URL + "/cardapio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novoItem, preco: parseFloat(novoItem.preco), tempoPreparo: parseInt(novoItem.tempoPreparo) }) }); onReload(); } catch { onReload(); }
+    try {
+      const r = await authFetch(BACKEND_URL + "/cardapio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novoItem, preco: parseFloat(novoItem.preco), tempoPreparo: parseInt(novoItem.tempoPreparo) }) });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert("Nao foi possivel adicionar: " + (d.erro || ("erro " + r.status)));
+        setSaving(false);
+        return;   // mantém o formulário preenchido para corrigir
+      }
+      onReload();
+    } catch { onReload(); }
     setSaving(false); setAdicionando(false); setNovoItem({ categoria: "", nome: "", preco: "", tempoPreparo: 10, obs: "" });
   }
 
@@ -2470,6 +2482,8 @@ const qtdNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 // sozinho parava na vírgula e "33,5" virava 33.
 const parsePct = (s) => { const n = parseFloat(String(s ?? "").replace(",", ".")); return Number.isFinite(n) ? n : 0; };
 const pctTexto = (v) => (v === null || v === undefined || v === "" ? "" : String(v).replace(".", ","));
+// Quantidade digitada com vírgula ou ponto ("0,4", "2.5") -> número (NaN se vazio/inválido)
+const lerDecimal = (s) => parseFloat(String(s ?? "").trim().replace(",", "."));
 
 function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, cardapioNomes = [], cardapio = [], backendUrl = "" }) {
   const [modoPreco, setModoPreco] = useState("sugerido"); // "sugerido" | "manual"
@@ -2827,12 +2841,14 @@ function Estoque({ backendUrl, cardapio = [] }) {
         custoPorUnidade: parseMoedaGlobal(editando.custoPorUnidade),
         precoVendaAtual: parseMoedaGlobal(editando.precoVendaAtual),
         margemDesejada:  parsePct(editando.margemDesejada),
-        quantidade:      parseFloat(editando.quantidade) || 0,
-        minimo:          parseFloat(editando.minimo) || 0,
-        consumoPorVenda: parseFloat(editando.consumoPorVenda) || 1,
+        // Digitado com vírgula ("0,4") parava no parseFloat e virava 1
+        quantidade:      lerDecimal(editando.quantidade) || 0,
+        minimo:          lerDecimal(editando.minimo) || 0,
+        consumoPorVenda: lerDecimal(editando.consumoPorVenda) || 1,
       };
+      if(!String(editando.nome||"").trim()){ setSaving(false); return showMsg("O nome não pode ficar em branco.","erro"); }
       const r = await authFetch(backendUrl+`/estoque/${editando._id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      if(!r.ok) return showMsg("Erro ao salvar.","erro");
+      if(!r.ok){ const e = await r.json().catch(()=>({})); setSaving(false); return showMsg(e.erro||"Erro ao salvar.","erro"); }
       showMsg("✅ Alterações salvas!");
       setEditando(null);
       if(selItem) setSelItem(itens.find(i=>i._id===selItem._id));
@@ -2841,12 +2857,16 @@ function Estoque({ backendUrl, cardapio = [] }) {
     setSaving(false);
   }
 
+  // Entrada e ajuste mostravam "✅" mesmo quando o servidor recusava
+  // (quantidade negativa, item inexistente). Agora lê a resposta.
   async function darEntrada() {
-    if(!entradaQtd||parseFloat(entradaQtd)<=0) return showMsg("Informe a quantidade.","erro");
+    const q = lerDecimal(entradaQtd);
+    if(!(q>0)) return showMsg("Informe a quantidade.","erro");
     setSaving(true);
     try {
-      await authFetch(backendUrl+`/estoque/${entradaForm._id}/entrada`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(entradaQtd),motivo:entradaMotivo})});
-      showMsg(`✅ +${entradaQtd} ${entradaForm.unidade} adicionados!`);
+      const r = await authFetch(backendUrl+`/estoque/${entradaForm._id}/entrada`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:q,motivo:entradaMotivo})});
+      if(!r.ok){ const e = await r.json().catch(()=>({})); showMsg(e.erro||"Não foi possível dar entrada.","erro"); setSaving(false); return; }
+      showMsg(`✅ +${q} ${entradaForm.unidade} adicionados!`);
       setEntradaForm(null); setEntradaQtd(""); carregar();
       if(selItem?._id===entradaForm._id) carregarMovs(entradaForm._id);
     } catch { showMsg("Erro de conexão.","erro"); }
@@ -2854,11 +2874,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
   }
 
   async function darAjuste() {
-    if(ajusteQtd===""||isNaN(parseFloat(ajusteQtd))) return showMsg("Informe a quantidade.","erro");
+    const q = lerDecimal(ajusteQtd);
+    if(ajusteQtd===""||!Number.isFinite(q)||q<0) return showMsg("Informe a quantidade (0 ou mais).","erro");
     setSaving(true);
     try {
-      await authFetch(backendUrl+`/estoque/${ajusteForm._id}/ajuste`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:parseFloat(ajusteQtd),motivo:ajusteMotivo})});
-      showMsg(`✅ Estoque ajustado para ${ajusteQtd} ${ajusteForm.unidade}.`);
+      const r = await authFetch(backendUrl+`/estoque/${ajusteForm._id}/ajuste`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({quantidade:q,motivo:ajusteMotivo})});
+      if(!r.ok){ const e = await r.json().catch(()=>({})); showMsg(e.erro||"Não foi possível ajustar.","erro"); setSaving(false); return; }
+      showMsg(`✅ Estoque ajustado para ${q} ${ajusteForm.unidade}.`);
       setAjusteForm(null); setAjusteQtd(""); carregar();
       if(selItem?._id===ajusteForm._id) carregarMovs(ajusteForm._id);
     } catch { showMsg("Erro de conexão.","erro"); }
@@ -2867,7 +2889,12 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
   async function deletarItem(id) {
     if(!window.confirm("Remover este item do estoque?")) return;
-    try { await authFetch(backendUrl+`/estoque/${id}`,{method:"DELETE"}); carregar(); }
+    try {
+      const r = await authFetch(backendUrl+`/estoque/${id}`,{method:"DELETE"});
+      if(!r.ok) return showMsg("Erro ao remover.","erro");
+      if(selItem?._id===id) setSelItem(null);
+      carregar();
+    }
     catch { showMsg("Erro ao remover.","erro"); }
   }
 

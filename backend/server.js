@@ -156,6 +156,8 @@ const PedidoSchema = new mongoose.Schema({
   // Quando virou "entregue". E isso que decide em que caixa o pedido entra:
   // pedido feito antes do "Fechar caixa" e entregue depois vai para o proximo.
   entregueEm: Date,
+  // Estoque já descontado por este pedido (baixa acontece uma vez só)
+  estoqueBaixado: { type: Boolean, default: false },
 }, { timestamps: true });
 
 const CupomSchema = new mongoose.Schema({
@@ -1609,8 +1611,27 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono"]), async (req, res) => {
   if (status === "entregue") {
     try { await checarFidelidade(pedido); } catch (e) { console.error("Falha na fidelidade:", e.message); }
     try { agendarAvaliacao(pedido); } catch (e) { console.error("Falha ao agendar avaliacao:", e.message); }
+    // Delivery entregue também consome estoque (só o salão baixava). Uma vez
+    // só por pedido, mesmo que o status vá e volte.
+    if (!pedido.estoqueBaixado) {
+      try {
+        await baixarEstoqueVenda(pedido.itens, "pedido:" + id);
+        await PedidoDB.updateOne({ id }, { estoqueBaixado: true });
+        pedido.estoqueBaixado = true;
+      } catch (e) { console.error("Falha na baixa de estoque do delivery:", e.message); }
+    }
   }
-  if (status === "cancelado" && timersAvaliacao.has(id)) { clearTimeout(timersAvaliacao.get(id)); timersAvaliacao.delete(id); }
+  if (status === "cancelado") {
+    if (timersAvaliacao.has(id)) { clearTimeout(timersAvaliacao.get(id)); timersAvaliacao.delete(id); }
+    // Entregue e depois cancelado: devolve o que tinha baixado
+    if (pedido.estoqueBaixado) {
+      try {
+        await estornarEstoqueDaVenda("pedido:" + id);
+        await PedidoDB.updateOne({ id }, { estoqueBaixado: false });
+        pedido.estoqueBaixado = false;
+      } catch (e) { console.error("Falha ao estornar estoque do delivery:", e.message); }
+    }
+  }
   res.json(pedido);
 });
 
@@ -1806,11 +1827,29 @@ app.get("/fidelidade", authMiddleware(["dono"]), async (req, res) => {
 
 // ── CARDÁPIO API ──────────────────────────────────────────────
 app.get("/cardapio", authMiddleware(["dono", "garcom"]), (req, res) => res.json(CARDAPIO));
+// Preço vindo do painel ("12.5", 12.5, "12,50"): número finito, não negativo
+function lerPreco(v) {
+  // Campo apagado chega como null/"" (NaN vira null no JSON): não é preço zero
+  if (v === null || v === undefined || v === "" || typeof v === "boolean") return null;
+  const n = typeof v === "string" ? parseFloat(v.trim().replace(",", ".")) : Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
+}
+// Quantidade de estoque digitada ("4,7", "4.7", 4.7) -> número ou NaN
+const lerQtd = (v) => (typeof v === "string" ? parseFloat(v.trim().replace(",", ".")) : Number(v));
+
 app.post("/cardapio", authMiddleware(["dono"]), async (req, res) => {
-  const { categoria, nome, preco, tempoPreparo, obs } = req.body;
-  if (!categoria || !nome || !preco) return res.status(400).json({ erro: "categoria, nome e preco obrigatórios" });
-  const item = { id: nextItemId++, categoria, nome, preco: parseFloat(preco), tempoPreparo: parseInt(tempoPreparo) || 10, ativo: true, obs: obs || null };
-  try { await CardapioDB.create(item); } catch (e) { console.error("Erro ao criar item no cardápio:", e.message); }
+  const categoria = String(req.body.categoria || "").trim();
+  const nome = String(req.body.nome || "").trim();
+  const preco = lerPreco(req.body.preco);
+  if (!categoria || !nome || preco === null) return res.status(400).json({ erro: "categoria, nome e preço (número) são obrigatórios" });
+  if (CARDAPIO.some(i => i.nome.toLowerCase() === nome.toLowerCase())) return res.status(409).json({ erro: `Já existe um item chamado "${nome}"` });
+  const tempo = parseInt(req.body.tempoPreparo);
+  const item = { id: nextItemId++, categoria, nome, preco, tempoPreparo: Number.isFinite(tempo) && tempo >= 0 ? tempo : 10, ativo: true, obs: req.body.obs ? String(req.body.obs).trim() : null };
+  try { await CardapioDB.create(item); }
+  catch (e) {
+    console.error("Erro ao criar item no cardápio:", e.message);
+    return res.status(500).json({ erro: "Não foi possível gravar o item no banco. Tente de novo." });
+  }
   CARDAPIO.push(item);
   res.status(201).json(item);
 });
@@ -1822,9 +1861,31 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs", "fiscal", "variacaoRotulo", "variacoes", "montarCom", "montarRotulo"];
   const update = {};
   for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
-  if (update.preco !== undefined) update.preco = parseFloat(update.preco);
-  if (update.precoPromocional !== undefined && update.precoPromocional !== null) update.precoPromocional = parseFloat(update.precoPromocional);
-  if (update.tempoPreparo !== undefined) update.tempoPreparo = parseInt(update.tempoPreparo);
+  // Nome e categoria em branco, ou preço que não é número, quebravam a venda
+  // (item "R$ NaN" no cardápio). Recusa em vez de gravar.
+  if (update.nome !== undefined) {
+    update.nome = String(update.nome || "").trim();
+    if (!update.nome) return res.status(400).json({ erro: "O nome do item não pode ficar em branco" });
+    if (CARDAPIO.some(i => i.id !== id && i.nome.toLowerCase() === update.nome.toLowerCase())) return res.status(409).json({ erro: `Já existe um item chamado "${update.nome}"` });
+  }
+  if (update.categoria !== undefined) {
+    update.categoria = String(update.categoria || "").trim();
+    if (!update.categoria) return res.status(400).json({ erro: "A categoria não pode ficar em branco" });
+  }
+  if (update.preco !== undefined) {
+    update.preco = lerPreco(update.preco);
+    if (update.preco === null) return res.status(400).json({ erro: "Preço inválido" });
+  }
+  if (update.precoPromocional !== undefined && update.precoPromocional !== null && update.precoPromocional !== "") {
+    update.precoPromocional = lerPreco(update.precoPromocional);
+    if (update.precoPromocional === null) return res.status(400).json({ erro: "Preço promocional inválido" });
+  } else if (update.precoPromocional === "") update.precoPromocional = null;
+  if (update.tempoPreparo !== undefined) {
+    const t = parseInt(update.tempoPreparo);
+    update.tempoPreparo = Number.isFinite(t) && t >= 0 ? t : (CARDAPIO[idx].tempoPreparo ?? 10);
+  }
+  if (update.ativo !== undefined) update.ativo = update.ativo === true || update.ativo === "true";
+  if (update.obs !== undefined) update.obs = update.obs ? String(update.obs).trim().slice(0, 200) : null;
   if (update.variacoes !== undefined) {
     if (!Array.isArray(update.variacoes)) return res.status(400).json({ erro: "variacoes deve ser uma lista" });
     if (update.variacoes.length > 30) return res.status(400).json({ erro: "Maximo de 30 variacoes por item" });
@@ -1862,16 +1923,25 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
       unidade: typeof f.unidade === "string" ? f.unidade.trim() : "UN",
     };
   }
+  const nomeAntigo = CARDAPIO[idx].nome;
   CARDAPIO[idx] = { ...CARDAPIO[idx], ...update, id };
-  try { await CardapioDB.updateOne({ id }, { $set: update }); } catch (e) { console.error("Erro ao atualizar cardápio:", e.message); }
+  try { await CardapioDB.updateOne({ id }, { $set: update }); }
+  catch (e) {
+    console.error("Erro ao atualizar cardápio:", e.message);
+    return res.status(500).json({ erro: "Não foi possível gravar no banco. Tente de novo." });
+  }
+  // O estoque se liga ao item pelo NOME. Renomear o item sem avisar o estoque
+  // deixava a baixa automática parada em silêncio.
+  if (update.nome && update.nome !== nomeAntigo) await renomearNoEstoque(nomeAntigo, update.nome);
   res.json(CARDAPIO[idx]);
 });
 app.patch("/cardapio/:id/ativo", authMiddleware(["dono"]), async (req, res) => {
   const id = parseInt(req.params.id);
   const item = CARDAPIO.find(i => i.id === id);
   if (!item) return res.status(404).json({ erro: "Item não encontrado" });
-  item.ativo = req.body.ativo;
-  try { await CardapioDB.updateOne({ id }, { ativo: req.body.ativo }); } catch (e) { console.error("Erro ao toggle cardápio:", e.message); }
+  const ativo = req.body.ativo === true || req.body.ativo === "true";   // "false" (texto) era verdadeiro
+  item.ativo = ativo;
+  try { await CardapioDB.updateOne({ id }, { ativo }); } catch (e) { console.error("Erro ao toggle cardápio:", e.message); }
   res.json(item);
 });
 app.delete("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
@@ -1880,8 +1950,24 @@ app.delete("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   const [removido] = CARDAPIO.splice(idx, 1);
   try { await CardapioDB.deleteOne({ id }); } catch (e) { console.error("Erro ao deletar item cardápio:", e.message); }
+  // Tira o vínculo do estoque com um item que não existe mais
+  await renomearNoEstoque(removido.nome, null);
   res.json({ ok: true, removido });
 });
+
+// Atualiza o vínculo estoque->cardápio quando o item muda de nome (ou some)
+async function renomearNoEstoque(nomeAntigo, nomeNovo) {
+  if (!mongoPronto() || !nomeAntigo) return;
+  try {
+    const ligados = await EstoqueDB.find({ cardapioNomes: { $elemMatch: { $regex: `^${nomeAntigo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } } });
+    for (const est of ligados) {
+      const nomes = est.cardapioNomes.filter(n => n.toLowerCase() !== nomeAntigo.toLowerCase());
+      if (nomeNovo && !nomes.some(n => n.toLowerCase() === nomeNovo.toLowerCase())) nomes.push(nomeNovo);
+      est.cardapioNomes = nomes;
+      await est.save();
+    }
+  } catch (e) { console.error("Erro ao atualizar vínculo do estoque:", e.message); }
+}
 
 // ── CONFIG API ────────────────────────────────────────────────
 app.get("/config", authMiddleware(["dono", "garcom"]), (req, res) => res.json(CONFIG));
@@ -2276,11 +2362,32 @@ app.delete("/vendas-salao/:id", authMiddleware(["dono"]), async (req, res) => {
       return res.status(409).json({ erro: "Essa venda ja tem nota fiscal autorizada. Cancele a nota antes de excluir a venda." });
     }
     await VendaSalaoDB.findByIdAndDelete(req.params.id);
-    console.log(`Venda ${req.params.id} (Mesa ${venda.mesa}, R$ ${Number(venda.total).toFixed(2)}) excluida por ${req.user?.nome || req.user?.role}`);
-    res.json({ ok: true });
+    // Devolve ao estoque o que esta venda tinha baixado. Antes a quantidade
+    // ficava descontada de uma venda que não existia mais.
+    const devolvido = await estornarEstoqueDaVenda(String(req.params.id));
+    console.log(`Venda ${req.params.id} (Mesa ${venda.mesa}, R$ ${Number(venda.total).toFixed(2)}) excluida por ${req.user?.nome || req.user?.role}; estoque devolvido em ${devolvido} item(ns)`);
+    res.json({ ok: true, estoqueDevolvido: devolvido });
   }
   catch (e) { res.status(500).json({ erro: e.message }); }
 });
+
+// Desfaz as baixas de estoque ligadas a uma venda (ou pedido) apagada
+async function estornarEstoqueDaVenda(vendaId) {
+  let n = 0;
+  try {
+    const movs = await MovEstoqueDB.find({ vendaId, tipo: "saida" }).lean();
+    for (const mov of movs) {
+      const est = await EstoqueDB.findById(mov.estoqueId);
+      if (est) {
+        const nova = (Number.isFinite(est.quantidade) ? est.quantidade : 0) + Math.abs(mov.quantidade || 0);
+        await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: nova, alertaEnviado: nova > est.minimo ? false : est.alertaEnviado });
+      }
+      await MovEstoqueDB.findByIdAndDelete(mov._id);
+      n++;
+    }
+  } catch (e) { console.error("Erro ao estornar estoque da venda:", e.message); }
+  return n;
+}
 app.get("/vendas-salao/historico", authMiddleware(["dono"]), async (req, res) => {
   try {
     const { de, ate } = req.query;
@@ -2319,13 +2426,19 @@ async function baixarEstoqueVenda(itens, vendaId) {
       );
       if (!est) continue;
       const desconto = qty * (est.consumoPorVenda || 1);
-      const novaQtd = Math.max(0, est.quantidade - desconto);
+      const atual = Number.isFinite(est.quantidade) ? est.quantidade : 0;
+      const novaQtd = Math.max(0, atual - desconto);
       await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: novaQtd });
       await MovEstoqueDB.create({
         estoqueId: est._id, estoqueNome: est.nome,
-        tipo: "saida", quantidade: desconto,
+        // Registra o que saiu de fato: com o estoque zerado, estornar a venda
+        // devolvia mais do que tinha saído.
+        tipo: "saida", quantidade: Math.min(desconto, atual),
         motivo: "venda", vendaId,
       });
+      // O mesmo estoque pode aparecer duas vezes na mesma venda (dois itens
+      // ligados a ele): a segunda baixa parte do valor já descontado.
+      est.quantidade = novaQtd;
       // Alerta de estoque mínimo
       if (novaQtd <= est.minimo && !est.alertaEnviado) {
         await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: true });
@@ -2454,19 +2567,20 @@ app.delete("/estoque/:id", authMiddleware(["dono"]), async (req, res) => {
 
 // Entrada de mercadoria
 app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
-  const { quantidade, motivo } = req.body;
-  if (!Number.isFinite(parseFloat(quantidade)) || parseFloat(quantidade) <= 0 || parseFloat(quantidade) > 1e7) return res.status(400).json({ erro: "quantidade inválida" });
+  const { motivo } = req.body;
+  const quantidade = lerQtd(req.body.quantidade);
+  if (!Number.isFinite(quantidade) || quantidade <= 0 || quantidade > 1e7) return res.status(400).json({ erro: "quantidade inválida" });
   try {
     const est = await EstoqueDB.findById(req.params.id);
     if (!est) return res.status(404).json({ erro: "Item não encontrado" });
-    const novaQtd = (Number.isFinite(est.quantidade) ? est.quantidade : 0) + parseFloat(quantidade);
+    const novaQtd = (Number.isFinite(est.quantidade) ? est.quantidade : 0) + quantidade;
     await EstoqueDB.findByIdAndUpdate(est._id, {
       quantidade: novaQtd,
       alertaEnviado: novaQtd > est.minimo ? false : est.alertaEnviado,
     });
     await MovEstoqueDB.create({
       estoqueId: est._id, estoqueNome: est.nome,
-      tipo: "entrada", quantidade: parseFloat(quantidade),
+      tipo: "entrada", quantidade,
       motivo: motivo || "entrada mercadoria",
     });
     res.json({ quantidade: novaQtd });
@@ -2475,23 +2589,24 @@ app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
 
 // Ajuste manual (inventário)
 app.post("/estoque/:id/ajuste", authMiddleware(["dono"]), async (req, res) => {
-  const { quantidade, motivo } = req.body;
-  if (quantidade === undefined) return res.status(400).json({ erro: "quantidade obrigatória" });
-  if (!Number.isFinite(parseFloat(quantidade)) || parseFloat(quantidade) < 0 || parseFloat(quantidade) > 1e7) return res.status(400).json({ erro: "quantidade inválida" });
+  const { motivo } = req.body;
+  if (req.body.quantidade === undefined) return res.status(400).json({ erro: "quantidade obrigatória" });
+  const quantidade = lerQtd(req.body.quantidade);
+  if (!Number.isFinite(quantidade) || quantidade < 0 || quantidade > 1e7) return res.status(400).json({ erro: "quantidade inválida" });
   try {
     const est = await EstoqueDB.findById(req.params.id);
     if (!est) return res.status(404).json({ erro: "Item não encontrado" });
-    const diff = parseFloat(quantidade) - (Number.isFinite(est.quantidade) ? est.quantidade : 0);
+    const diff = quantidade - (Number.isFinite(est.quantidade) ? est.quantidade : 0);
     await EstoqueDB.findByIdAndUpdate(est._id, {
-      quantidade: parseFloat(quantidade),
-      alertaEnviado: parseFloat(quantidade) > est.minimo ? false : est.alertaEnviado,
+      quantidade,
+      alertaEnviado: quantidade > est.minimo ? false : est.alertaEnviado,
     });
     await MovEstoqueDB.create({
       estoqueId: est._id, estoqueNome: est.nome,
       tipo: "ajuste", quantidade: diff,
       motivo: motivo || "ajuste manual",
     });
-    res.json({ quantidade: parseFloat(quantidade) });
+    res.json({ quantidade });
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
 
