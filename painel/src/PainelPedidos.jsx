@@ -2793,7 +2793,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [editando, setEditando] = useState(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
-  const [novo, setNovo] = useState({ nome:"", unidade:"un", quantidade:"", minimo:"", cardapioNomes:"", consumoPorVenda:"1", tipo:"normal", capacidadeBarril:"", alertaTelefone:"", custoPorUnidade:"", margemDesejada:"", precoVendaAtual:"" });
+  const [novo, setNovo] = useState({ nome:"", categoria:"", unidade:"un", quantidade:"", minimo:"", cardapioNomes:"", consumoPorVenda:"1", tipo:"normal", capacidadeBarril:"", alertaTelefone:"", custoPorUnidade:"", margemDesejada:"", precoVendaAtual:"" });
   const [entradaQtd, setEntradaQtd] = useState("");
   const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
   const [ajusteQtd, setAjusteQtd] = useState("");
@@ -2840,7 +2840,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
       const r = await authFetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok) return showMsg((await r.json()).erro||"Erro ao criar.","erro");
       showMsg(`✅ ${novo.nome} cadastrado!`);
-      setNovo({nome:"",unidade:"un",quantidade:"",minimo:"",cardapioNomes:"",consumoPorVenda:"1",tipo:"normal",capacidadeBarril:"",alertaTelefone:"",custoPorUnidade:"",margemDesejada:"",precoVendaAtual:""});
+      setNovo({nome:"",categoria:"",unidade:"un",quantidade:"",minimo:"",cardapioNomes:"",consumoPorVenda:"1",tipo:"normal",capacidadeBarril:"",alertaTelefone:"",custoPorUnidade:"",margemDesejada:"",precoVendaAtual:""});
       setNovoForm(false);
       carregar();
     } catch { showMsg("Erro de conexão.","erro"); }
@@ -2922,12 +2922,43 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
   const criticos = itens.filter(i=>qtdNum(i.quantidade)<=qtdNum(i.minimo));
 
+  // ── Categorias do estoque ──
+  // Sem categoria própria, o item usa a do cardápio a que está ligado
+  // (Coraçãozinho -> "Tradicionais"): a dona não precisa configurar nada.
+  // Só insumo sem vínculo (carvão, pão) pede uma categoria escolhida.
+  const SEM_CAT = "Sem categoria";
+  const chaveNome = (s) => String(s || "").trim().toLowerCase();
+  function categoriaDoCardapio(it) {
+    for (const n of (it.cardapioNomes || [])) {
+      const c = cardapio.find(x => chaveNome(x.nome) === chaveNome(n));
+      if (c?.categoria) return c.categoria;
+    }
+    return "";
+  }
+  const categoriaDe = (it) => String(it.categoria || "").trim() || categoriaDoCardapio(it) || SEM_CAT;
+  const catsEstoque = (() => {
+    const l = ordenarCategorias(itens.map(categoriaDe)).filter(c => c !== SEM_CAT);
+    return itens.some(i => categoriaDe(i) === SEM_CAT) ? [...l, SEM_CAT] : l;
+  })();
+  // Sugestões para o campo Categoria: as que já existem + as do cardápio + comuns de insumo
+  const sugestoesCat = [...new Set([...itens.map(i => String(i.categoria || "").trim()), ...cardapio.map(c => c.categoria), "Insumos", "Carnes", "Bebidas", "Descartáveis", "Limpeza"].filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+  const [filtroCat, setFiltroCat] = useState("todos");
+  const [buscaEst, setBuscaEst] = useState("");
+  const listaFiltrada = itens
+    .filter(i => filtroCat === "todos" || categoriaDe(i) === filtroCat)
+    .filter(i => !buscaEst.trim() || [i.nome, ...(i.cardapioNomes || [])].some(n => chaveNome(n).includes(chaveNome(buscaEst))));
+  const grupos = catsEstoque.filter(c => c !== "todos")
+    .map(c => ({ cat: c, itens: listaFiltrada.filter(i => categoriaDe(i) === c).sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR", { sensitivity: "base" })) }))
+    .filter(g => g.itens.length > 0);
+
   // ── DETALHE DO ITEM
   if(selItem) {
     const it = itens.find(i=>i._id===selItem._id)||selItem;
     const pct = pctBarril(it);
     return (
       <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:12}}>
+        <datalist id="sugestoes-cat-estoque">{sugestoesCat.map(c=><option key={c} value={c}/>)}</datalist>
         <button onClick={()=>setSelItem(null)} style={{background:"none",border:"none",color:"#7b1a0a",fontWeight:700,fontSize:14,cursor:"pointer",textAlign:"left",padding:0}}>← Voltar</button>
 
         {editando ? (
@@ -2947,6 +2978,17 @@ function Estoque({ backendUrl, cardapio = [] }) {
                 onChange={lista=>setEditando(p=>({...p,cardapioNomes:lista}))}
               />
             </div>
+            {(()=>{
+              const nomes = Array.isArray(editando.cardapioNomes) ? editando.cardapioNomes : String(editando.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean);
+              const auto = categoriaDoCardapio({cardapioNomes:nomes});
+              return (
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>Categoria {auto&&<span style={{color:"#1d4ed8"}}>(vazio = {auto}, a do cardápio)</span>}</div>
+                  <input list="sugestoes-cat-estoque" value={editando.categoria||""} onChange={e=>setEditando(p=>({...p,categoria:e.target.value}))}
+                    placeholder={auto || "Ex.: Insumos, Carnes, Bebidas"} maxLength={40} style={inp}/>
+                </div>
+              );
+            })()}
             {editando.tipo==="chopp"&&<div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Capacidade do barril (litros)</div><input type="number" value={editando.capacidadeBarril||""} onChange={e=>setEditando(p=>({...p,capacidadeBarril:parseFloat(e.target.value)}))} style={inp}/></div>}
             <FormadorPreco
               custo={editando.custoPorUnidade||""}
@@ -2968,7 +3010,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
               <div>
                 <div style={{fontWeight:800,fontSize:18,color:"#1a1a1a"}}>{it.nome}</div>
-                <div style={{fontSize:12,color:"#888",marginTop:2}}>{it.tipo==="chopp"?"🍺 Chopp":"📦"} · {it.unidade} · Mín: {it.minimo}</div>
+                <div style={{fontSize:12,color:"#888",marginTop:2}}>{it.tipo==="chopp"?"🍺 Chopp":"📦"} · {it.unidade} · Mín: {qtdNum(it.minimo)} · 🏷️ {categoriaDe(it)}</div>
               </div>
               <div style={{display:"flex",gap:6}}>
                 <button onClick={()=>setEditando({...it,cardapioNomes:it.cardapioNomes?.join(", ")||""})} style={{background:"#dbeafe",border:"none",borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:14}}>✏️</button>
@@ -3101,6 +3143,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
   // ── PAINEL PRINCIPAL
   return (
     <div style={{padding:"16px 14px",display:"flex",flexDirection:"column",gap:14}}>
+      <datalist id="sugestoes-cat-estoque">{sugestoesCat.map(c=><option key={c} value={c}/>)}</datalist>
       {/* Sub-abas */}
       <div style={{display:"flex",gap:6}}>
         {[["painel","📦 Estoque"],["consumo","📊 Consumo"]].map(([k,l])=>(
@@ -3207,6 +3250,11 @@ function Estoque({ backendUrl, cardapio = [] }) {
                 📊 Total em estoque: {parseFloat(novo._barris||0)*parseFloat(novo.capacidadeBarril||0)} litros
               </div>
             )}
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Categoria {categoriaDoCardapio({cardapioNomes:String(novo.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean)})&&<span style={{color:"#1d4ed8"}}>(vazio = {categoriaDoCardapio({cardapioNomes:String(novo.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean)})}, a do cardápio)</span>}</div>
+              <input list="sugestoes-cat-estoque" value={novo.categoria||""} onChange={e=>setNovo(p=>({...p,categoria:e.target.value}))}
+                placeholder={categoriaDoCardapio({cardapioNomes:String(novo.cardapioNomes||"").split(",").map(s=>s.trim()).filter(Boolean)}) || "Ex.: Insumos, Carnes, Bebidas"} maxLength={40} style={inp}/>
+            </div>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
               <div style={{flex:2}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Consumo por venda {novo.tipo==="chopp"&&<span style={{color:"#92400e"}}>(litros por caneca)</span>}</div><input type="number" step="0.1" value={novo.consumoPorVenda} onChange={e=>setNovo(p=>({...p,consumoPorVenda:e.target.value}))} placeholder={novo.tipo==="chopp"?"0.4":"1"} style={inp}/></div>
               <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Tel. alerta</div><input value={novo.alertaTelefone} onChange={e=>setNovo(p=>({...p,alertaTelefone:e.target.value}))} placeholder="5511..." style={inp}/></div>
@@ -3228,10 +3276,41 @@ function Estoque({ backendUrl, cardapio = [] }) {
           </div>
         )}
 
-        {/* Lista de itens */}
+        {/* Busca e categorias */}
+        {itens.length>0&&(
+          <>
+            <div style={{background:"#fff",borderRadius:12,padding:"9px 14px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",display:"flex",alignItems:"center",gap:8}}>
+              <span>🔍</span>
+              <input value={buscaEst} onChange={e=>setBuscaEst(e.target.value)} placeholder="Buscar item do estoque..." style={{border:"none",outline:"none",flex:1,fontSize:13,background:"transparent"}}/>
+              {buscaEst&&<span onClick={()=>setBuscaEst("")} style={{cursor:"pointer",color:"#aaa",fontSize:16}}>×</span>}
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {catsEstoque.map(cat=>{
+                const n = cat==="todos" ? itens.length : itens.filter(i=>categoriaDe(i)===cat).length;
+                const crit = cat==="todos" ? criticos.length : criticos.filter(i=>categoriaDe(i)===cat).length;
+                const ativo = filtroCat===cat;
+                return (
+                  <button key={cat} onClick={()=>setFiltroCat(cat)} style={{whiteSpace:"nowrap",padding:"6px 12px",borderRadius:20,border:"none",cursor:"pointer",fontSize:12,fontWeight:ativo?700:500,background:ativo?"#7b1a0a":"#f0f0f0",color:ativo?"#fff":"#555"}}>
+                    {cat==="todos"?"📋 Todos":cat} <span style={{opacity:0.7}}>{n}</span>{crit>0&&<span style={{marginLeft:4,color:ativo?"#fecaca":"#ef4444",fontWeight:800}}>· {crit}⚠️</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* Lista de itens, agrupada por categoria */}
         {itens.length===0?(
           <div style={{textAlign:"center",padding:"40px 0",color:"#ccc"}}><div style={{fontSize:40,marginBottom:8}}>📦</div><div>Nenhum item cadastrado ainda</div></div>
-        ):itens.map(it=>{
+        ):grupos.length===0?(
+          <div style={{textAlign:"center",padding:"24px 0",color:"#aaa",fontSize:13}}>Nenhum item encontrado{buscaEst?` para "${buscaEst}"`:""}.</div>
+        ):grupos.map(g=>(
+          <div key={g.cat} style={{display:"flex",flexDirection:"column",gap:8}}>
+            <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",padding:"4px 2px 0",borderBottom:"2px solid #7b1a0a22"}}>
+              <div style={{fontWeight:800,fontSize:14,color:"#7b1a0a"}}>{g.cat}</div>
+              <div style={{fontSize:11,color:"#888"}}>{g.itens.length} {g.itens.length===1?"item":"itens"}{g.itens.some(i=>qtdNum(i.quantidade)<=qtdNum(i.minimo))&&<span style={{color:"#ef4444",fontWeight:700}}> · {g.itens.filter(i=>qtdNum(i.quantidade)<=qtdNum(i.minimo)).length} crítico(s)</span>}</div>
+            </div>
+            {g.itens.map(it=>{
           const pct = pctBarril(it);
           const critico = qtdNum(it.quantidade)<=qtdNum(it.minimo);
           return(
@@ -3260,7 +3339,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
               )}
             </div>
           );
-        })}
+            })}
+          </div>
+        ))}
       </>}
 
       {/* RELATÓRIO DE CONSUMO */}

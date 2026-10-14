@@ -419,6 +419,8 @@ const FechamentoDiaSchema = new mongoose.Schema({
 // ── ESTOQUE ────────────────────────────────────────────────────
 const EstoqueSchema = new mongoose.Schema({
   nome:          { type: String, required: true },
+  // Vazio = usa a categoria do item do cardápio vinculado (o painel resolve)
+  categoria:     { type: String, default: "", trim: true, maxlength: 40 },
   unidade:       { type: String, default: "un" },
   quantidade:    { type: Number, default: 0, min: 0 },
   minimo:        { type: Number, default: 0, min: 0 },
@@ -2467,11 +2469,12 @@ app.get("/estoque", authMiddleware(["dono"]), async (req, res) => {
 });
 
 app.post("/estoque", authMiddleware(["dono"]), async (req, res) => {
-  const { nome, unidade, quantidade, minimo, cardapioNomes, consumoPorVenda, tipo, capacidadeBarril, alertaTelefone, custoPorUnidade, margemDesejada, precoVendaAtual } = req.body;
+  const { nome, unidade, quantidade, minimo, cardapioNomes, consumoPorVenda, tipo, capacidadeBarril, alertaTelefone, custoPorUnidade, margemDesejada, precoVendaAtual, categoria } = req.body;
   if (!nome) return res.status(400).json({ erro: "nome é obrigatório" });
   try {
     const item = await EstoqueDB.create({
       nome, unidade: unidade || "un",
+      categoria: String(categoria || "").trim().slice(0, 40),
       quantidade: parseFloat(quantidade) || 0,
       minimo: parseFloat(minimo) || 0,
       cardapioNomes: cardapioNomes || [],
@@ -2545,7 +2548,8 @@ function sanitizarEstoque(body) {
     if (LIMITES_ESTOQUE[k]) {
       const n = numOr(v, null, LIMITES_ESTOQUE[k]);
       if (n !== null) out[k] = n;
-    } else out[k] = v;
+    } else if (k === "categoria") out[k] = String(v || "").trim().slice(0, 40);
+    else out[k] = v;
   }
   return out;
 }
