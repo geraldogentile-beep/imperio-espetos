@@ -48,6 +48,9 @@ function textoParaBytes(texto) {
   return new Uint8Array(bytes);
 }
 
+// Valores no formato brasileiro no papel: "1.234,56"
+const dinheiro = (v) => (Number(v) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 function texto(t) { return textoParaBytes(t); }
 
 // ── CLASSE PRINCIPAL ──
@@ -524,20 +527,20 @@ class ImpressoraBT {
       cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`${it.qty||1}x ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
       if (it.obs) cmds.push(texto(`   obs: ${it.obs}`), NL);
       // Preço pequeno do lado (só pro conferente saber)
-      const subItem = ((it.qty||1)*it.preco).toFixed(2);
+      const subItem = dinheiro((it.qty||1)*it.preco);
       cmds.push(texto(`   R$ ${subItem}`), NL);
     }
 
     cmds.push(NL, texto("--------------------------------"), NL);
     // Valores
     if (subtotal !== undefined) {
-      cmds.push(texto(`Subtotal:`.padEnd(22) + `R$ ${(subtotal||0).toFixed(2)}`.padStart(10)), NL);
+      cmds.push(texto(`Subtotal:`.padEnd(22) + `R$ ${dinheiro(subtotal||0)}`.padStart(10)), NL);
     }
     cmds.push(texto(`Taxa entrega:`.padEnd(22) + `R$ 5,00`.padStart(10)), NL);
     if (desconto && desconto > 0) {
-      cmds.push(texto(`Desconto${cupom ? ` (${cupom})` : ""}:`.padEnd(22) + `-R$ ${desconto.toFixed(2)}`.padStart(10)), NL);
+      cmds.push(texto(`Desconto${cupom ? ` (${cupom})` : ""}:`.padEnd(22) + `-R$ ${dinheiro(desconto)}`.padStart(10)), NL);
     }
-    cmds.push(NL, ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
+    cmds.push(NL, ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${dinheiro(total||0)}`), NL, SIZE_NORMAL, BOLD_OFF);
     cmds.push(NL, NL, FEED(3), CUT);
     await this._print(cmds);
   }
@@ -569,7 +572,7 @@ class ImpressoraBT {
     for (const it of (itens || [])) {
       const qtd = String(it.qty || 1).padStart(2, " ");
       const nome = it.nome.length > 18 ? it.nome.slice(0, 18) : it.nome;
-      const preco = `${((it.qty||1)*it.preco).toFixed(2)}`;
+      const preco = `${dinheiro((it.qty||1)*it.preco)}`;
       // Layout 32 chars: "QQ NOME (até 18 chars)  PRECO"
       const meio = nome.padEnd(20, " ");
       cmds.push(texto(`${qtd} ${meio}${preco.padStart(7, " ")}`), NL);
@@ -578,24 +581,24 @@ class ImpressoraBT {
     // So mostra subtotal/desconto quando houve desconto — senao poluiria o cupom
     if (Number(desconto) > 0) {
       cmds.push(ALIGN_RIGHT);
-      cmds.push(texto(`Subtotal  R$ ${(Number(subtotal) || 0).toFixed(2)}`), NL);
+      cmds.push(texto(`Subtotal  R$ ${dinheiro(Number(subtotal) || 0)}`), NL);
       const rotulo = descontoInfo ? `Desconto (${removerAcentos(String(descontoInfo))})` : "Desconto";
-      cmds.push(texto(`${rotulo}  -R$ ${Number(desconto).toFixed(2)}`), NL);
+      cmds.push(texto(`${rotulo}  -R$ ${dinheiro(desconto)}`), NL);
     }
     cmds.push(NL);
-    cmds.push(ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${(total||0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
+    cmds.push(ALIGN_RIGHT, SIZE_DOUBLE_H, BOLD_ON, texto(`TOTAL R$ ${dinheiro(total||0)}`), NL, SIZE_NORMAL, BOLD_OFF);
     // Gorjeta sai DEPOIS do total: o cliente ve o que e conta e o que e extra
     if (Number(gorjeta) > 0) {
       const rot = gorjetaInfo ? `Gorjeta (${removerAcentos(String(gorjetaInfo))})` : "Gorjeta";
-      cmds.push(ALIGN_RIGHT, texto(`${rot}  +R$ ${Number(gorjeta).toFixed(2)}`), NL);
-      cmds.push(BOLD_ON, texto(`A PAGAR R$ ${((Number(total)||0) + Number(gorjeta)).toFixed(2)}`), NL, BOLD_OFF);
+      cmds.push(ALIGN_RIGHT, texto(`${rot}  +R$ ${dinheiro(gorjeta)}`), NL);
+      cmds.push(BOLD_ON, texto(`A PAGAR R$ ${dinheiro((Number(total)||0) + Number(gorjeta))}`), NL, BOLD_OFF);
     }
     // Comanda dividida: cada forma sai na sua linha, com o valor que coube
     const nomePg = { pix:"PIX", cartao:"Cartao", dinheiro:"Dinheiro", misto:"Misto" };
     if (Array.isArray(pagamentos) && pagamentos.length > 1) {
       cmds.push(ALIGN_LEFT, NL, texto("Pagamento:"), NL);
       for (const pg of pagamentos) {
-        cmds.push(texto(`  ${nomePg[pg.tipo] || pg.tipo}  R$ ${(Number(pg.valor)||0).toFixed(2)}`), NL);
+        cmds.push(texto(`  ${nomePg[pg.tipo] || pg.tipo}  R$ ${dinheiro(Number(pg.valor)||0)}`), NL);
       }
     } else if (pagamentoTexto || pagamento) {
       const pgNome = pagamentoTexto || nomePg[pagamento] || pagamento;
@@ -603,8 +606,8 @@ class ImpressoraBT {
     }
     // Troco: o caixa confere na hora e o cliente tambem
     if (Number(recebidoDinheiro) > 0) {
-      cmds.push(ALIGN_RIGHT, texto(`Recebido em dinheiro R$ ${Number(recebidoDinheiro).toFixed(2)}`), NL);
-      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`TROCO R$ ${(Number(troco) || 0).toFixed(2)}`), NL, SIZE_NORMAL, BOLD_OFF);
+      cmds.push(ALIGN_RIGHT, texto(`Recebido em dinheiro R$ ${dinheiro(recebidoDinheiro)}`), NL);
+      cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`TROCO R$ ${dinheiro(Number(troco) || 0)}`), NL, SIZE_NORMAL, BOLD_OFF);
     }
     cmds.push(NL, NL, ALIGN_CENTER);
     cmds.push(texto("Obrigado pela visita!"), NL);

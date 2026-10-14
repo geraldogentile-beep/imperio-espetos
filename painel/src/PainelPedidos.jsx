@@ -258,7 +258,7 @@ function Barra({ label, valor, maximo, destaque }) {
   const pct = maximo > 0 ? (valor / maximo) * 100 : 0;
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: 1 }}>
-      <div style={{ fontSize: 10, fontWeight: 600, color: destaque ? T.wine : T.gray }}>{valor > 0 ? "R$" + valor.toFixed(0) : "—"}</div>
+      <div style={{ fontSize: 10, fontWeight: 600, color: destaque ? T.wine : T.gray }}>{valor > 0 ? "R$" + Math.round(valor).toLocaleString("pt-BR") : "—"}</div>
       <div style={{ width: "100%", height: 80, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
         <div style={{ width: "60%", height: Math.max(pct, valor > 0 ? 4 : 0) + "%", background: destaque ? `linear-gradient(180deg,${T.amber},${T.wine})` : `linear-gradient(180deg,${T.wineL},${T.wineL.replace("F5","E0")})`, borderRadius: "6px 6px 0 0", transition: "height 0.6s ease", minHeight: valor > 0 ? 4 : 0 }} />
       </div>
@@ -425,8 +425,8 @@ function Cupons({ cupons, onReload }) {
               : <>
                 <div style={{ fontWeight: 700, fontSize: 13, color: "#065f46" }}>✅ Cupom válido!</div>
                 <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>
-                  Desconto: <strong>R$ {resultadoTeste.desconto?.toFixed(2)}</strong>
-                  {" · "}Total final: <strong>R$ {(parseFloat(testeSubtotal) + 5 - (resultadoTeste.desconto || 0)).toFixed(2)}</strong>
+                  Desconto: <strong>{fmtBR(resultadoTeste.desconto)}</strong>
+                  {" · "}Total final: <strong>{fmtBR((parseFloat(testeSubtotal) + 5 - (resultadoTeste.desconto || 0)))}</strong>
                 </div>
               </>
             }
@@ -783,8 +783,8 @@ function Cardapio({ cardapio, onReload }) {
               <div style={{ fontSize: 12, color: "#888" }}>{item.categoria}{item.obs && " · " + item.obs}{" · ⏱️ " + item.tempoPreparo + "min"}</div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 2 }}>
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {item.preco.toFixed(2)}</div>
-                  {item.precoPromocional > 0 && <div style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>🎉 R$ {item.precoPromocional.toFixed(2)}</div>}
+                  <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>{fmtBR(item.preco)}</div>
+                  {item.precoPromocional > 0 && <div style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>🎉 {fmtBR(item.precoPromocional)}</div>}
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   <button onClick={() => toggleAtivo(item)} title={item.ativo ? "Marcar em falta" : "Voltar a vender"} style={{ background: item.ativo ? "#d1fae5" : "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{item.ativo ? "✅" : "❌"}</button>
@@ -1650,7 +1650,7 @@ function ResumoFiscal() {
   const linha = (rotulo, valor, cor, negrito) => (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #f5f5f5" }}>
       <span style={{ fontSize: 13, color: negrito ? "#1a1a1a" : "#666", fontWeight: negrito ? 700 : 400 }}>{rotulo}</span>
-      <span style={{ fontSize: negrito ? 16 : 14, fontWeight: negrito ? 800 : 600, color: cor }}>R$ {Number(valor).toFixed(2)}</span>
+      <span style={{ fontSize: negrito ? 16 : 14, fontWeight: negrito ? 800 : 600, color: cor }}>{fmtBR(Number(valor))}</span>
     </div>
   );
 
@@ -2467,8 +2467,16 @@ function mascaraMoeda(val) {
   const n = parseInt(nums,10) / 100;
   return "R$ " + n.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
 }
+// Lê dinheiro vindo de qualquer lugar: número do banco (3.88), campo com
+// máscara ("R$ 1.234,56") ou digitado solto ("9.00", "9,5"). Antes o ponto
+// era sempre tratado como milhar: 3.88 virava 388 e "9.00" virava 900.
 function parseMoedaGlobal(str) {
-  return parseFloat(String(str||0).replace(/R\$\s?/g,"").replace(/\./g,"").replace(",",".")) || 0;
+  if (typeof str === "number") return Number.isFinite(str) ? str : 0;
+  const s = String(str ?? "").replace(/R\$\s?/g, "").trim();
+  if (!s) return 0;
+  if (s.includes(",")) return parseFloat(s.replace(/\./g, "").replace(",", ".")) || 0;   // 1.234,56
+  if (/^\d+\.\d{1,2}$/.test(s)) return parseFloat(s) || 0;                               // 3.88 / 9.00 (decimal)
+  return parseFloat(s.replace(/\./g, "")) || 0;                                           // 1.234 (milhar) / 9
 }
 // Campo de dinheiro com máscara automática: digita "15000" e vê "R$ 150,00".
 // Mesma máscara do troco e do estoque, para a dona não ter de pensar na vírgula.
@@ -2496,6 +2504,10 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
     const nums = val.replace(/\D/g,"");
     onChange(campo, nums ? mascaraMoeda(nums) : "");
   }
+  // O detalhe do item manda o custo como número do banco (3.88); o campo
+  // mostra sempre com a máscara ("R$ 3,88") e nunca o número cru.
+  const custoTxt = typeof custo === "number" ? (custo > 0 ? moedaDeNumero(custo) : "") : (custo || "");
+  const precoVendaTxt = typeof precoVenda === "number" ? (precoVenda > 0 ? moedaDeNumero(precoVenda) : "") : (precoVenda || "");
 
   const c   = parseMoeda(custo);
   const m   = parsePct(margem);
@@ -2574,7 +2586,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
           <div style={{flex:1}}>
             <div style={{fontSize:11,color:"#888",marginBottom:3}}>Custo (R$/un)</div>
             <input type="text" inputMode="numeric"
-              value={custo}
+              value={custoTxt}
               onChange={e=>handleMascara("custoPorUnidade", e.target.value)}
               placeholder="R$ 0,00" style={inpBase}/>
           </div>
@@ -2594,7 +2606,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
         <div>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual (R$)</div>
           <input type="text" inputMode="numeric"
-            value={precoVenda}
+            value={precoVendaTxt}
             onChange={e=>handleMascara("precoVendaAtual", e.target.value)}
             placeholder="Preenchido ao selecionar do cardápio" style={inpBase}/>
         </div>
@@ -2663,9 +2675,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
           {modoPreco==="manual"&&(
             <div style={{marginBottom:10}}>
               <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço a aplicar (R$)</div>
-              <input type="text" inputMode="decimal" value={precoManual}
-                onChange={e=>setPrecoManual(e.target.value.replace(/[^\d,\.]/g,""))}
-                placeholder="Ex: 10,00"
+              <InputDinheiro value={precoManual} onChange={setPrecoManual}
                 style={{width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:8,fontSize:13,color:"#333",outline:"none",boxSizing:"border-box",background:"#fff"}}/>
               {margemFinal!==null&&precoManual&&(
                 <div style={{fontSize:11,color:margemFinal>=m?"#10b981":margemFinal>=m*0.8?"#f59e0b":"#ef4444",marginTop:4,fontWeight:600}}>
@@ -2759,7 +2769,7 @@ function CardapioDropdown({ valor, onChange, nomeManual, onNomeManual, cardapio 
                 onMouseEnter={e=>e.currentTarget.style.background=sel?"#fde8e4":"#f8f7f5"}
                 onMouseLeave={e=>e.currentTarget.style.background=sel?"#fef0ed":"#fff"}>
                 <span style={{fontWeight:sel?600:400,color:sel?"#7b1a0a":"#333"}}>{item.nome}</span>
-                <span style={{fontSize:11,color:"#aaa"}}>R$ {item.preco?.toFixed(2)}</span>
+                <span style={{fontSize:11,color:"#aaa"}}>{fmtBR(item.preco)}</span>
               </div>
             );
           })}
@@ -3875,34 +3885,34 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   <div style="text-align:center;font-size:11px;color:#888">Emitido às ${horaFmt}</div>
   <hr>
   <div class="sec">Resumo geral</div>
-  <div class="linha"><span>🛵 Delivery (${f.pedidosDelivery} pedidos)</span><span>R$ ${f.totalDelivery.toFixed(2)}</span></div>
-  <div class="linha"><span>🍽️ Salão (${f.vendasSalao} vendas)</span><span>R$ ${f.totalSalao.toFixed(2)}</span></div>
-  <div class="total"><span>TOTAL DO DIA</span><span>R$ ${f.totalGeral.toFixed(2)}</span></div>
+  <div class="linha"><span>🛵 Delivery (${f.pedidosDelivery} pedidos)</span><span>${fmtBR(f.totalDelivery)}</span></div>
+  <div class="linha"><span>🍽️ Salão (${f.vendasSalao} vendas)</span><span>${fmtBR(f.totalSalao)}</span></div>
+  <div class="total"><span>TOTAL DO DIA</span><span>${fmtBR(f.totalGeral)}</span></div>
   <hr>
   <div class="sec">Formas de pagamento (salão)</div>
-  ${f.porPagamento?.pix>0?`<div class="linha"><span>🟢 Pix</span><span>R$ ${f.porPagamento.pix.toFixed(2)}</span></div>`:""}
-  ${f.porPagamento?.cartao>0?`<div class="linha"><span>💳 Cartão</span><span>R$ ${f.porPagamento.cartao.toFixed(2)}</span></div>`:""}
-  ${f.porPagamento?.dinheiro>0?`<div class="linha"><span>💵 Dinheiro</span><span>R$ ${f.porPagamento.dinheiro.toFixed(2)}</span></div>`:""}
-  ${f.deliverySemForma>0?`<div class="linha"><span>🛵 Delivery sem forma informada</span><span>R$ ${f.deliverySemForma.toFixed(2)}</span></div>`:""}
-  ${f.totalGorjetas>0?`<div class="linha"><span>🙏 Gorjetas (inclusas acima)</span><span>R$ ${f.totalGorjetas.toFixed(2)}</span></div>
+  ${f.porPagamento?.pix>0?`<div class="linha"><span>🟢 Pix</span><span>${fmtBR(f.porPagamento.pix)}</span></div>`:""}
+  ${f.porPagamento?.cartao>0?`<div class="linha"><span>💳 Cartão</span><span>${fmtBR(f.porPagamento.cartao)}</span></div>`:""}
+  ${f.porPagamento?.dinheiro>0?`<div class="linha"><span>💵 Dinheiro</span><span>${fmtBR(f.porPagamento.dinheiro)}</span></div>`:""}
+  ${f.deliverySemForma>0?`<div class="linha"><span>🛵 Delivery sem forma informada</span><span>${fmtBR(f.deliverySemForma)}</span></div>`:""}
+  ${f.totalGorjetas>0?`<div class="linha"><span>🙏 Gorjetas (inclusas acima)</span><span>${fmtBR(f.totalGorjetas)}</span></div>
   <div style="font-size:10px;color:#888;margin-top:2px">Gorjeta nao e faturamento — entrou no caixa, mas nao foi venda.</div>`:""}
   ${f.porGarcom?.length>0?`
   <hr>
   <div class="sec">Por garçom</div>
-  ${f.porGarcom.map(g=>`<div class="linha"><span>🧑‍🍳 ${g.nome} (${g.vendas}x)${g.gorjeta>0?` <small style="color:#065f46">+ R$ ${g.gorjeta.toFixed(2)} gorjeta</small>`:""}</span><span>R$ ${g.total.toFixed(2)}</span></div>`).join("")}
+  ${f.porGarcom.map(g=>`<div class="linha"><span>🧑‍🍳 ${g.nome} (${g.vendas}x)${g.gorjeta>0?` <small style="color:#065f46">+ ${fmtBR(g.gorjeta)} gorjeta</small>`:""}</span><span>${fmtBR(g.total)}</span></div>`).join("")}
   `:""}
   ${f.caixa?.esperado!=null?`
   <hr>
   <div class="sec">Conferência da gaveta</div>
-  <div class="linha"><span>Fundo de abertura</span><span>R$ ${(f.caixa.abertura||0).toFixed(2)}</span></div>
-  <div class="linha"><span>+ Salão em dinheiro</span><span>R$ ${(f.caixa.dinheiroSalao||0).toFixed(2)}</span></div>
-  ${f.caixa.dinheiroDelivery>0?`<div class="linha"><span>${f.caixa.deliveryNaGaveta?"+ Delivery em dinheiro":"Delivery em dinheiro (fora da gaveta)"}</span><span>R$ ${f.caixa.dinheiroDelivery.toFixed(2)}</span></div>`:""}
-  ${f.caixa.reforcos>0?`<div class="linha"><span>+ Reforços</span><span>R$ ${f.caixa.reforcos.toFixed(2)}</span></div>`:""}
-  ${f.caixa.retiradas>0?`<div class="linha"><span>- Saídas</span><span>R$ ${f.caixa.retiradas.toFixed(2)}</span></div>`:""}
-  ${f.caixa.gastosDoCaixa>0?`<div class="linha"><span>- Gastos pagos da gaveta</span><span>R$ ${f.caixa.gastosDoCaixa.toFixed(2)}</span></div>`:""}
-  <div class="total"><span>ESPERADO</span><span>R$ ${f.caixa.esperado.toFixed(2)}</span></div>
-  ${f.caixa.contado!=null?`<div class="linha"><span>Contado na gaveta</span><span>R$ ${f.caixa.contado.toFixed(2)}</span></div>
-  <div class="linha" style="font-weight:bold"><span>${f.caixa.diferenca>=0?"Sobrou":"Faltou"}</span><span>R$ ${Math.abs(f.caixa.diferenca).toFixed(2)}</span></div>`:`<div class="linha"><span>Gaveta não foi contada</span><span></span></div>`}
+  <div class="linha"><span>Fundo de abertura</span><span>${fmtBR((f.caixa.abertura||0))}</span></div>
+  <div class="linha"><span>+ Salão em dinheiro</span><span>${fmtBR((f.caixa.dinheiroSalao||0))}</span></div>
+  ${f.caixa.dinheiroDelivery>0?`<div class="linha"><span>${f.caixa.deliveryNaGaveta?"+ Delivery em dinheiro":"Delivery em dinheiro (fora da gaveta)"}</span><span>${fmtBR(f.caixa.dinheiroDelivery)}</span></div>`:""}
+  ${f.caixa.reforcos>0?`<div class="linha"><span>+ Reforços</span><span>${fmtBR(f.caixa.reforcos)}</span></div>`:""}
+  ${f.caixa.retiradas>0?`<div class="linha"><span>- Saídas</span><span>${fmtBR(f.caixa.retiradas)}</span></div>`:""}
+  ${f.caixa.gastosDoCaixa>0?`<div class="linha"><span>- Gastos pagos da gaveta</span><span>${fmtBR(f.caixa.gastosDoCaixa)}</span></div>`:""}
+  <div class="total"><span>ESPERADO</span><span>${fmtBR(f.caixa.esperado)}</span></div>
+  ${f.caixa.contado!=null?`<div class="linha"><span>Contado na gaveta</span><span>${fmtBR(f.caixa.contado)}</span></div>
+  <div class="linha" style="font-weight:bold"><span>${f.caixa.diferenca>=0?"Sobrou":"Faltou"}</span><span>${fmtBR(Math.abs(f.caixa.diferenca))}</span></div>`:`<div class="linha"><span>Gaveta não foi contada</span><span></span></div>`}
   `:""}
   ${f.obs?`<hr><div style="font-size:12px;color:#555">📝 ${f.obs}</div>`:""}
   <div class="rodape">— Fim do relatório —</div>
@@ -3935,18 +3945,18 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
         <div style={{display:"flex",gap:10,marginBottom:12}}>
           <div style={{flex:1,background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"10px 12px"}}>
             <div style={{fontSize:11,opacity:0.8}}>🛵 Delivery</div>
-            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>R$ {totalDelivery.toFixed(2)}</div>
+            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>{fmtBR(totalDelivery)}</div>
             <div style={{fontSize:10,opacity:0.7}}>{pedidosHoje.length} pedidos</div>
           </div>
           <div style={{flex:1,background:"rgba(255,255,255,0.15)",borderRadius:12,padding:"10px 12px"}}>
             <div style={{fontSize:11,opacity:0.8}}>🍽️ Salão</div>
-            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>R$ {totalSalaoHoje.toFixed(2)}</div>
+            <div style={{fontWeight:800,fontSize:16,marginTop:2}}>{fmtBR(totalSalaoHoje)}</div>
             <div style={{fontSize:10,opacity:0.7}}>{historicoSalao.length} vendas</div>
           </div>
         </div>
         <div style={{background:"rgba(255,255,255,0.2)",borderRadius:12,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <span style={{fontWeight:700,fontSize:14}}>💰 Total geral</span>
-          <span style={{fontWeight:900,fontSize:20}}>R$ {totalGeral.toFixed(2)}</span>
+          <span style={{fontWeight:900,fontSize:20}}>{fmtBR(totalGeral)}</span>
         </div>
       </div>
 
@@ -3959,14 +3969,14 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
           {(Object.values(porPag).some(v=>v>0)||deliverySemForma>0)&&(
             <div style={{flex:1,background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
               <div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Pagamentos</div>
-              {porPag.pix>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>🟢 Pix</span><span style={{fontWeight:700}}>R$ {porPag.pix.toFixed(2)}</span></div>}
-              {porPag.cartao>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💳 Cartão</span><span style={{fontWeight:700}}>R$ {porPag.cartao.toFixed(2)}</span></div>}
-              {porPag.dinheiro>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💵 Dinheiro</span><span style={{fontWeight:700}}>R$ {porPag.dinheiro.toFixed(2)}</span></div>}
-              {deliverySemForma>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",color:"#b45309"}} title="Marque a forma de pagamento no cartão do pedido, na aba Pedidos"><span>🛵 Delivery sem forma informada</span><span style={{fontWeight:700}}>R$ {deliverySemForma.toFixed(2)}</span></div>}
+              {porPag.pix>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>🟢 Pix</span><span style={{fontWeight:700}}>{fmtBR(porPag.pix)}</span></div>}
+              {porPag.cartao>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💳 Cartão</span><span style={{fontWeight:700}}>{fmtBR(porPag.cartao)}</span></div>}
+              {porPag.dinheiro>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}><span>💵 Dinheiro</span><span style={{fontWeight:700}}>{fmtBR(porPag.dinheiro)}</span></div>}
+              {deliverySemForma>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",color:"#b45309"}} title="Marque a forma de pagamento no cartão do pedido, na aba Pedidos"><span>🛵 Delivery sem forma informada</span><span style={{fontWeight:700}}>{fmtBR(deliverySemForma)}</span></div>}
               {gorjetasSalao>0&&(
                 <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #f0f0f0"}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0",color:"#065f46"}}>
-                    <span>🙏 Gorjetas (inclusas acima)</span><span style={{fontWeight:700}}>R$ {gorjetasSalao.toFixed(2)}</span>
+                    <span>🙏 Gorjetas (inclusas acima)</span><span style={{fontWeight:700}}>{fmtBR(gorjetasSalao)}</span>
                   </div>
                   <div style={{fontSize:10,color:"#999",lineHeight:1.5,marginTop:3}}>
                     Não é faturamento. É a diferença entre o que entrou e o que foi vendido.
@@ -3980,7 +3990,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
               <div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Garçons</div>
               {porGarcom.map(g=>(
                 <div key={g.nome} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}>
-                  <span>🧑‍🍳 {g.nome}</span><span style={{fontWeight:700}}>R$ {g.total.toFixed(2)}</span>
+                  <span>🧑‍🍳 {g.nome}</span><span style={{fontWeight:700}}>{fmtBR(g.total)}</span>
                 </div>
               ))}
             </div>
@@ -4064,7 +4074,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
                 <div style={{fontSize:11,color:"#888"}}>{f.pedidosDelivery} delivery · {f.vendasSalao} salão</div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10}}>
-                <div style={{fontWeight:800,fontSize:15,color:"#7b1a0a"}}>R$ {f.totalGeral.toFixed(2)}</div>
+                <div style={{fontWeight:800,fontSize:15,color:"#7b1a0a"}}>{fmtBR(f.totalGeral)}</div>
                 <button onClick={e=>{e.stopPropagation();imprimirFechamento(f);}} style={{background:"#f0f0f0",border:"none",borderRadius:8,padding:"5px 8px",cursor:"pointer",fontSize:13}}>🖨️</button>
                 <span style={{color:"#ddd",fontSize:14}}>{aberto===f._id?"▴":"▾"}</span>
               </div>
@@ -4074,20 +4084,20 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
                 <div style={{display:"flex",gap:10,marginBottom:8}}>
                   <div style={{flex:1,background:"#f8f7f5",borderRadius:8,padding:"8px 10px"}}>
                     <div style={{fontSize:10,color:"#888"}}>🛵 Delivery</div>
-                    <div style={{fontWeight:700,fontSize:13}}>R$ {f.totalDelivery.toFixed(2)}</div>
+                    <div style={{fontWeight:700,fontSize:13}}>{fmtBR(f.totalDelivery)}</div>
                   </div>
                   <div style={{flex:1,background:"#f8f7f5",borderRadius:8,padding:"8px 10px"}}>
                     <div style={{fontSize:10,color:"#888"}}>🍽️ Salão</div>
-                    <div style={{fontWeight:700,fontSize:13}}>R$ {f.totalSalao.toFixed(2)}</div>
+                    <div style={{fontWeight:700,fontSize:13}}>{fmtBR(f.totalSalao)}</div>
                   </div>
                 </div>
-                {f.deliverySemForma>0&&<div style={{fontSize:11,color:"#b45309",marginBottom:6}}>🛵 Delivery sem forma de pagamento informada: R$ {f.deliverySemForma.toFixed(2)}</div>}
+                {f.deliverySemForma>0&&<div style={{fontSize:11,color:"#b45309",marginBottom:6}}>🛵 Delivery sem forma de pagamento informada: {fmtBR(f.deliverySemForma)}</div>}
                 {f.porGarcom?.length>0&&(
                   <div style={{marginBottom:6}}>
                     <div style={{fontSize:10,color:"#888",marginBottom:4}}>Por garçom</div>
                     {f.porGarcom.map(g=>(
                       <div key={g.nome} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"2px 0"}}>
-                        <span>🧑‍🍳 {g.nome} ({g.vendas}x)</span><span style={{fontWeight:600}}>R$ {g.total.toFixed(2)}</span>
+                        <span>🧑‍🍳 {g.nome} ({g.vendas}x)</span><span style={{fontWeight:600}}>{fmtBR(g.total)}</span>
                       </div>
                     ))}
                   </div>
@@ -4190,15 +4200,15 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <div style={{ fontSize: 10, opacity: 0.75, letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>{periodo === "hoje" ? "Hoje" : periodo === "semana" ? "Últimos 7 dias" : "Últimos 30 dias"}</div>
-            <div className="serif-title" style={{ fontSize: 28, fontWeight: 700, marginTop: 4, lineHeight: 1.1 }}>R$ {totalAtual.toFixed(2)}</div>
-            <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{totalPedidos} {totalPedidos === 1 ? "venda" : "vendas"} · ticket médio R$ {ticketMedio.toFixed(2)}</div>
+            <div className="serif-title" style={{ fontSize: 28, fontWeight: 700, marginTop: 4, lineHeight: 1.1 }}>{fmtBR(totalAtual)}</div>
+            <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{totalPedidos} {totalPedidos === 1 ? "venda" : "vendas"} · ticket médio {fmtBR(ticketMedio)}</div>
           </div>
           <div style={{ textAlign: "right", background: "rgba(255,255,255,0.15)", borderRadius: 12, padding: "8px 12px", backdropFilter: "blur(8px)" }}>
             <div style={{ fontSize: 10, opacity: 0.8, marginBottom: 2 }}>vs {periodo === "hoje" ? "ontem" : "período anterior"}</div>
             <div style={{ fontWeight: 700, fontSize: 18, color: variacao >= 0 ? "#86efac" : "#fca5a5" }}>
-              {variacao >= 0 ? "▲" : "▼"} {Math.abs(variacao).toFixed(1)}%
+              {variacao >= 0 ? "▲" : "▼"} {Math.abs(variacao).toFixed(1).replace(".", ",")}%
             </div>
-            <div style={{ fontSize: 10, opacity: 0.7, marginTop: 1 }}>R$ {totalAnt.toFixed(2)}</div>
+            <div style={{ fontSize: 10, opacity: 0.7, marginTop: 1 }}>{fmtBR(totalAnt)}</div>
           </div>
         </div>
       </div>
@@ -4214,7 +4224,7 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
             const alt = (h.valor / maxHora) * 100;
             const ehPico = h.hora === horaPico.hora && h.valor > 0;
             return (
-              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, position: "relative" }} title={`${String(h.hora).padStart(2,"0")}h: R$ ${h.valor.toFixed(2)} (${h.qty} vendas)`}>
+              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, position: "relative" }} title={`${String(h.hora).padStart(2,"0")}h: ${fmtBR(h.valor)} (${h.qty} vendas)`}>
                 <div style={{ width: "85%", height: `${Math.max(alt, h.valor > 0 ? 4 : 0)}%`, background: ehPico ? "linear-gradient(180deg,#f59e0b,#d97706)" : h.valor > 0 ? "linear-gradient(180deg,#c0392b,#7b1a0a)" : "transparent", borderRadius: "4px 4px 0 0", transition: "height 0.6s ease", minHeight: h.valor > 0 ? 4 : 0 }} />
                 {[0,6,12,18,23].includes(h.hora) && <div style={{ fontSize: 9, color: "#888", marginTop: 2 }}>{h.hora}h</div>}
               </div>
@@ -4259,7 +4269,7 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
                       <div style={{ fontSize: 13, fontWeight: 600, color: "#1a1a1a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.nome}</div>
-                      <div style={{ fontSize: 12, color: "#888", marginLeft: 8, flexShrink: 0 }}>{it.qty}x · R$ {it.valor.toFixed(2)}</div>
+                      <div style={{ fontSize: 12, color: "#888", marginLeft: 8, flexShrink: 0 }}>{it.qty}x · {fmtBR(it.valor)}</div>
                     </div>
                     <div style={{ height: 6, background: "#f5f5f5", borderRadius: 3, overflow: "hidden" }}>
                       <div style={{ height: "100%", width: `${pct}%`, background: i < 3 ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 3, transition: "width 0.6s ease" }} />
@@ -4276,7 +4286,7 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
         <Metrica icon="🛵" label="Delivery" valor={pedidosEntregues.length + " " + (pedidosEntregues.length === 1 ? "pedido" : "pedidos")} cor="#10b981" />
         <Metrica icon="🍽️" label="Salão" valor={vendasSalao.length + " " + (vendasSalao.length === 1 ? "venda" : "vendas")} cor="#3b82f6" />
-        <Metrica icon="💵" label="Ticket médio" valor={"R$ " + ticketMedio.toFixed(2)} cor="#f59e0b" />
+        <Metrica icon="💵" label="Ticket médio" valor={fmtBR(ticketMedio)} cor="#f59e0b" />
       </div>
     </div>
   );
@@ -4627,7 +4637,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   async function emitirLote() {
     if (!selecionadas.length) return;
     const msg = [
-      `Emitir ${selecionadas.length} nota(s) fiscal(is), somando R$ ${totalSelecionado.toFixed(2)}?`,
+      `Emitir ${selecionadas.length} nota(s) fiscal(is), somando ${fmtBR(totalSelecionado)}?`,
       "",
       "As notas vao para a SEFAZ como consumidor nao identificado.",
       "Se algum cliente pediu nota com CPF, emita essa pelo botao individual.",
@@ -4773,12 +4783,12 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       {/* GERAL */}
       {subAba === "geral" && <>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <Metrica icon="💰" label="Total geral" valor={"R$ " + totalGeral.toFixed(2)} cor="#7b1a0a" />
-          <Metrica icon="🛵" label="Delivery" valor={"R$ " + totalDelivery.toFixed(2)} sub={pp.length + " pedido" + (pp.length !== 1 ? "s" : "")} cor="#10b981" />
-          <Metrica icon="🍽️" label="Salão" valor={"R$ " + totalSalao.toFixed(2)} cor="#3b82f6" />
+          <Metrica icon="💰" label="Total geral" valor={fmtBR(totalGeral)} cor="#7b1a0a" />
+          <Metrica icon="🛵" label="Delivery" valor={fmtBR(totalDelivery)} sub={pp.length + " pedido" + (pp.length !== 1 ? "s" : "")} cor="#10b981" />
+          <Metrica icon="🍽️" label="Salão" valor={fmtBR(totalSalao)} cor="#3b82f6" />
           <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
-          {totalGorjetas > 0 && <Metrica icon="🙏" label="Gorjetas" valor={"R$ " + totalGorjetas.toFixed(2)} sub="fora do faturamento" cor="#10b981" />}
-          {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={"R$ " + totalDescontos.toFixed(2)} sub={descontoSalao > 0 && descontoDelivery > 0 ? "cupons + comandas" : descontoSalao > 0 ? "no fechamento" : "via cupons"} cor="#8b5cf6" />}
+          {totalGorjetas > 0 && <Metrica icon="🙏" label="Gorjetas" valor={fmtBR(totalGorjetas)} sub="fora do faturamento" cor="#10b981" />}
+          {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={fmtBR(totalDescontos)} sub={descontoSalao > 0 && descontoDelivery > 0 ? "cupons + comandas" : descontoSalao > 0 ? "no fechamento" : "via cupons"} cor="#8b5cf6" />}
         </div>
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📊 {periodo === "hoje" ? "Por hora" : periodo === "semana" ? "Por dia" : "Por semana"}</div>
@@ -4794,7 +4804,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           {/* Resumo */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Metrica icon="🧾" label="Vendas do caixa" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "desde o ultimo fechamento"} cor="#7b1a0a" />
-            <Metrica icon="💰" label="Total salão" valor={"R$ " + (faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0)).toFixed(2)} cor="#10b981" />
+            <Metrica icon="💰" label="Total salão" valor={fmtBR(faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0))} cor="#10b981" />
             <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(historicoSalao.map(v=>v.garcom).filter(g=>g!=="—"))].length || "—"} cor="#3b82f6" />
           </div>
 
@@ -4854,7 +4864,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>
                       {selecionadas.length} selecionada{selecionadas.length !== 1 ? "s" : ""}
-                      {selecionadas.length > 0 && <span style={{ color: "#7b1a0a" }}> · R$ {totalSelecionado.toFixed(2)}</span>}
+                      {selecionadas.length > 0 && <span style={{ color: "#7b1a0a" }}> · {fmtBR(totalSelecionado)}</span>}
                     </div>
                     <button onClick={sairDoLote} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: "#555" }}>Sair</button>
                   </div>
@@ -4947,9 +4957,9 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                     </div>
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>R$ {v.total.toFixed(2)}</div>
+                      <div style={{ fontWeight: 800, fontSize: 16, color: "#7b1a0a" }}>{fmtBR(v.total)}</div>
                       <div style={{ fontSize: 11, color: "#888" }}>{v.pagamento === "pix" ? "🟢 Pix" : v.pagamento === "cartao" ? "💳 Cartão" : v.pagamento === "misto" ? "🔀 Misto" : "💵 Dinheiro"}</div>
-                      {Number(v.gorjeta) > 0 && <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 700 }}>🙏 + R$ {Number(v.gorjeta).toFixed(2)} gorjeta</div>}
+                      {Number(v.gorjeta) > 0 && <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 700 }}>🙏 + {fmtBR(Number(v.gorjeta))} gorjeta</div>}
                       <BadgeNota status={v.notaFiscalStatus} />
                     </div>
                   </div>
@@ -4958,7 +4968,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                       {v.itens.map((it,i) => (
                         <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0", color: "#555" }}>
                           <span>{it.qty}x {it.nome}</span>
-                          <span>R$ {(it.qty*it.preco).toFixed(2)}</span>
+                          <span>{fmtBR((it.qty*it.preco))}</span>
                         </div>
                       ))}
                       {v._id && <BotaoEmitirNota venda={v} onEmitido={(st, notaId) => { if (setHistoricoSalao) setHistoricoSalao(h => h.map(x => x._id === v._id ? { ...x, notaFiscalStatus: st || "autorizada", notaFiscalId: notaId || x.notaFiscalId } : x)); }} />}
@@ -4980,12 +4990,12 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                             <h2>👑 Império dos Espetos</h2>
                             <div class="sub">Relatório de Venda — Mesa ${v.mesa}</div>
                             <div class="info">${v.cliente&&v.cliente!=='—'?'Cliente: '+v.cliente+'<br>':''}${v.garcom&&v.garcom!=='—'?'Garçom: '+v.garcom+'<br>':''}Fechamento: ${new Date(v.fechamento).toLocaleString('pt-BR',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})}</div>
-                            ${v.itens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
-                            ${v.desconto > 0 ? `<div class="linha"><span>Subtotal</span><span>R$ ${(v.subtotal||v.total).toFixed(2)}</span></div>
-                            <div class="linha"><span>Desconto${v.descontoInfo?' ('+v.descontoInfo+')':''}</span><span>− R$ ${v.desconto.toFixed(2)}</span></div>` : ''}
-                            <div class="total"><span>TOTAL</span><span>R$ ${v.total.toFixed(2)}</span></div>
-                            ${Number(v.gorjeta) > 0 ? `<div class="linha"><span>Gorjeta${v.gorjetaInfo?' ('+v.gorjetaInfo+')':''}</span><span>+ R$ ${Number(v.gorjeta).toFixed(2)}</span></div>
-                            <div class="total"><span>A PAGAR</span><span>R$ ${(v.total + Number(v.gorjeta)).toFixed(2)}</span></div>` : ''}
+                            ${v.itens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>${fmtBR(((it.qty||1)*it.preco))}</span></div>`).join('')}
+                            ${v.desconto > 0 ? `<div class="linha"><span>Subtotal</span><span>${fmtBR((v.subtotal||v.total))}</span></div>
+                            <div class="linha"><span>Desconto${v.descontoInfo?' ('+v.descontoInfo+')':''}</span><span>− ${fmtBR(v.desconto)}</span></div>` : ''}
+                            <div class="total"><span>TOTAL</span><span>${fmtBR(v.total)}</span></div>
+                            ${Number(v.gorjeta) > 0 ? `<div class="linha"><span>Gorjeta${v.gorjetaInfo?' ('+v.gorjetaInfo+')':''}</span><span>+ ${fmtBR(Number(v.gorjeta))}</span></div>
+                            <div class="total"><span>A PAGAR</span><span>${fmtBR((v.total + Number(v.gorjeta)))}</span></div>` : ''}
                             <div class="info" style="margin-top:10px">Pagamento: ${descrevePagamento(v.pagamentos, v.pagamento)}</div>
                             <div class="rodape">Obrigado! 🍢</div>
                             <br><button onclick="window.print()">🖨️ Imprimir</button>
@@ -4997,7 +5007,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                         </button>
                         <button onClick={async (e) => {
                           e.stopPropagation();
-                          if (window.confirm(`Excluir venda da Mesa ${v.mesa} (R$ ${v.total.toFixed(2)})?`)) {
+                          if (window.confirm(`Excluir venda da Mesa ${v.mesa} (${fmtBR(v.total)})?`)) {
                             // Remove do MongoDB se tiver _id. Se o servidor recusar (ex.: venda
                             // com nota autorizada), a venda fica na tela e o motivo aparece.
                             if (v._id) {
@@ -5052,7 +5062,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
         <div style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", borderRadius: 14, padding: "14px 16px", color: "#fff" }}>
           <div style={{ fontSize: 12, opacity: 0.8 }}>Melhor dia da semana</div>
           <div style={{ fontWeight: 800, fontSize: 20, marginTop: 4 }}>📅 {melhorDia.nome}</div>
-          <div style={{ fontSize: 13, opacity: 0.9, marginTop: 2 }}>R$ {melhorDia.fat.toFixed(2)} · {melhorDia.qtd} pedidos</div>
+          <div style={{ fontSize: 13, opacity: 0.9, marginTop: 2 }}>{fmtBR(melhorDia.fat)} · {melhorDia.qtd} pedidos</div>
         </div>
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 14 }}>Faturamento por dia da semana</div>
@@ -5060,7 +5070,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
             <div key={i} style={{ marginBottom: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 5 }}>
                 <span style={{ fontWeight: 600, color: "#333" }}>{d.nome}</span>
-                <span style={{ color: "#888", fontSize: 12 }}>{d.qtd} pedido{d.qtd !== 1 ? "s" : ""} · <span style={{ fontWeight: 700, color: "#7b1a0a" }}>R$ {d.fat.toFixed(2)}</span></span>
+                <span style={{ color: "#888", fontSize: 12 }}>{d.qtd} pedido{d.qtd !== 1 ? "s" : ""} · <span style={{ fontWeight: 700, color: "#7b1a0a" }}>{fmtBR(d.fat)}</span></span>
               </div>
               <div style={{ height: 8, background: "#f0f0f0", borderRadius: 4 }}>
                 <div style={{ height: "100%", width: ((d.fat / maxDia) * 100) + "%", background: d.fat === melhorDia.fat ? "linear-gradient(90deg,#f59e0b,#d97706)" : "linear-gradient(90deg,#c0392b,#7b1a0a)", borderRadius: 4, transition: "width 0.6s", minWidth: d.fat > 0 ? 4 : 0 }} />
@@ -5105,7 +5115,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Metrica icon="🧑‍🍳" label="Garçons ativos" valor={relGarcons.length} cor="#7b1a0a" />
             <Metrica icon="🧾" label="Total de vendas" valor={relGarcons.reduce((s,g)=>s+g.vendas,0)} cor="#3b82f6" />
-            <Metrica icon="💰" label="Faturamento" valor={"R$ " + relGarcons.reduce((s,g)=>s+g.total,0).toFixed(2)} cor="#10b981" />
+            <Metrica icon="💰" label="Faturamento" valor={fmtBR(relGarcons.reduce((s,g)=>s+g.total,0))} cor="#10b981" />
           </div>
 
           {relGarcons.length === 0 ? (
@@ -5123,7 +5133,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                     <div style={{ fontSize: 11, opacity: 0.8, textTransform: "uppercase", letterSpacing: 1 }}>Melhor desempenho</div>
                     <div style={{ fontWeight: 800, fontSize: 20 }}>{relGarcons[0].nome}</div>
                     <div style={{ fontSize: 13, opacity: 0.9, marginTop: 2 }}>
-                      R$ {relGarcons[0].total.toFixed(2)} · {relGarcons[0].vendas} venda{relGarcons[0].vendas !== 1 ? "s" : ""} · ticket médio R$ {relGarcons[0].ticketMedio.toFixed(2)}
+                      {fmtBR(relGarcons[0].total)} · {relGarcons[0].vendas} venda{relGarcons[0].vendas !== 1 ? "s" : ""} · ticket médio {fmtBR(relGarcons[0].ticketMedio)}
                     </div>
                   </div>
                 </div>
@@ -5146,10 +5156,10 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                             <div style={{ fontWeight: 700, fontSize: 14 }}>
                               {["🥇","🥈","🥉"][i] || `${i+1}º`} {g.nome}
                             </div>
-                            <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>R$ {g.total.toFixed(2)}</div>
+                            <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>{fmtBR(g.total)}</div>
                           </div>
                           <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
-                            {g.vendas} venda{g.vendas !== 1 ? "s" : ""} · {g.mesas} mesa{g.mesas !== 1 ? "s" : ""} · ticket médio R$ {g.ticketMedio.toFixed(2)}
+                            {g.vendas} venda{g.vendas !== 1 ? "s" : ""} · {g.mesas} mesa{g.mesas !== 1 ? "s" : ""} · ticket médio {fmtBR(g.ticketMedio)}
                             {g.itemMaisVendido && g.itemMaisVendido !== "—" && ` · ❤️ ${g.itemMaisVendido}`}
                           </div>
                         </div>
@@ -5184,10 +5194,10 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
             <>
               {/* Cards principais */}
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <Metrica icon="💰" label="Faturamento" valor={"R$ " + relLucro.faturamento.toFixed(2)} cor="#3b82f6" />
-                <Metrica icon="📦" label="Custo total" valor={"R$ " + relLucro.custoTotal.toFixed(2)} cor="#f59e0b" />
-                <Metrica icon="✅" label="Lucro líquido" valor={"R$ " + relLucro.lucroTotal.toFixed(2)} cor={relLucro.lucroTotal >= 0 ? "#10b981" : "#ef4444"} />
-                <Metrica icon="📊" label="Margem" valor={relLucro.margem.toFixed(1) + "%"} cor={relLucro.margem >= 40 ? "#10b981" : relLucro.margem >= 20 ? "#f59e0b" : "#ef4444"} />
+                <Metrica icon="💰" label="Faturamento" valor={fmtBR(relLucro.faturamento)} cor="#3b82f6" />
+                <Metrica icon="📦" label="Custo total" valor={fmtBR(relLucro.custoTotal)} cor="#f59e0b" />
+                <Metrica icon="✅" label="Lucro líquido" valor={fmtBR(relLucro.lucroTotal)} cor={relLucro.lucroTotal >= 0 ? "#10b981" : "#ef4444"} />
+                <Metrica icon="📊" label="Margem" valor={relLucro.margem.toFixed(1).replace(".", ",") + "%"} cor={relLucro.margem >= 40 ? "#10b981" : relLucro.margem >= 20 ? "#f59e0b" : "#ef4444"} />
               </div>
 
               {/* Aviso de itens sem custo cadastrado */}
@@ -5211,11 +5221,11 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                       <div key={d.dia} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px dashed #f0f0f0" }}>
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 13 }}>{dataFmt}</div>
-                          <div style={{ fontSize: 11, color: "#888" }}>Fat: R$ {d.faturamento.toFixed(2)} · Custo: R$ {d.custo.toFixed(2)}</div>
+                          <div style={{ fontSize: 11, color: "#888" }}>Fat: {fmtBR(d.faturamento)} · Custo: {fmtBR(d.custo)}</div>
                         </div>
                         <div style={{ textAlign: "right" }}>
-                          <div style={{ fontWeight: 800, fontSize: 14, color: corLucro }}>R$ {d.lucro.toFixed(2)}</div>
-                          <div style={{ fontSize: 10, color: "#888" }}>{margem.toFixed(1)}% margem</div>
+                          <div style={{ fontWeight: 800, fontSize: 14, color: corLucro }}>{fmtBR(d.lucro)}</div>
+                          <div style={{ fontSize: 10, color: "#888" }}>{margem.toFixed(1).replace(".", ",")}% margem</div>
                         </div>
                       </div>
                     );
@@ -5238,7 +5248,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                             {!it.temCusto && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: 4 }}>⚠️ sem custo</span>}
                           </span>
                           <div style={{ textAlign: "right" }}>
-                            <span style={{ fontWeight: 700, color: it.lucro >= 0 ? "#10b981" : "#ef4444" }}>R$ {it.lucro.toFixed(2)}</span>
+                            <span style={{ fontWeight: 700, color: it.lucro >= 0 ? "#10b981" : "#ef4444" }}>{fmtBR(it.lucro)}</span>
                             <span style={{ fontSize: 10, color: "#aaa", marginLeft: 6 }}>{it.qty}x · {margem.toFixed(0)}%</span>
                           </div>
                         </div>
@@ -5280,9 +5290,9 @@ function Clientes({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
           <div><div style={{ fontWeight: 800, fontSize: 17, color: "#1a1a1a" }}>{cd.nome}</div><div style={{ fontSize: 13, color: "#888", marginTop: 2 }}>📞 {cd.telefone}</div><div style={{ fontSize: 12, color: "#aaa", marginTop: 2 }}>Cliente desde {dataFmt(cd.primeiroPedido)}</div></div>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <Metrica icon="💰" label="Total gasto" valor={"R$ " + cd.totalGasto.toFixed(2)} cor="#10b981" />
+          <Metrica icon="💰" label="Total gasto" valor={fmtBR(cd.totalGasto)} cor="#10b981" />
           <Metrica icon="📦" label="Pedidos" valor={cd.totalPedidos} sub={cd.entregues + " entregues"} cor="#3b82f6" />
-          <Metrica icon="🎯" label="Ticket médio" valor={"R$ " + cd.ticketMedio.toFixed(2)} cor="#7b1a0a" />
+          <Metrica icon="🎯" label="Ticket médio" valor={fmtBR(cd.ticketMedio)} cor="#7b1a0a" />
         </div>
         {cd.favoritos.length > 0 && (
           <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
@@ -5300,12 +5310,12 @@ function Clientes({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
                 <div><span style={{ fontWeight: 700, fontSize: 13 }}>Pedido #{p.id}</span><div style={{ fontSize: 11, color: "#aaa", marginTop: 1 }}>{dtFmt(p.horario)}</div></div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                   <Badge status={p.status} />
-                  <span style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>R$ {totalPedido(p).toFixed(2)}</span>
-                  {p.desconto > 0 && <span style={{ fontSize: 11, color: "#8b5cf6" }}>🎟️ -{p.desconto.toFixed(2)}</span>}
+                  <span style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>{fmtBR(totalPedido(p))}</span>
+                  {p.desconto > 0 && <span style={{ fontSize: 11, color: "#8b5cf6" }}>🎟️ -{fmtBR(p.desconto)}</span>}
                 </div>
               </div>
               <div style={{ background: "#fafafa", borderRadius: 8, padding: "8px 10px" }}>
-                {p.itens.map((it, idx) => <div key={idx} style={{ fontSize: 12, color: "#555", padding: "2px 0", display: "flex", justifyContent: "space-between" }}><span>{it.qty || 1}x {it.nome}</span><span style={{ color: "#999" }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span></div>)}
+                {p.itens.map((it, idx) => <div key={idx} style={{ fontSize: 12, color: "#555", padding: "2px 0", display: "flex", justifyContent: "space-between" }}><span>{it.qty || 1}x {it.nome}</span><span style={{ color: "#999" }}>{fmtBR(((it.qty || 1) * it.preco))}</span></div>)}
               </div>
               {p.obs && <div style={{ fontSize: 12, color: "#92400e", marginTop: 6 }}>⚠️ {p.obs}</div>}
               {p.cupom && <div style={{ fontSize: 11, color: "#8b5cf6", marginTop: 4 }}>🎟️ Cupom: {p.cupom}</div>}
@@ -5338,7 +5348,7 @@ function Clientes({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
             {c.favoritos.length > 0 && <div style={{ fontSize: 11, color: "#888", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>❤️ {c.favoritos[0]}{c.favoritos[1] ? ", " + c.favoritos[1] : ""}</div>}
           </div>
           <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>R$ {c.totalGasto.toFixed(2)}</div>
+            <div style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a" }}>{fmtBR(c.totalGasto)}</div>
             <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{c.totalPedidos} pedido{c.totalPedidos !== 1 ? "s" : ""}</div>
             <div style={{ fontSize: 10, color: "#bbb", marginTop: 1 }}>{tempoAtras(c.ultimoPedido)}</div>
           </div>
@@ -5407,7 +5417,7 @@ function PedidoCard({ pedido, onStatus, onPagamento, expanded, onToggle, atualiz
           <div style={{ fontSize: 12, color: T.gray, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📍 {pedido.endereco}</div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: editMode ? T.blue : T.wine }}>R$ {editMode ? editTotal.toFixed(2) : total.toFixed(2)}</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: editMode ? T.blue : T.wine }}>{fmtBR(editMode ? editTotal : total)}</div>
           <div style={{ fontSize: 11, color: T.gray, marginTop: 1 }}>⏱️ {pedido.tempoPreparo || "—"}min</div>
           {pedido.pagamento && <div style={{ fontSize: 11, color: T.gray, marginTop: 1 }}>{rotuloForma(pedido.pagamento)}</div>}
         </div>
@@ -5428,7 +5438,7 @@ function PedidoCard({ pedido, onStatus, onPagamento, expanded, onToggle, atualiz
                       <span style={{ fontWeight: 800, minWidth: 18, textAlign: "center" }}>{it.qty}</span>
                       <button onClick={() => editQty(i, 1)} style={{ width: 26, height: 26, borderRadius: "50%", border: "none", background: T.greenL, color: T.green, fontWeight: 800, fontSize: 15, cursor: "pointer" }}>+</button>
                     </div>
-                    <span style={{ fontWeight: 600, fontSize: 13, minWidth: 60, textAlign: "right" }}>R$ {(it.qty * it.preco).toFixed(2)}</span>
+                    <span style={{ fontWeight: 600, fontSize: 13, minWidth: 60, textAlign: "right" }}>{fmtBR((it.qty * it.preco))}</span>
                   </div>
                 ))}
                 {editItens.length === 0 && <div style={{ textAlign: "center", padding: 10, color: T.gray, fontSize: 13 }}>Nenhum item</div>}
@@ -5442,7 +5452,7 @@ function PedidoCard({ pedido, onStatus, onPagamento, expanded, onToggle, atualiz
                       {cardapioFiltrado.slice(0, 10).map(c => (
                         <div key={c.id} onClick={() => adicionarItem(c)} style={{ padding: "8px 10px", cursor: "pointer", display: "flex", justifyContent: "space-between", fontSize: 13, borderBottom: `1px solid ${T.grayL}` }}
                           onMouseEnter={e => e.currentTarget.style.background = T.grayLL} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                          <span>{c.nome}</span><span style={{ color: T.gray }}>R$ {c.preco.toFixed(2)}</span>
+                          <span>{c.nome}</span><span style={{ color: T.gray }}>{fmtBR(c.preco)}</span>
                         </div>
                       ))}
                       {cardapioFiltrado.length === 0 && <div style={{ padding: 10, textAlign: "center", color: T.gray, fontSize: 12 }}>Nenhum item encontrado</div>}
@@ -5461,14 +5471,14 @@ function PedidoCard({ pedido, onStatus, onPagamento, expanded, onToggle, atualiz
                 {(pedido.itens || []).map((it, i) => (
                   <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.grayL}`, fontSize: 13, color: T.dark }}>
                     <span style={{ color: T.gray }}>{it.qty || 1}× <span style={{ color: T.dark }}>{it.nome}</span></span>
-                    <span style={{ fontWeight: 600, color: T.dark }}>R$ {((it.qty || 1) * it.preco).toFixed(2)}</span>
+                    <span style={{ fontWeight: 600, color: T.dark }}>{fmtBR(((it.qty || 1) * it.preco))}</span>
                   </div>
                 ))}
               </>
             )}
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.gray }}><span>Taxa de entrega</span><span>R$ {(Number(taxaEntrega)||0).toFixed(2)}</span></div>
-            {(editMode ? pedido.desconto : pedido.desconto) > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.purple }}><span>🎟️ Desconto ({pedido.cupom})</span><span>-R$ {pedido.desconto.toFixed(2)}</span></div>}
-            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 4, borderTop: `1px solid ${T.grayL}`, fontSize: 15, fontWeight: 700, color: editMode ? T.blue : T.wine }}><span>Total</span><span>R$ {editMode ? editTotal.toFixed(2) : total.toFixed(2)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.gray }}><span>Taxa de entrega</span><span>{fmtBR((Number(taxaEntrega)||0))}</span></div>
+            {(editMode ? pedido.desconto : pedido.desconto) > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12, color: T.purple }}><span>🎟️ Desconto ({pedido.cupom})</span><span>-{fmtBR(pedido.desconto)}</span></div>}
+            <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, marginTop: 4, borderTop: `1px solid ${T.grayL}`, fontSize: 15, fontWeight: 700, color: editMode ? T.blue : T.wine }}><span>Total</span><span>{fmtBR(editMode ? editTotal : total)}</span></div>
           </div>
           {!editMode && pedido.obs && <div style={{ background: T.amberL, border: `1px solid ${T.amber}40`, borderRadius: T.radiusS, padding: "8px 12px", marginBottom: 12, fontSize: 13, color: T.amber }}>⚠️ <strong>Obs:</strong> {pedido.obs}</div>}
           <div style={{ fontSize: 12, color: T.gray, marginBottom: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -5616,7 +5626,7 @@ function migrarMesa(m) {
   // migra formato antigo (itens/rodadas/cliente no nível da mesa)
   return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
 }
-function fmtR(v) { return "R$ "+v.toFixed(2); }
+function fmtR(v) { return fmtBR(v); }
 // "Comanda 2 · Ana": com o nome da pessoa, quando tiver
 function rotuloComanda(sc) {
   const nome = String(sc?.cliente || "").trim();
@@ -6247,9 +6257,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
 
     const win = abrirJanelaImpressao("width=400,height=600");
     if (!win) return;
-    const linhas = (venda.itens || []).map(it => `<div class="l"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${(((it.qty||1)*(it.preco||0))).toFixed(2)}</span></div>`).join("");
+    const linhas = (venda.itens || []).map(it => `<div class="l"><span>${it.qty||1}x ${it.nome}</span><span>${fmtBR((((it.qty||1)*(it.preco||0))))}</span></div>`).join("");
     const pagos = Array.isArray(venda.pagamentos) && venda.pagamentos.length
-      ? venda.pagamentos.map(pg => `<div class="l"><span>${({pix:"Pix",cartao:"Cartão",dinheiro:"Dinheiro"})[pg.tipo]||pg.tipo}</span><span>R$ ${(Number(pg.valor)||0).toFixed(2)}</span></div>`).join("")
+      ? venda.pagamentos.map(pg => `<div class="l"><span>${({pix:"Pix",cartao:"Cartão",dinheiro:"Dinheiro"})[pg.tipo]||pg.tipo}</span><span>${fmtBR((Number(pg.valor)||0))}</span></div>`).join("")
       : `<div class="l"><span>Pagamento</span><span>${venda.pagamentoTexto || venda.pagamento || ""}</span></div>`;
     win.document.write(`<!DOCTYPE html><html><head><title>Comprovante Mesa ${venda.mesa}</title><style>
       body{font-family:'Courier New',monospace;padding:20px;max-width:320px;margin:0 auto}
@@ -6265,11 +6275,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       <div class="sub">Comprovante — Mesa ${venda.mesa}${venda.subComanda ? " · " + venda.subComanda : ""}</div>
       <div class="info">${venda.cliente && venda.cliente !== "—" ? "Cliente: " + venda.cliente + "<br>" : ""}${venda.garcom && venda.garcom !== "—" ? "Garçom: " + venda.garcom + "<br>" : ""}Fechamento: ${new Date(venda.fechamento).toLocaleString("pt-BR")}</div>
       ${linhas}
-      ${Number(venda.desconto) > 0 ? `<div class="l"><span>Desconto${venda.descontoInfo ? " (" + venda.descontoInfo + ")" : ""}</span><span>- R$ ${Number(venda.desconto).toFixed(2)}</span></div>` : ""}
-      <div class="t"><span>TOTAL</span><span>R$ ${Number(venda.total || 0).toFixed(2)}</span></div>
-      ${Number(venda.gorjeta) > 0 ? `<div class="l"><span>Gorjeta</span><span>+ R$ ${Number(venda.gorjeta).toFixed(2)}</span></div>` : ""}
+      ${Number(venda.desconto) > 0 ? `<div class="l"><span>Desconto${venda.descontoInfo ? " (" + venda.descontoInfo + ")" : ""}</span><span>- ${fmtBR(Number(venda.desconto))}</span></div>` : ""}
+      <div class="t"><span>TOTAL</span><span>${fmtBR(Number(venda.total || 0))}</span></div>
+      ${Number(venda.gorjeta) > 0 ? `<div class="l"><span>Gorjeta</span><span>+ ${fmtBR(Number(venda.gorjeta))}</span></div>` : ""}
       ${pagos}
-      ${Number(venda.troco) > 0 ? `<div class="l"><span>Recebido em dinheiro</span><span>R$ ${Number(venda.recebidoDinheiro).toFixed(2)}</span></div><div class="t"><span>TROCO</span><span>R$ ${Number(venda.troco).toFixed(2)}</span></div>` : ""}
+      ${Number(venda.troco) > 0 ? `<div class="l"><span>Recebido em dinheiro</span><span>${fmtBR(Number(venda.recebidoDinheiro))}</span></div><div class="t"><span>TROCO</span><span>${fmtBR(Number(venda.troco))}</span></div>` : ""}
       <div class="rodape">Obrigado pela visita!</div>
       <br><button onclick="window.print()" style="width:100%;padding:10px;font-size:14px;cursor:pointer">🖨️ Imprimir</button>
     </body></html>`);
@@ -7452,12 +7462,12 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               <h2>👑 Império dos Espetos</h2>
               <div class="sub">Comanda — Mesa ${mesa.id}${fecharUma?` | ${sc.label}`:""}</div>
               <div class="info">${nomeCliente&&nomeCliente!=="—"?'Cliente: '+nomeCliente+'<br>':''}${nomeGarcom&&nomeGarcom!=="—"?'Garçom: '+nomeGarcom+'<br>':''}Abertura: ${abertura?new Date(abertura).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'-'}</div>
-              ${itensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
-              ${desc.valor > 0 ? `<div class="linha"><span>Subtotal</span><span>R$ ${subtotalFechar.toFixed(2)}</span></div>
-              <div class="linha"><span>Desconto${desc.texto?' ('+desc.texto+')':''}</span><span>− R$ ${desc.valor.toFixed(2)}</span></div>` : ''}
-              <div class="total"><span>TOTAL</span><span>R$ ${totalComanda.toFixed(2)}</span></div>
-              ${gor.valor > 0 ? `<div class="linha"><span>Gorjeta${gor.texto?' ('+gor.texto+')':''}</span><span>+ R$ ${gor.valor.toFixed(2)}</span></div>
-              <div class="total"><span>A PAGAR</span><span>R$ ${totalFechar.toFixed(2)}</span></div>` : ''}
+              ${itensFechar.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>${fmtBR(((it.qty||1)*it.preco))}</span></div>`).join('')}
+              ${desc.valor > 0 ? `<div class="linha"><span>Subtotal</span><span>${fmtBR(subtotalFechar)}</span></div>
+              <div class="linha"><span>Desconto${desc.texto?' ('+desc.texto+')':''}</span><span>− ${fmtBR(desc.valor)}</span></div>` : ''}
+              <div class="total"><span>TOTAL</span><span>${fmtBR(totalComanda)}</span></div>
+              ${gor.valor > 0 ? `<div class="linha"><span>Gorjeta${gor.texto?' ('+gor.texto+')':''}</span><span>+ ${fmtBR(gor.valor)}</span></div>
+              <div class="total"><span>A PAGAR</span><span>${fmtBR(totalFechar)}</span></div>` : ''}
               <div class="info" style="margin-top:12px">Pagamento: ${pagTexto}</div>
               <div class="rodape">Obrigado pela visita! 🍢</div>
               <br><button onclick="window.print()">🖨️ Imprimir</button>
@@ -7698,8 +7708,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     Data: <strong>${agora.toLocaleDateString('pt-BR')}</strong> &nbsp; ${agora.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
   </div>
   <hr>
-  ${todosItens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>R$ ${((it.qty||1)*it.preco).toFixed(2)}</span></div>`).join('')}
-  <div class="total"><span>TOTAL</span><span>R$ ${totalAcumulado.toFixed(2)}</span></div>
+  ${todosItens.map(it=>`<div class="linha"><span>${it.qty||1}x ${it.nome}</span><span>${fmtBR(((it.qty||1)*it.preco))}</span></div>`).join('')}
+  <div class="total"><span>TOTAL</span><span>${fmtBR(totalAcumulado)}</span></div>
   <div class="rodape">Obrigado pela visita! 🍢</div>
 </body></html>`);
                   win.document.close();
@@ -8226,7 +8236,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
       if (!("Notification" in window)) return;
       if (Notification.permission !== "granted") return;
       const total = totalPedido(pedido, Number(config?.taxaEntrega) || TAXA_ENTREGA_PADRAO);
-      const corpo = `${pedido.cliente || "Cliente"} — R$ ${total.toFixed(2)}\n📍 ${pedido.endereco || ""}`;
+      const corpo = `${pedido.cliente || "Cliente"} — ${fmtBR(total)}\n📍 ${pedido.endereco || ""}`;
       const n = new Notification(`🔔 Novo pedido #${pedido.id}`, {
         body: corpo,
         icon: "/icon-192.png",
@@ -8789,8 +8799,8 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
               <div style={{ fontSize: 10, color: T.gray, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
                 Faturamento hoje <BotaoOlho aberto={verFaturamento} onClick={() => setVerFaturamento(v => !v)} />
               </div>
-              <div className="serif-title" style={{ fontWeight: 700, fontSize: 24, color: T.wine, lineHeight: 1.1 }}>{verFaturamento ? "R$ " + totalHoje.toFixed(2) : VALOR_OCULTO}</div>
-              <div style={{ fontSize: 10, color: T.gray, marginTop: 3 }}>{verFaturamento ? `🛵 R$ ${totalDeliveryHoje.toFixed(2)} · 🍽️ R$ ${totalSalaoHoje.toFixed(2)}` : "🛵 •••• · 🍽️ ••••"}</div>
+              <div className="serif-title" style={{ fontWeight: 700, fontSize: 24, color: T.wine, lineHeight: 1.1 }}>{verFaturamento ? fmtBR(totalHoje) : VALOR_OCULTO}</div>
+              <div style={{ fontSize: 10, color: T.gray, marginTop: 3 }}>{verFaturamento ? `🛵 ${fmtBR(totalDeliveryHoje)} · 🍽️ ${fmtBR(totalSalaoHoje)}` : "🛵 •••• · 🍽️ ••••"}</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
               <span style={{ background: statusLoja.aberto ? T.greenL : T.redL, color: statusLoja.aberto ? T.green : T.red, borderRadius: 20, padding: "3px 12px", fontWeight: 600, fontSize: 11, border: `1px solid ${statusLoja.aberto ? T.green+"30" : T.red+"30"}` }}>
@@ -8828,7 +8838,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
               <div style={{ fontSize: 9, color: T.gray, textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
                 Hoje <BotaoOlho aberto={verFaturamento} onClick={() => setVerFaturamento(v => !v)} />
               </div>
-              <div className="serif-title" style={{ fontWeight: 700, fontSize: 18, color: T.wine, lineHeight: 1 }}>{verFaturamento ? "R$ " + totalHoje.toFixed(2) : VALOR_OCULTO}</div>
+              <div className="serif-title" style={{ fontWeight: 700, fontSize: 18, color: T.wine, lineHeight: 1 }}>{verFaturamento ? fmtBR(totalHoje) : VALOR_OCULTO}</div>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <button onClick={fetchAll} title="Atualizar" style={{ background: T.grayLL, border: `1px solid ${T.grayL}`, color: T.gray, cursor: "pointer", fontSize: 14, padding: "6px 10px", borderRadius: 10 }}>↻</button>
