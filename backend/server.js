@@ -238,6 +238,20 @@ const DespesaSchema = new mongoose.Schema({
   descricao: { type: String, default: "", trim: true, maxlength: 200 },
   valor:     { type: Number, required: true, min: 0.01 },
   forma:     { type: String, default: "", enum: ["", "dinheiro", "pix", "cartao", "boleto", "outro"] },
+  // Pago com dinheiro da gaveta: sai do esperado na conferência do caixa
+  doCaixa:   { type: Boolean, default: false },
+  criadoPor: { type: String, default: "" },
+}, { timestamps: true });
+
+// ── MOVIMENTOS DO CAIXA ────────────────────────────────────────
+// Abertura (fundo de troco), retirada (levar ao banco) e reforço de troco.
+// Cada um vale para o período de caixa em que foi lançado (do último
+// "Fechar caixa" até o próximo).
+const CaixaMovimentoSchema = new mongoose.Schema({
+  tipo:      { type: String, required: true, enum: ["abertura", "retirada", "reforco"] },
+  valor:     { type: Number, required: true, min: 0 },
+  motivo:    { type: String, default: "", trim: true, maxlength: 120 },
+  data:      { type: Date, default: Date.now },
   criadoPor: { type: String, default: "" },
 }, { timestamps: true });
 
@@ -382,6 +396,20 @@ const FechamentoDiaSchema = new mongoose.Schema({
   // separado e o que explica porPagamento ser maior que totalSalao.
   totalGorjetas:   { type: Number, default: 0 },
   porGarcom: Array,   // [{ nome, vendas, total, gorjeta }]
+  // Conferência da gaveta: quanto deveria ter x quanto foi contado
+  caixa: {
+    abertura:         { type: Number, default: null },   // fundo de troco informado em "Abrir caixa"
+    dinheiroSalao:    { type: Number, default: 0 },
+    dinheiroDelivery: { type: Number, default: 0 },
+    deliveryNaGaveta: { type: Boolean, default: true },  // o dinheiro do delivery entrou na gaveta?
+    reforcos:         { type: Number, default: 0 },
+    retiradas:        { type: Number, default: 0 },
+    gastosDoCaixa:    { type: Number, default: 0 },
+    esperado:         { type: Number, default: null },
+    contado:          { type: Number, default: null },
+    diferenca:        { type: Number, default: null },   // contado - esperado (+ sobrou, - faltou)
+    movimentos:       { type: Array, default: [] },      // [{ tipo, valor, motivo, data }]
+  },
   obs: String,
   criadoPor: String,
 });
@@ -428,6 +456,7 @@ const EstoqueDB    = mongoose.model("Estoque",        EstoqueSchema);
 const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
 const DespesaDB    = mongoose.model("Despesa",        DespesaSchema);
+const CaixaMovimentoDB = mongoose.model("CaixaMovimento", CaixaMovimentoSchema);
 const NotaFiscalDB = mongoose.model("NotaFiscal",     NotaFiscalSchema);
 
 // ── MESAS DO SALÃO ────────────────────────────────────────────
@@ -2488,6 +2517,7 @@ function validarDespesa(b, parcial = false) {
   }
   if (b.descricao !== undefined) out.descricao = String(b.descricao || "").trim().slice(0, 200);
   if (b.forma !== undefined) out.forma = ["dinheiro", "pix", "cartao", "boleto", "outro"].includes(b.forma) ? b.forma : "";
+  if (b.doCaixa !== undefined) out.doCaixa = b.doCaixa === true || b.doCaixa === "true";
   return { dados: out };
 }
 
@@ -2786,62 +2816,180 @@ app.get("/garcons/relatorio", authMiddleware(["dono"]), async (req, res) => {
 });
 
 // ── FECHAMENTO DO DIA API ─────────────────────────────────────
+// Tudo que aconteceu num período de caixa [inicio, fim): vendas, delivery,
+// formas de pagamento e garçons. Usado pelo "Fechar caixa" e pela
+// conferência da gaveta, para os dois sempre baterem.
+async function resumoDoPeriodo(inicio, fim) {
+  // Pedidos delivery entregues neste periodo. Conta pelo momento da entrega;
+  // pedido antigo (sem entregueEm) conta pelo horario em que foi feito.
+  const pedidosHoje = await PedidoDB.find({ status: "entregue", $or: [
+    { entregueEm: { $gte: inicio, $lt: fim } },
+    { entregueEm: null, horario: { $gte: inicio, $lt: fim } },
+  ] }).lean();
+  const totalDelivery = pedidosHoje.reduce((s, p) => s + (p.total || 0), 0);
+
+  const vendasHoje = await VendaSalaoDB.find({ fechamento: { $gte: inicio, $lt: fim } }).lean();
+  const totalSalao = vendasHoje.reduce((s, v) => s + (v.total || 0), 0);
+  const totalGorjetas = vendasHoje.reduce((s, v) => s + (Number(v.gorjeta) || 0), 0);
+
+  // Por forma de pagamento. Comanda dividida entra em cada forma pelo valor
+  // que coube a ela. O dinheiro já é líquido do troco (o que ficou na gaveta).
+  const porPagamento = { pix: 0, cartao: 0, dinheiro: 0 };
+  let dinheiroSalao = 0;
+  vendasHoje.forEach(v => {
+    const partes = Array.isArray(v.pagamentos) && v.pagamentos.length
+      ? v.pagamentos
+      : [{ tipo: v.pagamento || "dinheiro", valor: v.total || 0 }];
+    partes.forEach(p => {
+      if (!FORMAS_PAGAMENTO.includes(p.tipo)) return;
+      porPagamento[p.tipo] += Number(p.valor) || 0;
+      if (p.tipo === "dinheiro") dinheiroSalao += Number(p.valor) || 0;
+    });
+  });
+  // Delivery entra pela forma que o caixa marcou no cartao. Sem marcacao,
+  // vai para deliverySemForma: a conta continua fechando e a dona ve o que
+  // ficou faltando marcar.
+  let deliverySemForma = 0, dinheiroDelivery = 0;
+  pedidosHoje.forEach(p => {
+    if (FORMAS_PAGAMENTO.includes(p.pagamento)) {
+      porPagamento[p.pagamento] += p.total || 0;
+      if (p.pagamento === "dinheiro") dinheiroDelivery += p.total || 0;
+    } else deliverySemForma += p.total || 0;
+  });
+
+  const gMap = {};
+  vendasHoje.forEach(v => {
+    const g = v.garcom && v.garcom !== "—" ? v.garcom : "Sem garçom";
+    if (!gMap[g]) gMap[g] = { nome: g, vendas: 0, total: 0, gorjeta: 0 };
+    gMap[g].vendas += 1;
+    gMap[g].total += v.total || 0;
+    gMap[g].gorjeta += Number(v.gorjeta) || 0;
+  });
+  Object.values(gMap).forEach(g => { g.gorjeta = parseFloat(g.gorjeta.toFixed(2)); });
+  const porGarcom = Object.values(gMap).sort((a, b) => b.total - a.total);
+
+  return { pedidosHoje, vendasHoje, totalDelivery, totalSalao, totalGorjetas, porPagamento, deliverySemForma, dinheiroSalao, dinheiroDelivery, porGarcom };
+}
+
+// Conferência da gaveta do período: fundo de abertura + dinheiro das vendas
+// + reforços − retiradas − gastos pagos com dinheiro da gaveta = esperado.
+async function conferenciaDoCaixa(inicio, fim, resumo) {
+  const [movimentos, gastos] = await Promise.all([
+    CaixaMovimentoDB.find({ data: { $gte: inicio, $lt: fim } }).sort({ data: 1 }).lean(),
+    DespesaDB.find({ doCaixa: true, data: { $gte: inicio, $lt: fim } }).sort({ data: 1 }).lean(),
+  ]);
+  const abertura = movimentos.filter(m => m.tipo === "abertura").pop();   // a última vale
+  const reforcos = movimentos.filter(m => m.tipo === "reforco");
+  const retiradas = movimentos.filter(m => m.tipo === "retirada");
+  const soma = (l) => arred(l.reduce((s, m) => s + (Number(m.valor) || 0), 0));
+  const c = {
+    abertura: abertura ? arred(abertura.valor) : null,
+    aberturaEm: abertura ? abertura.data : null,
+    dinheiroSalao: arred(resumo.dinheiroSalao),
+    dinheiroDelivery: arred(resumo.dinheiroDelivery),
+    reforcos: soma(reforcos),
+    retiradas: soma(retiradas),
+    gastosDoCaixa: soma(gastos),
+    movimentos: [
+      ...movimentos.filter(m => m.tipo !== "abertura").map(m => ({ id: m._id, tipo: m.tipo, valor: m.valor, motivo: m.motivo, data: m.data })),
+      ...gastos.map(g => ({ id: g._id, tipo: "gasto", valor: g.valor, motivo: [g.tipo, g.descricao].filter(Boolean).join(" — "), data: g.data })),
+    ].sort((a, b) => new Date(a.data) - new Date(b.data)),
+  };
+  const base = (c.abertura || 0) + c.dinheiroSalao + c.reforcos - c.retiradas - c.gastosDoCaixa;
+  c.esperadoSemDelivery = arred(base);
+  c.esperadoComDelivery = arred(base + c.dinheiroDelivery);
+  return c;
+}
+
+const lerValorCaixa = (v) => {
+  const n = typeof v === "string" ? parseFloat(v.replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".")) : Number(v);
+  return Number.isFinite(n) ? arred(n) : NaN;
+};
+
+// GET /caixa/conferencia — como está a gaveta agora (período aberto)
+app.get("/caixa/conferencia", authMiddleware(["dono"]), async (req, res) => {
+  try {
+    const { inicio } = await periodoAbertoDoCaixa();
+    const agora = new Date();
+    const resumo = await resumoDoPeriodo(inicio, agora);
+    const c = await conferenciaDoCaixa(inicio, agora, resumo);
+    res.json({ inicio, agora, ...c });
+  } catch (e) {
+    console.error("Erro na conferencia do caixa:", e.message);
+    res.status(500).json({ erro: "Erro ao montar a conferência do caixa" });
+  }
+});
+
+// POST /caixa/abrir { valor } — fundo de troco do período. Abrir de novo no
+// mesmo período corrige o valor (não cria outra abertura).
+app.post("/caixa/abrir", authMiddleware(["dono"]), async (req, res) => {
+  const valor = lerValorCaixa(req.body?.valor);
+  if (!Number.isFinite(valor) || valor < 0) return res.status(400).json({ erro: "Informe quanto tem na gaveta (pode ser 0)" });
+  if (valor > 100000) return res.status(400).json({ erro: "Valor alto demais; confira" });
+  try {
+    const { inicio } = await periodoAbertoDoCaixa();
+    const existente = await CaixaMovimentoDB.findOne({ tipo: "abertura", data: { $gte: inicio } }).sort({ data: -1 });
+    const quem = req.user?.nome || req.user?.role || "";
+    if (existente) {
+      existente.valor = valor; existente.criadoPor = quem;
+      await existente.save();
+      return res.json({ ok: true, corrigido: true, abertura: existente });
+    }
+    const abertura = await CaixaMovimentoDB.create({ tipo: "abertura", valor, motivo: "Fundo de troco", criadoPor: quem });
+    res.status(201).json({ ok: true, abertura });
+  } catch (e) {
+    console.error("Erro ao abrir caixa:", e.message);
+    res.status(500).json({ erro: "Erro ao abrir o caixa" });
+  }
+});
+
+// POST /caixa/movimento { tipo: retirada|reforco, valor, motivo, gasto?: { tipo } }
+// "Pagar motoboy" e compras são gastos de verdade: com `gasto`, vira um
+// lançamento em Gastos pago com dinheiro da gaveta (sai do esperado igual).
+app.post("/caixa/movimento", authMiddleware(["dono"]), async (req, res) => {
+  const { tipo, motivo, gasto } = req.body || {};
+  const valor = lerValorCaixa(req.body?.valor);
+  if (!["retirada", "reforco"].includes(tipo)) return res.status(400).json({ erro: "Tipo deve ser retirada ou reforco" });
+  if (!Number.isFinite(valor) || valor <= 0) return res.status(400).json({ erro: "Informe o valor" });
+  if (valor > 100000) return res.status(400).json({ erro: "Valor alto demais; confira" });
+  const quem = req.user?.nome || req.user?.role || "";
+  try {
+    if (tipo === "retirada" && gasto && typeof gasto === "object") {
+      const tipoGasto = String(gasto.tipo || "Outro").trim().slice(0, 40) || "Outro";
+      const d = await DespesaDB.create({ data: new Date(), tipo: tipoGasto, descricao: String(motivo || "").trim().slice(0, 200), valor, doCaixa: true, criadoPor: quem });
+      return res.status(201).json({ ok: true, gasto: d });
+    }
+    const m = await CaixaMovimentoDB.create({ tipo, valor, motivo: String(motivo || "").trim().slice(0, 120), criadoPor: quem });
+    res.status(201).json({ ok: true, movimento: m });
+  } catch (e) {
+    console.error("Erro no movimento de caixa:", e.message);
+    res.status(500).json({ erro: "Erro ao registrar o movimento" });
+  }
+});
+
+// DELETE /caixa/movimento/:id — só do período ainda aberto
+app.delete("/caixa/movimento/:id", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
+  try {
+    const { inicio } = await periodoAbertoDoCaixa();
+    const m = await CaixaMovimentoDB.findOne({ _id: req.params.id, tipo: { $ne: "abertura" }, data: { $gte: inicio } });
+    if (!m) return res.status(404).json({ erro: "Movimento não encontrado neste caixa" });
+    await m.deleteOne();
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
 app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
   try {
-    const { obs, criadoPor } = req.body;
+    const { obs, criadoPor, contado, deliveryNaGaveta } = req.body;
     // Fecha o periodo que estava aberto: do fim do ultimo fechamento ate
     // AGORA. Nada vira sozinho no relogio — quem define o corte e o botao.
     const { inicio: hoje } = await periodoAbertoDoCaixa();
     const amanha = new Date();              // o corte e o instante do clique
     const dataStr = diaOperacional(amanha); // rotulo do expediente, so para exibir
 
-
-
-    // Pedidos delivery entregues neste periodo. Conta pelo momento da entrega;
-    // pedido antigo (sem entregueEm) conta pelo horario em que foi feito.
-    const pedidosHoje = await PedidoDB.find({ status: "entregue", $or: [
-      { entregueEm: { $gte: hoje, $lt: amanha } },
-      { entregueEm: null, horario: { $gte: hoje, $lt: amanha } },
-    ] }).lean();
-    const totalDelivery = pedidosHoje.reduce((s, p) => s + (p.total || 0), 0);
-
-    // Vendas salão hoje
-    const vendasHoje = await VendaSalaoDB.find({ fechamento: { $gte: hoje, $lt: amanha } }).lean();
-    const totalSalao = vendasHoje.reduce((s, v) => s + (v.total || 0), 0);
-    const totalGorjetas = vendasHoje.reduce((s, v) => s + (Number(v.gorjeta) || 0), 0);
-
-    // Por forma de pagamento
-    // Comanda dividida entra em cada forma pelo valor que coube a ela
-    const porPagamento = { pix: 0, cartao: 0, dinheiro: 0 };
-    vendasHoje.forEach(v => {
-      const partes = Array.isArray(v.pagamentos) && v.pagamentos.length
-        ? v.pagamentos
-        : [{ tipo: v.pagamento || "dinheiro", valor: v.total || 0 }];
-      partes.forEach(p => {
-        if (!FORMAS_PAGAMENTO.includes(p.tipo)) return;
-        porPagamento[p.tipo] += Number(p.valor) || 0;
-      });
-    });
-    // Delivery entra pela forma que o caixa marcou no cartao. Sem marcacao,
-    // vai para deliverySemForma: a conta continua fechando e a dona ve o que
-    // ficou faltando marcar.
-    let deliverySemForma = 0;
-    pedidosHoje.forEach(p => {
-      if (FORMAS_PAGAMENTO.includes(p.pagamento)) porPagamento[p.pagamento] += p.total || 0;
-      else deliverySemForma += p.total || 0;
-    });
-
-    // Por garçom
-    const gMap = {};
-    vendasHoje.forEach(v => {
-      const g = v.garcom && v.garcom !== "—" ? v.garcom : "Sem garçom";
-      if (!gMap[g]) gMap[g] = { nome: g, vendas: 0, total: 0, gorjeta: 0 };
-      gMap[g].vendas += 1;
-      gMap[g].total += v.total || 0;
-      gMap[g].gorjeta += Number(v.gorjeta) || 0;
-    });
-    Object.values(gMap).forEach(g => { g.gorjeta = parseFloat(g.gorjeta.toFixed(2)); });
-    const porGarcom = Object.values(gMap).sort((a, b) => b.total - a.total);
+    const r = await resumoDoPeriodo(hoje, amanha);
+    const { pedidosHoje, vendasHoje, totalDelivery, totalSalao, totalGorjetas, porPagamento, deliverySemForma, porGarcom } = r;
 
     // Fechar sem movimento nenhum so cria registro zerado no historico e
     // confunde a conferencia depois. Melhor recusar e dizer por que.
@@ -2851,6 +2999,13 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
         desde: hoje,
       });
     }
+
+    // Conferência da gaveta. O contado é opcional: nunca trava o fechamento.
+    const c = await conferenciaDoCaixa(hoje, amanha, r);
+    const naGaveta = deliveryNaGaveta !== false && deliveryNaGaveta !== "false";
+    const esperado = naGaveta ? c.esperadoComDelivery : c.esperadoSemDelivery;
+    const contadoN = contado === undefined || contado === null || contado === "" ? null : lerValorCaixa(contado);
+    if (contadoN !== null && !Number.isFinite(contadoN)) return res.status(400).json({ erro: "Valor contado inválido" });
 
     const fechamento = await FechamentoDB.create({
       data: new Date(), dataStr,
@@ -2868,6 +3023,12 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
       },
       deliverySemForma: parseFloat(deliverySemForma.toFixed(2)),
       porGarcom,
+      caixa: {
+        abertura: c.abertura, dinheiroSalao: c.dinheiroSalao, dinheiroDelivery: c.dinheiroDelivery, deliveryNaGaveta: naGaveta,
+        reforcos: c.reforcos, retiradas: c.retiradas, gastosDoCaixa: c.gastosDoCaixa,
+        esperado, contado: contadoN, diferenca: contadoN === null ? null : arred(contadoN - esperado),
+        movimentos: c.movimentos,
+      },
       obs: obs || "",
       criadoPor: criadoPor || "admin",
     });

@@ -3534,6 +3534,158 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
 }
 
 // ── FECHAMENTO DO DIA ─────────────────────────────────────────
+// ── CAIXA: ABRIR, SAÍDAS, REFORÇO E CONFERÊNCIA DA GAVETA ─────
+// A dona abre o caixa com o fundo de troco; ao fechar, o sistema diz quanto
+// deveria ter na gaveta e ela confere com o que contou. Saída com motivo de
+// pagamento (motoboy, compra) vira gasto do mês também, para não lançar duas vezes.
+const MOTIVOS_SAIDA = [
+  { k: "motoboy", rotulo: "Pagar motoboy / entregador", gasto: "Entregador / motoboy" },
+  { k: "compra",  rotulo: "Pagar compra ou conta (vira gasto)", gasto: "escolher" },
+  { k: "banco",   rotulo: "Levar ao banco / guardar", gasto: null },
+  { k: "outro",   rotulo: "Outro motivo (só retirada)", gasto: null },
+];
+const horaCurta = (d) => new Date(d).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+function CaixaGaveta({ backendUrl, conf, recarregar }) {
+  const [modo, setModo] = useState(null);          // abrir | saida | reforco
+  const [valor, setValor] = useState("");
+  const [motivo, setMotivo] = useState("motoboy");
+  const [tipoGasto, setTipoGasto] = useState("Mercadoria / carnes");
+  const [texto, setTexto] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+  const campo = useRef(null);
+
+  function abrirModo(m) { setModo(m); setValor(m === "abrir" && conf?.abertura != null ? String(conf.abertura).replace(".", ",") : ""); setTexto(""); setErro(""); setTimeout(() => campo.current?.focus(), 50); }
+  function fechar() { setModo(null); setErro(""); }
+
+  async function confirmar() {
+    const v = lerValor(valor);
+    if (!Number.isFinite(v) || v < 0 || (modo !== "abrir" && v <= 0)) return setErro("Informe o valor (ex.: 150,00).");
+    setSalvando(true); setErro("");
+    try {
+      let r;
+      if (modo === "abrir") {
+        r = await authFetch(backendUrl + "/caixa/abrir", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ valor: v }) });
+      } else if (modo === "reforco") {
+        r = await authFetch(backendUrl + "/caixa/movimento", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tipo: "reforco", valor: v, motivo: texto.trim() || "Reforço de troco" }) });
+      } else {
+        const m = MOTIVOS_SAIDA.find(x => x.k === motivo) || MOTIVOS_SAIDA[0];
+        const gasto = m.gasto ? { tipo: m.gasto === "escolher" ? tipoGasto : m.gasto } : undefined;
+        const motivoTexto = texto.trim() || (m.k === "motoboy" ? "Pagamento do motoboy" : m.k === "banco" ? "Levado ao banco" : m.rotulo);
+        r = await authFetch(backendUrl + "/caixa/movimento", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tipo: "retirada", valor: v, motivo: motivoTexto, gasto }) });
+      }
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setErro(d.erro || "Não foi possível salvar."); setSalvando(false); return; }
+      setModo(null); setValor(""); setTexto("");
+      recarregar();
+    } catch { setErro("Sem conexão. Tente de novo."); }
+    setSalvando(false);
+  }
+  async function excluir(m) {
+    const rotulo = m.tipo === "gasto" ? "gasto" : m.tipo === "reforco" ? "reforço" : "saída";
+    if (!window.confirm(`Excluir ${rotulo} de ${fmtBR(m.valor)}${m.motivo ? ` (${m.motivo})` : ""}?`)) return;
+    try {
+      const r = await authFetch(backendUrl + (m.tipo === "gasto" ? "/despesas/" : "/caixa/movimento/") + m.id, { method: "DELETE" });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); setErro(e.erro || "Não foi possível excluir."); return; }
+      recarregar();
+    } catch { setErro("Sem conexão. Tente de novo."); }
+  }
+
+  const inp = { width: "100%", padding: "11px 12px", border: "1.5px solid #e0e0e0", borderRadius: 10, fontSize: 15, color: "#333", outline: "none", boxSizing: "border-box", background: "#fff" };
+  const lbl = { fontSize: 11, color: "#888", marginBottom: 4, fontWeight: 600 };
+  const btn = (bg, cor, borda) => ({ flex: "1 1 140px", background: bg, color: cor, border: borda ? `1.5px solid ${borda}` : "none", borderRadius: 10, padding: "11px 8px", fontWeight: 700, fontSize: 13, cursor: "pointer" });
+  const aberto = conf?.abertura != null;
+  const motivoSel = MOTIVOS_SAIDA.find(x => x.k === motivo) || MOTIVOS_SAIDA[0];
+  const icone = { retirada: "➖", reforco: "➕", gasto: "💸" };
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: aberto ? "1.5px solid transparent" : "1.5px solid #f59e0b" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>💵 Gaveta do caixa</div>
+          <div style={{ fontSize: 12, color: aberto ? "#065f46" : "#b45309", marginTop: 2 }}>
+            {!conf ? "Carregando..." : aberto
+              ? <>Caixa aberto às <strong>{horaCurta(conf.aberturaEm)}</strong> com <strong>{fmtBR(conf.abertura)}</strong> de troco</>
+              : "Caixa ainda não foi aberto: informe quanto tem na gaveta."}
+          </div>
+        </div>
+        {conf && (
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: 0.5 }}>Deveria ter agora</div>
+            <div style={{ fontWeight: 800, fontSize: 18, color: "#7b1a0a" }}>{fmtBR(conf.esperadoComDelivery)}</div>
+          </div>
+        )}
+      </div>
+
+      {!modo && (
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <button onClick={() => abrirModo("abrir")} style={btn(aberto ? "#fff" : "linear-gradient(135deg,#7b1a0a,#c0392b)", aberto ? "#7b1a0a" : "#fff", aberto ? "#7b1a0a" : null)}>{aberto ? "✏️ Corrigir abertura" : "🔓 Abrir caixa"}</button>
+          <button onClick={() => abrirModo("saida")} style={btn("#fff", "#b91c1c", "#fca5a5")}>➖ Saída de dinheiro</button>
+          <button onClick={() => abrirModo("reforco")} style={btn("#fff", "#065f46", "#a7f3d0")}>➕ Reforço de troco</button>
+        </div>
+      )}
+
+      {modo && (
+        <div style={{ marginTop: 12, background: "#faf9f8", borderRadius: 12, padding: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 8 }}>
+            {modo === "abrir" ? "🔓 Quanto tem na gaveta agora?" : modo === "saida" ? "➖ Saída de dinheiro da gaveta" : "➕ Reforço de troco"}
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 130px" }}>
+              <div style={lbl}>Valor (R$)</div>
+              <input ref={campo} value={valor} onChange={e => setValor(e.target.value)} placeholder="0,00" inputMode="decimal" style={{ ...inp, fontWeight: 700, fontSize: 18 }} onKeyDown={e => { if (e.key === "Enter") confirmar(); }} />
+            </div>
+            {modo === "saida" && (
+              <div style={{ flex: "2 1 200px" }}>
+                <div style={lbl}>Motivo</div>
+                <select value={motivo} onChange={e => setMotivo(e.target.value)} style={inp}>
+                  {MOTIVOS_SAIDA.map(m => <option key={m.k} value={m.k}>{m.rotulo}</option>)}
+                </select>
+              </div>
+            )}
+            {modo === "saida" && motivoSel.gasto === "escolher" && (
+              <div style={{ flex: "2 1 200px" }}>
+                <div style={lbl}>Tipo do gasto</div>
+                <select value={tipoGasto} onChange={e => setTipoGasto(e.target.value)} style={inp}>
+                  {TIPOS_GASTO.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+          {modo !== "abrir" && (
+            <div style={{ marginTop: 8 }}>
+              <div style={lbl}>Descrição (opcional)</div>
+              <input value={texto} onChange={e => setTexto(e.target.value)} placeholder={modo === "saida" ? "ex.: 3 entregas do João" : "ex.: moedas do banco"} maxLength={120} style={inp} onKeyDown={e => { if (e.key === "Enter") confirmar(); }} />
+            </div>
+          )}
+          {modo === "saida" && motivoSel.gasto && <div style={{ fontSize: 11, color: "#1d4ed8", marginTop: 6 }}>Vai aparecer também em Rel. → Gastos, como pago com dinheiro da gaveta.</div>}
+          {erro && <div style={{ marginTop: 8, color: "#b91c1c", fontSize: 12, fontWeight: 600 }}>{erro}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={confirmar} disabled={salvando} style={{ flex: 2, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 800, fontSize: 14, cursor: "pointer", opacity: salvando ? 0.6 : 1 }}>{salvando ? "Salvando..." : "Confirmar"}</button>
+            <button onClick={fechar} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {conf && (conf.movimentos?.length > 0 || conf.dinheiroSalao > 0 || conf.dinheiroDelivery > 0) && (
+        <div style={{ marginTop: 12, fontSize: 12.5 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#555" }}><span>Fundo de abertura</span><span>{aberto ? fmtBR(conf.abertura) : "—"}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#555" }}><span>+ Vendas do salão em dinheiro</span><span>{fmtBR(conf.dinheiroSalao)}</span></div>
+          {conf.dinheiroDelivery > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#555" }}><span>+ Delivery em dinheiro</span><span>{fmtBR(conf.dinheiroDelivery)}</span></div>}
+          {conf.movimentos.map(m => (
+            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", borderTop: "1px solid #f5f5f5" }}>
+              <span style={{ flex: 1, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{icone[m.tipo]} {m.motivo || (m.tipo === "reforco" ? "Reforço" : "Saída")} <span style={{ color: "#aaa" }}>· {horaCurta(m.data)}</span></span>
+              <span style={{ fontWeight: 700, color: m.tipo === "reforco" ? "#065f46" : "#b91c1c" }}>{m.tipo === "reforco" ? "+" : "−"} {fmtBR(m.valor)}</span>
+              <button onClick={() => excluir(m)} title="Excluir" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "0 2px" }}>🗑️</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mesasSalao, onFechou, periodo }) {
   const [historico, setHistorico] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -3541,6 +3693,10 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   const [obs, setObs] = useState("");
   const [msg, setMsg] = useState(null);
   const [aberto, setAberto] = useState(null); // _id do fechamento expandido
+  // Conferência da gaveta (abertura, saídas, reforços, esperado)
+  const [conf, setConf] = useState(null);
+  const [contado, setContado] = useState("");
+  const [deliveryNaGaveta, setDeliveryNaGaveta] = useState(true);
 
   function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),4000); }
 
@@ -3550,12 +3706,20 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
       if(r.ok) setHistorico(await r.json());
     } catch {}
   }
+  async function carregarConf() {
+    try {
+      const r = await authFetch(backendUrl + "/caixa/conferencia");
+      if (r.ok) setConf(await r.json());
+    } catch {}
+  }
 
   // Desde quando o caixa esta aberto. Sem isso a dona olha os numeros da tela
   // sem saber que pedaco do movimento eles cobrem.
   // (o periodo vem do painel principal, que tambem usa ele na aba Pedidos)
 
-  useEffect(()=>{ carregar(); },[]);
+  useEffect(()=>{ carregar(); carregarConf(); },[]);
+  // A gaveta muda a cada venda em dinheiro: atualiza quando o movimento muda
+  useEffect(()=>{ carregarConf(); },[historicoSalao.length, pedidos.length, periodo?.inicio]);
 
   // Resumo do expediente atual (antes de fechar). Vai das 06:00 as 06:00,
   // igual ao servidor: o periodo vai do ultimo fechamento ate agora, e so
@@ -3602,15 +3766,26 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
     else deliverySemForma += p.total||0;
   });
 
+  async function abrirConfirmacao() {
+    await carregarConf();          // números frescos na hora de conferir
+    setContado(""); setDeliveryNaGaveta(true);
+    setConfirmando(true);
+  }
+
   async function fecharDia() {
     setLoading(true);
     try {
-      const r = await authFetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs})});
+      const contadoN = contado.trim() === "" ? null : lerValor(contado);
+      if (contadoN !== null && !Number.isFinite(contadoN)) { setLoading(false); return showMsg("Valor contado inválido (ex.: 312,50).", "erro"); }
+      const r = await authFetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs, contado: contadoN, deliveryNaGaveta})});
       const data = await r.json();
-      if(!r.ok) return showMsg(data.erro||"Erro ao fechar o dia.","erro");
-      showMsg("✅ Caixa fechado. Os numeros da tela recomecam do zero.");
-      setConfirmando(false); setObs("");
-      carregar();
+      if(!r.ok) { setLoading(false); return showMsg(data.erro||"Erro ao fechar o dia.","erro"); }
+      const dif = data.caixa?.diferenca;
+      showMsg(dif == null ? "✅ Caixa fechado. Os numeros da tela recomecam do zero."
+        : Math.abs(dif) < 0.005 ? "✅ Caixa fechado e a gaveta bateu certinho."
+        : `✅ Caixa fechado. Gaveta ${dif > 0 ? "sobrou" : "faltou"} ${fmtBR(Math.abs(dif))}.`);
+      setConfirmando(false); setObs(""); setContado("");
+      carregar(); carregarConf();
       // Puxa o periodo novo na hora: sem isso a tela ficava com os numeros
       // velhos ate a proxima sincronizacao, e parecia que nao tinha fechado.
       if (onFechou) onFechou();
@@ -3656,6 +3831,19 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   <hr>
   <div class="sec">Por garçom</div>
   ${f.porGarcom.map(g=>`<div class="linha"><span>🧑‍🍳 ${g.nome} (${g.vendas}x)${g.gorjeta>0?` <small style="color:#065f46">+ R$ ${g.gorjeta.toFixed(2)} gorjeta</small>`:""}</span><span>R$ ${g.total.toFixed(2)}</span></div>`).join("")}
+  `:""}
+  ${f.caixa?.esperado!=null?`
+  <hr>
+  <div class="sec">Conferência da gaveta</div>
+  <div class="linha"><span>Fundo de abertura</span><span>R$ ${(f.caixa.abertura||0).toFixed(2)}</span></div>
+  <div class="linha"><span>+ Salão em dinheiro</span><span>R$ ${(f.caixa.dinheiroSalao||0).toFixed(2)}</span></div>
+  ${f.caixa.dinheiroDelivery>0?`<div class="linha"><span>${f.caixa.deliveryNaGaveta?"+ Delivery em dinheiro":"Delivery em dinheiro (fora da gaveta)"}</span><span>R$ ${f.caixa.dinheiroDelivery.toFixed(2)}</span></div>`:""}
+  ${f.caixa.reforcos>0?`<div class="linha"><span>+ Reforços</span><span>R$ ${f.caixa.reforcos.toFixed(2)}</span></div>`:""}
+  ${f.caixa.retiradas>0?`<div class="linha"><span>- Saídas</span><span>R$ ${f.caixa.retiradas.toFixed(2)}</span></div>`:""}
+  ${f.caixa.gastosDoCaixa>0?`<div class="linha"><span>- Gastos pagos da gaveta</span><span>R$ ${f.caixa.gastosDoCaixa.toFixed(2)}</span></div>`:""}
+  <div class="total"><span>ESPERADO</span><span>R$ ${f.caixa.esperado.toFixed(2)}</span></div>
+  ${f.caixa.contado!=null?`<div class="linha"><span>Contado na gaveta</span><span>R$ ${f.caixa.contado.toFixed(2)}</span></div>
+  <div class="linha" style="font-weight:bold"><span>${f.caixa.diferenca>=0?"Sobrou":"Faltou"}</span><span>R$ ${Math.abs(f.caixa.diferenca).toFixed(2)}</span></div>`:`<div class="linha"><span>Gaveta não foi contada</span><span></span></div>`}
   `:""}
   ${f.obs?`<hr><div style="font-size:12px;color:#555">📝 ${f.obs}</div>`:""}
   <div class="rodape">— Fim do relatório —</div>
@@ -3703,6 +3891,9 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
         </div>
       </div>
 
+      {/* Gaveta: abrir caixa, saídas, reforço e quanto deveria ter */}
+      <CaixaGaveta backendUrl={backendUrl} conf={conf} recarregar={carregarConf} />
+
       {/* Formas de pagamento e garçons do dia */}
       {(porGarcom.length>0||Object.values(porPag).some(v=>v>0)||deliverySemForma>0)&&(
         <div style={{display:"flex",gap:10}}>
@@ -3740,7 +3931,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 
       {/* Botão fechar o caixa */}
       {!confirmando ? (
-          <button onClick={()=>setConfirmando(true)} disabled={totalGeral<=0}
+          <button onClick={abrirConfirmacao} disabled={totalGeral<=0}
             style={{background:totalGeral>0?"linear-gradient(135deg,#065f46,#10b981)":"#ccc",color:"#fff",border:"none",borderRadius:14,padding:"14px 0",fontWeight:800,fontSize:15,cursor:totalGeral>0?"pointer":"not-allowed"}}>
             {totalGeral>0 ? "🔒 Fechar caixa" : "Nada para fechar ainda"}
           </button>
@@ -3751,6 +3942,41 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
               Fecha o período aberto e começa um novo a partir de agora. O painel
               <strong> não zera sozinho</strong> — só neste botão.
             </div>
+
+            {/* Conferência da gaveta: esperado x contado */}
+            {conf && (() => {
+              const esperado = deliveryNaGaveta ? conf.esperadoComDelivery : conf.esperadoSemDelivery;
+              const c = contado.trim() === "" ? null : lerValor(contado);
+              const dif = c === null || !Number.isFinite(c) ? null : Math.round((c - esperado) * 100) / 100;
+              const li = (r, v, cor = "#555") => <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,padding:"3px 0",color:cor}}><span>{r}</span><span>{v}</span></div>;
+              return (
+                <div style={{background:"#faf9f8",borderRadius:12,padding:12,marginBottom:12}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#333",marginBottom:6}}>💵 Conferência da gaveta</div>
+                  {li("Fundo de abertura", conf.abertura != null ? fmtBR(conf.abertura) : "não informado", conf.abertura != null ? "#555" : "#b45309")}
+                  {li("+ Salão em dinheiro", fmtBR(conf.dinheiroSalao))}
+                  {conf.dinheiroDelivery > 0 && (
+                    <label style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12.5,padding:"3px 0",color:"#555",cursor:"pointer"}}>
+                      <span><input type="checkbox" checked={deliveryNaGaveta} onChange={e=>setDeliveryNaGaveta(e.target.checked)} style={{marginRight:6}} />+ Delivery em dinheiro entrou na gaveta</span>
+                      <span>{fmtBR(conf.dinheiroDelivery)}</span>
+                    </label>
+                  )}
+                  {conf.reforcos > 0 && li("+ Reforços de troco", fmtBR(conf.reforcos), "#065f46")}
+                  {conf.retiradas > 0 && li("− Saídas", fmtBR(conf.retiradas), "#b91c1c")}
+                  {conf.gastosDoCaixa > 0 && li("− Gastos pagos da gaveta", fmtBR(conf.gastosDoCaixa), "#b91c1c")}
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:800,padding:"6px 0",borderTop:"1px solid #e5e5e5",marginTop:4,color:"#333"}}><span>Deveria ter na gaveta</span><span>{fmtBR(esperado)}</span></div>
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:11,color:"#888",marginBottom:3,fontWeight:600}}>Quanto você contou na gaveta? (opcional)</div>
+                    <input value={contado} onChange={e=>setContado(e.target.value)} placeholder="0,00" inputMode="decimal" style={{...inp,fontSize:17,fontWeight:700,padding:"10px 12px"}} />
+                  </div>
+                  {dif !== null && (
+                    <div style={{marginTop:8,padding:"8px 10px",borderRadius:9,fontWeight:800,fontSize:14,background:Math.abs(dif)<0.005?"#d1fae5":dif>0?"#fef3c7":"#fee2e2",color:Math.abs(dif)<0.005?"#065f46":dif>0?"#92400e":"#991b1b"}}>
+                      {Math.abs(dif)<0.005 ? "✅ Bateu certinho" : dif>0 ? `Sobrou ${fmtBR(dif)}` : `Faltou ${fmtBR(-dif)}`}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <div style={{marginBottom:10}}>
               <div style={{fontSize:11,color:"#888",marginBottom:3}}>Observação (opcional)</div>
               <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Ex: Movimento fraco, faltou chopp..." style={inp}/>
@@ -3805,6 +4031,16 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
                         <span>🧑‍🍳 {g.nome} ({g.vendas}x)</span><span style={{fontWeight:600}}>R$ {g.total.toFixed(2)}</span>
                       </div>
                     ))}
+                  </div>
+                )}
+                {f.caixa?.esperado!=null&&(
+                  <div style={{background:"#faf9f8",borderRadius:8,padding:"8px 10px",marginBottom:6,fontSize:12}}>
+                    <div style={{fontSize:10,color:"#888",marginBottom:4}}>💵 Gaveta</div>
+                    <div style={{display:"flex",justifyContent:"space-between"}}><span>Abertura {fmtBR(f.caixa.abertura||0)} · dinheiro {fmtBR((f.caixa.dinheiroSalao||0)+(f.caixa.deliveryNaGaveta?(f.caixa.dinheiroDelivery||0):0))}{f.caixa.reforcos>0?` · +${fmtBR(f.caixa.reforcos)}`:""}{(f.caixa.retiradas||0)+(f.caixa.gastosDoCaixa||0)>0?` · −${fmtBR((f.caixa.retiradas||0)+(f.caixa.gastosDoCaixa||0))}`:""}</span></div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,marginTop:2}}><span>Esperado</span><span>{fmtBR(f.caixa.esperado)}</span></div>
+                    {f.caixa.contado!=null
+                      ? <div style={{display:"flex",justifyContent:"space-between",fontWeight:800,marginTop:2,color:Math.abs(f.caixa.diferenca)<0.005?"#065f46":f.caixa.diferenca>0?"#92400e":"#991b1b"}}><span>Contado {fmtBR(f.caixa.contado)}</span><span>{Math.abs(f.caixa.diferenca)<0.005?"✅ bateu":f.caixa.diferenca>0?`sobrou ${fmtBR(f.caixa.diferenca)}`:`faltou ${fmtBR(-f.caixa.diferenca)}`}</span></div>
+                      : <div style={{color:"#888",marginTop:2}}>Gaveta não foi contada</div>}
                   </div>
                 )}
                 {f.obs&&<div style={{fontSize:11,color:"#888",fontStyle:"italic"}}>📝 {f.obs}</div>}
@@ -3990,7 +4226,7 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
 // ── GASTOS DA LOJA E RELATÓRIO DO MÊS ─────────────────────────
 // A dona lança o que saiu (tipo + valor) e, no fim do mês, vê tudo que
 // entrou e tudo que saiu num lugar só. Só o 9999 enxerga isto.
-const TIPOS_GASTO = ["Mercadoria / carnes", "Bebidas", "Pães e insumos", "Carvão / gás", "Funcionários", "Aluguel", "Energia", "Água", "Internet / telefone", "Embalagens / descartáveis", "Manutenção", "Impostos / taxas", "Marketing", "Outro"];
+const TIPOS_GASTO = ["Mercadoria / carnes", "Bebidas", "Pães e insumos", "Carvão / gás", "Funcionários", "Entregador / motoboy", "Aluguel", "Energia", "Água", "Internet / telefone", "Embalagens / descartáveis", "Manutenção", "Impostos / taxas", "Marketing", "Outro"];
 const MESES_NOME = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const fmtBR = (v) => "R$ " + (Number(v) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const mesAtual = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
@@ -4015,7 +4251,7 @@ function NavMes({ mes, setMes }) {
 }
 
 function LancamentoGastos({ mes, setMes }) {
-  const vazio = () => ({ data: hojeISO(), tipo: TIPOS_GASTO[0], tipoOutro: "", valor: "", descricao: "" });
+  const vazio = () => ({ data: hojeISO(), tipo: TIPOS_GASTO[0], tipoOutro: "", valor: "", descricao: "", doCaixa: false });
   const [lista, setLista] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [form, setForm] = useState(vazio);
@@ -4043,7 +4279,10 @@ function LancamentoGastos({ mes, setMes }) {
     if (!form.data) return aviso("Informe a data.", "erro");
     setSalvando(true);
     try {
-      const corpo = { data: form.data + "T12:00:00-03:00", tipo, valor, descricao: form.descricao.trim() };
+      // Gasto de hoje leva a hora de agora: assim cai no período de caixa
+      // aberto (a conferência da gaveta conta por instante, não por dia).
+      const data = form.data === hojeISO() ? new Date().toISOString() : form.data + "T12:00:00-03:00";
+      const corpo = { data, tipo, valor, descricao: form.descricao.trim(), doCaixa: !!form.doCaixa };
       const r = await authFetch(BACKEND_URL + (editando ? "/despesas/" + editando : "/despesas"), {
         method: editando ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo),
       });
@@ -4060,7 +4299,7 @@ function LancamentoGastos({ mes, setMes }) {
   function editar(d) {
     const tipoConhecido = TIPOS_GASTO.includes(d.tipo);
     setEditando(d._id);
-    setForm({ data: diaBR(d.data), tipo: tipoConhecido ? d.tipo : "Outro", tipoOutro: tipoConhecido ? "" : d.tipo, valor: String(d.valor).replace(".", ","), descricao: d.descricao || "" });
+    setForm({ data: diaBR(d.data), tipo: tipoConhecido ? d.tipo : "Outro", tipoOutro: tipoConhecido ? "" : d.tipo, valor: String(d.valor).replace(".", ","), descricao: d.descricao || "", doCaixa: !!d.doCaixa });
     topo.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   async function excluir(d) {
@@ -4114,6 +4353,10 @@ function LancamentoGastos({ mes, setMes }) {
           <div style={lbl}>Descrição (opcional)</div>
           <input value={form.descricao} onChange={e => set("descricao", e.target.value)} placeholder="ex.: 20 kg de alcatra no Zé" maxLength={200} style={inp} onKeyDown={e => { if (e.key === "Enter") salvar(); }} />
         </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, color: "#555", cursor: "pointer" }}>
+          <input type="checkbox" checked={!!form.doCaixa} onChange={e => set("doCaixa", e.target.checked)} style={{ width: 18, height: 18 }} />
+          <span>💵 Pago com dinheiro da gaveta <span style={{ color: "#999" }}>(sai da conferência do caixa)</span></span>
+        </label>
         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
           <button onClick={salvar} disabled={salvando} style={{ flex: 2, minWidth: 160, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "13px 0", fontWeight: 800, fontSize: 15, cursor: "pointer", opacity: salvando ? 0.6 : 1 }}>
             {salvando ? "Salvando..." : editando ? "💾 Salvar alteração" : "➕ Lançar gasto"}
@@ -4137,7 +4380,7 @@ function LancamentoGastos({ mes, setMes }) {
               {g.itens.map(d => (
                 <div key={d._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #f3f3f3" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: "#333" }}>{d.tipo}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: "#333" }}>{d.tipo}{d.doCaixa && <span title="Pago com dinheiro da gaveta" style={{ marginLeft: 6, fontSize: 10, background: "#fef3c7", color: "#92400e", borderRadius: 6, padding: "1px 6px", fontWeight: 700 }}>💵 gaveta</span>}</div>
                     {d.descricao && <div style={{ fontSize: 12, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.descricao}</div>}
                   </div>
                   <div style={{ fontWeight: 800, fontSize: 15, color: "#b91c1c", whiteSpace: "nowrap" }}>{fmtBR(d.valor)}</div>
