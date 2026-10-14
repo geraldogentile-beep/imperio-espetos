@@ -441,11 +441,15 @@ const EstoqueSchema = new mongoose.Schema({
 const MovEstoqueSchema = new mongoose.Schema({
   estoqueId:   { type: mongoose.Schema.Types.ObjectId, ref: "Estoque" },
   estoqueNome: String,
-  tipo:        { type: String, enum: ["entrada", "saida", "ajuste"] },
+  tipo:        { type: String, enum: ["entrada", "saida", "ajuste", "perda"] },
   quantidade:  Number,
-  motivo:      String,   // "venda", "entrada mercadoria", "ajuste manual", "desperdício"
+  motivo:      String,   // "venda", "entrada mercadoria", "ajuste manual", "Caiu no chão"...
   vendaId:     String,   // referência à venda quando for saída automática
   horario:     { type: Date, default: Date.now },
+  // Perda: o que saiu de fato do saldo (o estoque não fica negativo) e o
+  // custo unitário no dia, para o relatório dizer quanto se perdeu em R$
+  baixado:       Number,
+  custoUnitario: Number,
 });
 
 const PedidoDB    = mongoose.model("Pedido",    PedidoSchema);
@@ -2441,23 +2445,30 @@ async function baixarEstoqueVenda(itens, vendaId) {
       // O mesmo estoque pode aparecer duas vezes na mesma venda (dois itens
       // ligados a ele): a segunda baixa parte do valor já descontado.
       est.quantidade = novaQtd;
-      // Alerta de estoque mínimo
-      if (novaQtd <= est.minimo && !est.alertaEnviado) {
-        await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: true });
-        const unid = est.tipo === "chopp" ? "litros" : est.unidade;
-        const msg = `⚠️ *Estoque Baixo — Império dos Espetos*\n\n` +
-          `📦 *${est.nome}*\n` +
-          `Quantidade atual: *${novaQtd.toFixed(est.tipo === "chopp" ? 1 : 0)} ${unid}*\n` +
-          `Estoque mínimo: *${est.minimo} ${unid}*\n\n` +
-          `Por favor, verifique o estoque! 🚨`;
-        if (est.alertaTelefone) await enviarMsg(est.alertaTelefone, msg);
-      }
-      // Reseta flag de alerta quando estoque é reposto acima do mínimo
-      if (novaQtd > est.minimo && est.alertaEnviado) {
-        await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: false });
-      }
+      await alertaEstoqueMinimo(est, novaQtd);
+      est.alertaEnviado = novaQtd <= est.minimo ? true : false;
     }
   } catch (e) { console.error("Erro na baixa de estoque:", e.message); }
+}
+
+// Avisa no WhatsApp quando o item chega ao mínimo (uma vez) e rearma o aviso
+// quando ele volta para cima do mínimo. Vale para venda e para perda.
+async function alertaEstoqueMinimo(est, novaQtd) {
+  try {
+    if (novaQtd <= est.minimo && !est.alertaEnviado) {
+      await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: true });
+      const unid = est.tipo === "chopp" ? "litros" : est.unidade;
+      const msg = `⚠️ *Estoque Baixo — Império dos Espetos*\n\n` +
+        `📦 *${est.nome}*\n` +
+        `Quantidade atual: *${novaQtd.toFixed(est.tipo === "chopp" ? 1 : 0)} ${unid}*\n` +
+        `Estoque mínimo: *${est.minimo} ${unid}*\n\n` +
+        `Por favor, verifique o estoque! 🚨`;
+      if (est.alertaTelefone) await enviarMsg(est.alertaTelefone, msg);
+    }
+    if (novaQtd > est.minimo && est.alertaEnviado) {
+      await EstoqueDB.findByIdAndUpdate(est._id, { alertaEnviado: false });
+    }
+  } catch (e) { console.error("Erro no alerta de estoque:", e.message); }
 }
 
 // ── ESTOQUE API ───────────────────────────────────────────────
@@ -2500,6 +2511,7 @@ app.delete("/estoque/movimentacoes/:movId", authMiddleware(["dono"]), async (req
     if (!mov) return res.status(404).json({ erro: "Movimentação não encontrada" });
     const estorno = mov.tipo === "entrada" ? -mov.quantidade
                   : mov.tipo === "saida"   ?  Math.abs(mov.quantidade)
+                  : mov.tipo === "perda"   ?  Math.abs(mov.baixado ?? mov.quantidade)
                   : -mov.quantidade;
     const est = await EstoqueDB.findById(mov.estoqueId);
     if (est) {
@@ -2589,6 +2601,68 @@ app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
     });
     res.json({ quantidade: novaQtd });
   } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── PERDAS ────────────────────────────────────────────────────
+// Espeto que caiu no chão, queimou, estragou: sai do estoque sem ser venda
+// e fica registrado com o motivo e o custo, para a dona ver quanto perde.
+app.post("/estoque/:id/perda", authMiddleware(["dono"]), async (req, res) => {
+  const quantidade = lerQtd(req.body.quantidade);
+  const motivo = String(req.body.motivo || "").trim().slice(0, 80) || "Perda";
+  if (!Number.isFinite(quantidade) || quantidade <= 0 || quantidade > 1e6) return res.status(400).json({ erro: "Informe a quantidade perdida" });
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Item inválido" });
+  try {
+    const est = await EstoqueDB.findById(req.params.id);
+    if (!est || est.ativo === false) return res.status(404).json({ erro: "Item não encontrado" });
+    const atual = Number.isFinite(est.quantidade) ? est.quantidade : 0;
+    const novaQtd = Math.max(0, atual - quantidade);
+    await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: novaQtd });
+    // Registra a perda inteira (é o que interessa no relatório), mas guarda
+    // quanto saiu de fato do saldo para desfazer certo.
+    const mov = await MovEstoqueDB.create({
+      estoqueId: est._id, estoqueNome: est.nome, tipo: "perda",
+      quantidade, baixado: Math.min(quantidade, atual), motivo,
+      custoUnitario: Number(est.custoPorUnidade) || 0,
+    });
+    await alertaEstoqueMinimo(est, novaQtd);
+    res.status(201).json({ ok: true, quantidade: novaQtd, movimento: mov });
+  } catch (e) {
+    console.error("Erro ao lançar perda:", e.message);
+    res.status(500).json({ erro: "Erro ao lançar a perda" });
+  }
+});
+
+// GET /estoque/perdas?mes=AAAA-MM — perdas do mês, por item e por motivo
+app.get("/estoque/perdas", authMiddleware(["dono"]), async (req, res) => {
+  const lim = limitesDoMes(req.query.mes);
+  if (!lim) return res.status(400).json({ erro: "Informe mes=AAAA-MM" });
+  try {
+    const lista = await MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).sort({ horario: -1 }).lean();
+    const estoques = await EstoqueDB.find({ _id: { $in: [...new Set(lista.map(m => String(m.estoqueId)))] } }).select("unidade tipo").lean();
+    const unidadeDe = Object.fromEntries(estoques.map(e => [String(e._id), e.tipo === "chopp" ? "L" : (e.unidade || "un")]));
+    const porItem = {}, porMotivo = {};
+    let custoTotal = 0, semCusto = 0;
+    for (const m of lista) {
+      const custo = arred((m.quantidade || 0) * (m.custoUnitario || 0));
+      custoTotal += custo;
+      if (!m.custoUnitario) semCusto++;
+      const k = String(m.estoqueId);
+      if (!porItem[k]) porItem[k] = { estoqueId: k, nome: m.estoqueNome, unidade: unidadeDe[k] || "un", quantidade: 0, custo: 0, vezes: 0 };
+      porItem[k].quantidade += m.quantidade || 0; porItem[k].custo += custo; porItem[k].vezes++;
+      if (!porMotivo[m.motivo]) porMotivo[m.motivo] = { motivo: m.motivo, vezes: 0, custo: 0 };
+      porMotivo[m.motivo].vezes++; porMotivo[m.motivo].custo += custo;
+    }
+    res.json({
+      mes: req.query.mes,
+      custoTotal: arred(custoTotal), lancamentos: lista.length, semCusto,
+      porItem: Object.values(porItem).map(i => ({ ...i, custo: arred(i.custo) })).sort((a, b) => b.custo - a.custo || b.quantidade - a.quantidade),
+      porMotivo: Object.values(porMotivo).map(m => ({ ...m, custo: arred(m.custo) })).sort((a, b) => b.vezes - a.vezes),
+      lista: lista.map(m => ({ _id: m._id, estoqueId: m.estoqueId, nome: m.estoqueNome, unidade: unidadeDe[String(m.estoqueId)] || "un", quantidade: m.quantidade, motivo: m.motivo, horario: m.horario, custo: arred((m.quantidade || 0) * (m.custoUnitario || 0)) })),
+    });
+  } catch (e) {
+    console.error("Erro ao listar perdas:", e.message);
+    res.status(500).json({ erro: "Erro ao listar as perdas" });
+  }
 });
 
 // Ajuste manual (inventário)
@@ -2724,13 +2798,14 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
   const lim = limitesDoMes(req.query.mes);
   if (!lim) return res.status(400).json({ erro: "Informe mes=AAAA-MM" });
   try {
-    const [vendas, pedidos, despesas] = await Promise.all([
+    const [vendas, pedidos, despesas, perdasMes] = await Promise.all([
       VendaSalaoDB.find({ fechamento: { $gte: lim.inicio, $lt: lim.fim } }).lean(),
       PedidoDB.find({ status: "entregue", $or: [
         { entregueEm: { $gte: lim.inicio, $lt: lim.fim } },
         { entregueEm: null, horario: { $gte: lim.inicio, $lt: lim.fim } },
       ] }).lean(),
       DespesaDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).sort({ data: 1, createdAt: 1 }).lean(),
+      MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).select("quantidade custoUnitario").lean(),
     ]);
 
     const porDia = {};
@@ -2780,6 +2855,12 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
         total: arred(gastos), qtd: despesas.length,
         porTipo: Object.values(tipos).map(t => ({ ...t, total: arred(t.total) })).sort((a, b) => b.total - a.total),
         lista: despesas,
+      },
+      // Informativo: a mercadoria perdida já foi paga (está nos gastos);
+      // aqui é quanto dela virou prejuízo. Não entra no resultado.
+      perdas: {
+        custo: arred(perdasMes.reduce((s, m) => s + (m.quantidade || 0) * (m.custoUnitario || 0), 0)),
+        lancamentos: perdasMes.length,
       },
       resultado: arred(entradas - gastos),
       porDia: Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia))

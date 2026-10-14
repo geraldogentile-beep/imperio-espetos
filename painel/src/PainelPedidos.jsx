@@ -2798,6 +2798,10 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
   const [ajusteQtd, setAjusteQtd] = useState("");
   const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
+  // Perda: espeto que caiu, queimou, estragou. perdaForm = { item, qtd, motivo, outro }
+  const [perdaForm, setPerdaForm] = useState(null);
+  const [mesPerdas, setMesPerdas] = useState(mesAtual);
+  const [relPerdas, setRelPerdas] = useState(null);
   const salvarPrecoTimer = useRef(null);
   // Limpa o timer de debounce ao desmontar
   useEffect(() => () => { if (salvarPrecoTimer.current) clearTimeout(salvarPrecoTimer.current); }, []);
@@ -2828,6 +2832,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
   useEffect(() => { carregar(); }, []);
   useEffect(() => { if(subAba==="consumo") carregarConsumo(); }, [subAba]);
+  async function carregarPerdas(m = mesPerdas) {
+    try {
+      const r = await authFetch(backendUrl + "/estoque/perdas?mes=" + m);
+      if (r.ok) setRelPerdas(await r.json());
+    } catch {}
+  }
+  useEffect(() => { if (subAba === "perdas") carregarPerdas(mesPerdas); }, [subAba, mesPerdas]);
   useEffect(() => { if(selItem) carregarMovs(selItem._id); }, [selItem]);
 
   const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
@@ -2903,6 +2914,25 @@ function Estoque({ backendUrl, cardapio = [] }) {
     setSaving(false);
   }
 
+  async function lancarPerda() {
+    const f = perdaForm;
+    if (!f?.item) return showMsg("Escolha o item.", "erro");
+    const q = lerDecimal(f.qtd);
+    if (!(q > 0)) return showMsg("Informe quantos foram perdidos.", "erro");
+    const motivo = f.motivo === "Outro" ? (f.outro || "").trim() || "Outro" : f.motivo;
+    setSaving(true);
+    try {
+      const r = await authFetch(backendUrl + `/estoque/${f.item._id}/perda`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quantidade: q, motivo }) });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); showMsg(e.erro || "Não foi possível lançar a perda.", "erro"); setSaving(false); return; }
+      showMsg(`🗑️ Perda lançada: ${q} ${f.item.tipo === "chopp" ? "L" : f.item.unidade} de ${f.item.nome} (${motivo}).`);
+      const id = f.item._id;
+      setPerdaForm(null); carregar();
+      if (selItem?._id === id) carregarMovs(id);
+      if (subAba === "perdas") carregarPerdas();
+    } catch { showMsg("Erro de conexão.", "erro"); }
+    setSaving(false);
+  }
+
   async function deletarItem(id) {
     if(!window.confirm("Remover este item do estoque?")) return;
     try {
@@ -2945,6 +2975,54 @@ function Estoque({ backendUrl, cardapio = [] }) {
     .sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
   const [filtroCat, setFiltroCat] = useState("todos");
   const [buscaEst, setBuscaEst] = useState("");
+
+  // Formulário de perda (o mesmo no item e no lançamento rápido da lista)
+  const MOTIVOS_PERDA = ["Caiu no chão", "Queimou", "Estragou / venceu", "Outro"];
+  const formPerda = (comEscolha) => {
+    const f = perdaForm; if (!f) return null;
+    const unid = f.item ? (f.item.tipo === "chopp" ? "L" : f.item.unidade) : "";
+    return (
+      <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #f97316",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
+        <div style={{fontWeight:700,fontSize:14,marginBottom:10}}>🗑️ Lançar perda{f.item&&!comEscolha?` — ${f.item.nome}`:""}</div>
+        {comEscolha&&(
+          <div style={{marginBottom:8}}>
+            <div style={{fontSize:11,color:"#888",marginBottom:3}}>Item</div>
+            <select value={f.item?._id||""} onChange={e=>setPerdaForm(p=>({...p,item:itens.find(i=>i._id===e.target.value)||null}))} style={inp}>
+              <option value="">— escolher —</option>
+              {catsEstoque.filter(c=>c!=="todos").map(c=>(
+                <optgroup key={c} label={c}>
+                  {itens.filter(i=>categoriaDe(i)===c).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),"pt-BR",{sensitivity:"base"})).map(i=>(
+                    <option key={i._id} value={i._id}>{i.nome} ({qtdNum(i.quantidade)} {i.tipo==="chopp"?"L":i.unidade})</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        )}
+        <div style={{marginBottom:8}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade perdida{unid?` (${unid})`:""}</div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={()=>setPerdaForm(p=>({...p,qtd:String(Math.max(1,(lerDecimal(p.qtd)||0)-1))}))} style={{width:44,height:44,borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:20,fontWeight:800,cursor:"pointer",color:"#7b1a0a"}}>−</button>
+            <input value={f.qtd} onChange={e=>setPerdaForm(p=>({...p,qtd:e.target.value.replace(/[^\d.,]/g,"")}))} inputMode="decimal" style={{...inp,textAlign:"center",fontSize:18,fontWeight:800,flex:1}}/>
+            <button onClick={()=>setPerdaForm(p=>({...p,qtd:String((lerDecimal(p.qtd)||0)+1)}))} style={{width:44,height:44,borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:20,fontWeight:800,cursor:"pointer",color:"#7b1a0a"}}>+</button>
+          </div>
+        </div>
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:4}}>Motivo</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {MOTIVOS_PERDA.map(m=>(
+              <button key={m} onClick={()=>setPerdaForm(p=>({...p,motivo:m}))} style={{padding:"8px 12px",borderRadius:20,border:`2px solid ${f.motivo===m?"#f97316":"#e0e0e0"}`,background:f.motivo===m?"#fff7ed":"#fff",color:f.motivo===m?"#c2410c":"#555",fontWeight:f.motivo===m?700:500,fontSize:13,cursor:"pointer"}}>{m}</button>
+            ))}
+          </div>
+          {f.motivo==="Outro"&&<input value={f.outro||""} onChange={e=>setPerdaForm(p=>({...p,outro:e.target.value}))} placeholder="Qual foi o motivo?" maxLength={80} style={{...inp,marginTop:8}}/>}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={lancarPerda} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"🗑️ Confirmar perda"}</button>
+          <button onClick={()=>setPerdaForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
+        </div>
+      </div>
+    );
+  };
   const listaFiltrada = itens
     .filter(i => filtroCat === "todos" || categoriaDe(i) === filtroCat)
     .filter(i => !buscaEst.trim() || [i.nome, ...(i.cardapioNomes || [])].some(n => chaveNome(n).includes(chaveNome(buscaEst))));
@@ -3074,11 +3152,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>{setEntradaForm(it);setEntradaQtd("");}} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>📥 Entrada</button>
               <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(qtdNum(it.quantidade)));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
+              <button onClick={()=>setPerdaForm({item:it,qtd:"1",motivo:"Caiu no chão",outro:""})} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🗑️ Perda</button>
             </div>
           </div>
         )}
 
-        {/* Modais de entrada e ajuste */}
+        {/* Modais de entrada, ajuste e perda */}
+        {perdaForm?.item?._id===it._id&&formPerda(false)}
         {entradaForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📥 Entrada — {entradaForm.nome}</div>
@@ -3109,15 +3189,15 @@ function Estoque({ backendUrl, cardapio = [] }) {
           {movs.length===0?(
             <div style={{textAlign:"center",padding:"20px 0",color:"#ccc",fontSize:13}}>Nenhuma movimentação ainda</div>
           ):movs.map((m,i)=>{
-            const cor = m.tipo==="entrada"?"#10b981":m.tipo==="ajuste"?"#3b82f6":"#ef4444";
-            const icon = m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":"📤";
+            const cor = m.tipo==="entrada"?"#10b981":m.tipo==="ajuste"?"#3b82f6":m.tipo==="perda"?"#f97316":"#ef4444";
+            const icon = m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":m.tipo==="perda"?"🗑️":"📤";
             const sinal = m.tipo==="entrada"?"+":m.tipo==="ajuste"?(m.quantidade>=0?"+":""):"−";
             const podeExcluir = m.tipo !== "saida"; // não exclui baixas automáticas de venda
             return(
               <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px dashed #f0f0f0"}}>
                 <div style={{width:32,height:32,borderRadius:"50%",background:cor+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{icon}</div>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{m.motivo||m.tipo}</div>
+                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{m.tipo==="perda"?"Perda: ":""}{m.motivo||m.tipo}</div>
                   <div style={{fontSize:11,color:"#aaa"}}>{new Date(m.horario).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>
                 </div>
                 <div style={{fontWeight:800,fontSize:14,color:cor,marginRight:4}}>{sinal}{Math.abs(m.quantidade).toFixed(m.quantidade%1===0?0:1)} {it.unidade}</div>
@@ -3146,7 +3226,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
       <datalist id="sugestoes-cat-estoque">{sugestoesCat.map(c=><option key={c} value={c}/>)}</datalist>
       {/* Sub-abas */}
       <div style={{display:"flex",gap:6}}>
-        {[["painel","📦 Estoque"],["consumo","📊 Consumo"]].map(([k,l])=>(
+        {[["painel","📦 Estoque"],["perdas","🗑️ Perdas"],["consumo","📊 Consumo"]].map(([k,l])=>(
           <button key={k} onClick={()=>setSubAba(k)} style={{flex:1,padding:"9px 0",borderRadius:10,border:"none",background:subAba===k?"#7b1a0a":"#f0f0f0",color:subAba===k?"#fff":"#666",fontWeight:subAba===k?700:500,fontSize:13,cursor:"pointer"}}>{l}</button>
         ))}
       </div>
@@ -3173,6 +3253,10 @@ function Estoque({ backendUrl, cardapio = [] }) {
         </div>
 
         <button onClick={()=>setNovoForm(true)} style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>+ Cadastrar item no estoque</button>
+        {itens.length>0&&!perdaForm&&(
+          <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",outro:""})} style={{background:"#fff",color:"#c2410c",border:"1.5px solid #fdba74",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda (caiu, queimou, estragou)</button>
+        )}
+        {perdaForm&&formPerda(true)}
 
         {novoForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
@@ -3343,6 +3427,68 @@ function Estoque({ backendUrl, cardapio = [] }) {
           </div>
         ))}
       </>}
+
+      {/* PERDAS DO MÊS */}
+      {subAba==="perdas"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <NavMes mes={mesPerdas} setMes={setMesPerdas} />
+          {!perdaForm&&itens.length>0&&(
+            <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",outro:""})} style={{background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda</button>
+          )}
+          {perdaForm&&formPerda(true)}
+          {!relPerdas?<div style={{color:"#888",fontSize:13,textAlign:"center"}}>Carregando...</div>:(
+            <>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                <Metrica icon="🗑️" label="Lançamentos" valor={relPerdas.lancamentos} cor="#f97316"/>
+                <Metrica icon="💸" label="Custo perdido" valor={fmtBR(relPerdas.custoTotal)} sub={relPerdas.semCusto>0?`${relPerdas.semCusto} sem custo cadastrado`:null} cor="#ef4444"/>
+              </div>
+              {relPerdas.lancamentos===0?(
+                <div style={{textAlign:"center",padding:"30px 0",color:"#aaa",fontSize:13}}>Nenhuma perda lançada em {rotuloMes(mesPerdas)}. 👏</div>
+              ):(
+                <>
+                  <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:10}}>Por item</div>
+                    {relPerdas.porItem.map(i=>(
+                      <div key={i.estoqueId} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}>
+                        <span style={{fontWeight:600,color:"#333"}}>{i.nome} <span style={{color:"#aaa",fontWeight:400}}>· {i.vezes}x</span></span>
+                        <span><strong style={{color:"#c2410c"}}>{String(Math.round(i.quantidade*100)/100).replace(".",",")} {i.unidade}</strong>{i.custo>0&&<span style={{color:"#888",marginLeft:8}}>{fmtBR(i.custo)}</span>}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:10}}>Por motivo</div>
+                    {relPerdas.porMotivo.map(m=>(
+                      <div key={m.motivo} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}>
+                        <span style={{color:"#333"}}>{m.motivo}</span>
+                        <span style={{color:"#555"}}>{m.vezes} {m.vezes===1?"vez":"vezes"}{m.custo>0?` · ${fmtBR(m.custo)}`:""}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:10}}>Todos os lançamentos</div>
+                    {relPerdas.lista.map(m=>(
+                      <div key={m._id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #f5f5f5",fontSize:12.5}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:600,color:"#333"}}>{m.nome} <span style={{color:"#c2410c"}}>−{String(m.quantidade).replace(".",",")} {m.unidade}</span></div>
+                          <div style={{color:"#888",fontSize:11}}>{m.motivo} · {new Date(m.horario).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}{m.custo>0?` · ${fmtBR(m.custo)}`:""}</div>
+                        </div>
+                        <button onClick={async()=>{
+                          if(!window.confirm(`Desfazer a perda de ${m.quantidade} ${m.unidade} de ${m.nome}? A quantidade volta para o estoque.`)) return;
+                          try {
+                            const r = await authFetch(backendUrl+`/estoque/movimentacoes/${m._id}`,{method:"DELETE"});
+                            if(r.ok){ showMsg("Perda desfeita, quantidade devolvida."); carregar(); carregarPerdas(); }
+                            else showMsg("Não foi possível desfazer.","erro");
+                          } catch { showMsg("Erro de conexão.","erro"); }
+                        }} title="Desfazer" style={{background:"#fee2e2",border:"none",borderRadius:7,padding:"5px 8px",cursor:"pointer",fontSize:13,flexShrink:0}}>↩️</button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* RELATÓRIO DE CONSUMO */}
       {subAba==="consumo"&&(
@@ -4656,6 +4802,11 @@ function RelatorioMensal({ mes, setMes }) {
               </div>
             ))}
             {g.porTipo.length > 0 && linha("Total de gastos", fmtBR(g.total), "#b91c1c", 800)}
+            {rel.perdas?.lancamentos > 0 && (
+              <div style={{ fontSize: 11.5, color: "#c2410c", marginTop: 8 }}>
+                🗑️ Perdas de mercadoria no mês: {rel.perdas.lancamentos} lançamento(s){rel.perdas.custo > 0 ? `, custo estimado ${fmtBR(rel.perdas.custo)}` : ""}. Já estão dentro das compras; veja em Estoque → Perdas.
+              </div>
+            )}
           </div>
 
           <div style={card}>
