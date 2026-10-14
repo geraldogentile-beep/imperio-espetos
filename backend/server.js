@@ -2413,9 +2413,28 @@ app.get("/estoque/relatorio/consumo", authMiddleware(["dono"]), async (req, res)
   } catch { res.json([]); }
 });
 
+// Campos numéricos do estoque: só entra número finito dentro do limite;
+// valor inválido é ignorado (mantém o que estava). Antes o corpo ia direto
+// ao banco, e um "Infinity" ou texto virava erro 500 ou lixo gravado.
+const LIMITES_ESTOQUE = {
+  quantidade: { min: 0, max: 1e7 }, minimo: { min: 0, max: 1e7 }, consumoPorVenda: { min: 0.0001, max: 1e5 },
+  capacidadeBarril: { min: 0, max: 1e5 }, custoPorUnidade: { min: 0, max: 1e6 }, margemDesejada: { min: 0, max: 99 }, precoVendaAtual: { min: 0, max: 1e6 },
+};
+function sanitizarEstoque(body) {
+  const out = {};
+  for (const [k, v] of Object.entries(body || {})) {
+    if (k === "_id" || k === "__v" || k === "criadoEm") continue;
+    if (LIMITES_ESTOQUE[k]) {
+      const n = numOr(v, null, LIMITES_ESTOQUE[k]);
+      if (n !== null) out[k] = n;
+    } else out[k] = v;
+  }
+  return out;
+}
+
 app.put("/estoque/:id", authMiddleware(["dono"]), async (req, res) => {
   try {
-    const item = await EstoqueDB.findByIdAndUpdate(req.params.id, req.body, { new: true }).lean();
+    const item = await EstoqueDB.findByIdAndUpdate(req.params.id, sanitizarEstoque(req.body), { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ erro: "Item não encontrado" });
     res.json(item);
   } catch (e) { res.status(500).json({ erro: e.message }); }
@@ -2431,11 +2450,11 @@ app.delete("/estoque/:id", authMiddleware(["dono"]), async (req, res) => {
 // Entrada de mercadoria
 app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
   const { quantidade, motivo } = req.body;
-  if (!quantidade || quantidade <= 0) return res.status(400).json({ erro: "quantidade inválida" });
+  if (!Number.isFinite(parseFloat(quantidade)) || parseFloat(quantidade) <= 0 || parseFloat(quantidade) > 1e7) return res.status(400).json({ erro: "quantidade inválida" });
   try {
     const est = await EstoqueDB.findById(req.params.id);
     if (!est) return res.status(404).json({ erro: "Item não encontrado" });
-    const novaQtd = est.quantidade + parseFloat(quantidade);
+    const novaQtd = (Number.isFinite(est.quantidade) ? est.quantidade : 0) + parseFloat(quantidade);
     await EstoqueDB.findByIdAndUpdate(est._id, {
       quantidade: novaQtd,
       alertaEnviado: novaQtd > est.minimo ? false : est.alertaEnviado,
@@ -2453,10 +2472,11 @@ app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
 app.post("/estoque/:id/ajuste", authMiddleware(["dono"]), async (req, res) => {
   const { quantidade, motivo } = req.body;
   if (quantidade === undefined) return res.status(400).json({ erro: "quantidade obrigatória" });
+  if (!Number.isFinite(parseFloat(quantidade)) || parseFloat(quantidade) < 0 || parseFloat(quantidade) > 1e7) return res.status(400).json({ erro: "quantidade inválida" });
   try {
     const est = await EstoqueDB.findById(req.params.id);
     if (!est) return res.status(404).json({ erro: "Item não encontrado" });
-    const diff = parseFloat(quantidade) - est.quantidade;
+    const diff = parseFloat(quantidade) - (Number.isFinite(est.quantidade) ? est.quantidade : 0);
     await EstoqueDB.findByIdAndUpdate(est._id, {
       quantidade: parseFloat(quantidade),
       alertaEnviado: parseFloat(quantidade) > est.minimo ? false : est.alertaEnviado,

@@ -2464,6 +2464,8 @@ function InputDinheiro({ value, onChange, style, inputRef, ...rest }) {
   return <input ref={inputRef} value={value} onChange={e => onChange(mascaraMoeda(e.target.value))} placeholder="R$ 0,00" inputMode="numeric" style={style} {...rest} />;
 }
 const moedaDeNumero = (n) => (n == null || n === "" ? "" : mascaraMoeda(String(Math.round(Number(n) * 100))));
+// Quantidade de estoque segura para mostrar: nunca "null", "NaN" ou "Infinity"
+const qtdNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, cardapioNomes = [], cardapio = [], backendUrl = "" }) {
   const [modoPreco, setModoPreco] = useState("sugerido"); // "sugerido" | "manual"
@@ -2483,7 +2485,10 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const cpv = parseFloat(consumoPorVenda) || 1;
 
   const custoVenda    = c * cpv;
-  const precoSugerido = custoVenda > 0 && m > 0 ? custoVenda / (1 - m / 100) : 0;
+  // A margem é a parte do preço que é lucro: só faz sentido entre 1% e 99%.
+  // Com 100% a conta dividia por zero e a tela mostrava "R$ Infinity".
+  const margemValida  = m > 0 && m < 100;
+  const precoSugerido = custoVenda > 0 && margemValida ? custoVenda / (1 - m / 100) : 0;
   const precoFinal    = modoPreco === "manual" ? parseMoeda(precoManual) : precoSugerido;
   const margemReal    = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / pv) * 100 : null;
   const margemFinal   = precoFinal > 0 && custoVenda > 0 ? ((precoFinal - custoVenda) / precoFinal) * 100 : null;
@@ -2553,8 +2558,8 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
           <div style={{width:80}}>
             <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem (%)</div>
             <input type="text" inputMode="numeric" value={margem}
-              onChange={e=>onChange("margemDesejada",e.target.value.replace(/[^\d]/g,""))}
-              placeholder="60" style={{...inpBase,textAlign:"center"}}/>
+              onChange={e=>{ let v = e.target.value.replace(/[^\d]/g,""); if (Number(v) > 99) v = "99"; onChange("margemDesejada", v); }}
+              placeholder="60" style={{...inpBase,textAlign:"center",borderColor:m>=100?"#ef4444":"#e0e0e0"}}/>
           </div>
         </div>
         <div>
@@ -2565,6 +2570,12 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
             placeholder="Preenchido ao selecionar do cardápio" style={inpBase}/>
         </div>
       </div>
+
+      {m >= 100 && (
+        <div style={{background:"#fee2e2",border:"1.5px solid #fca5a5",borderRadius:8,padding:"8px 12px",fontSize:11.5,color:"#991b1b",lineHeight:1.5}}>
+          A margem é a parte do preço que fica de lucro, então vai de 1% a 99%. Para vender pelo <strong>dobro</strong> do custo, use <strong>50%</strong>; pelo triplo, 67%.
+        </div>
+      )}
 
       {/* Resultados calculados */}
       {c > 0 && (
@@ -2852,11 +2863,11 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
   // Cálculo do barril de chopp
   function pctBarril(item) {
-    if(item.tipo!=="chopp"||!item.capacidadeBarril) return null;
-    return Math.min(100, Math.max(0, (item.quantidade/item.capacidadeBarril)*100));
+    if(item.tipo!=="chopp"||!(Number(item.capacidadeBarril)>0)) return null;
+    return Math.min(100, Math.max(0, (qtdNum(item.quantidade)/Number(item.capacidadeBarril))*100));
   }
 
-  const criticos = itens.filter(i=>i.quantidade<=i.minimo);
+  const criticos = itens.filter(i=>qtdNum(i.quantidade)<=qtdNum(i.minimo));
 
   // ── DETALHE DO ITEM
   if(selItem) {
@@ -2917,7 +2928,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <div style={{marginBottom:14}}>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:6}}>
                   <span style={{fontWeight:600}}>🍺 Barril</span>
-                  <span style={{fontWeight:800,color:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981"}}>{it.quantidade.toFixed(1)}L / {it.capacidadeBarril}L</span>
+                  <span style={{fontWeight:800,color:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981"}}>{qtdNum(it.quantidade).toFixed(1)}L / {it.capacidadeBarril}L</span>
                 </div>
                 <div style={{height:20,background:"#f0f0f0",borderRadius:10,overflow:"hidden",position:"relative"}}>
                   <div style={{height:"100%",width:pct+"%",background:pct<20?"linear-gradient(90deg,#ef4444,#dc2626)":pct<50?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#10b981,#059669)",borderRadius:10,transition:"width 0.6s"}}/>
@@ -2929,8 +2940,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
             {/* Quantidade atual */}
             <div style={{display:"flex",gap:10,marginBottom:14}}>
-              <Metrica icon="📦" label="Em estoque" valor={it.quantidade+(it.tipo==="chopp"?" L":" "+it.unidade)} cor={it.quantidade<=it.minimo?"#ef4444":"#10b981"}/>
-              <Metrica icon="⚠️" label="Mínimo" valor={it.minimo+" "+it.unidade} cor="#f59e0b"/>
+              <Metrica icon="📦" label="Em estoque" valor={qtdNum(it.quantidade)+(it.tipo==="chopp"?" L":" "+it.unidade)} cor={qtdNum(it.quantidade)<=qtdNum(it.minimo)?"#ef4444":"#10b981"}/>
+              <Metrica icon="⚠️" label="Mínimo" valor={qtdNum(it.minimo)+" "+it.unidade} cor="#f59e0b"/>
             </div>
 
             {it.cardapioNomes?.length>0&&(
@@ -2967,7 +2978,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>{setEntradaForm(it);setEntradaQtd("");}} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>📥 Entrada</button>
-              <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(it.quantidade));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
+              <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(qtdNum(it.quantidade)));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
             </div>
           </div>
         )}
@@ -2987,7 +2998,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
         {ajusteForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #3b82f6",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>🔧 Ajuste — {ajusteForm.nome}</div>
-            <div style={{fontSize:12,color:"#888",marginBottom:10}}>Estoque atual: <strong>{ajusteForm.quantidade} {ajusteForm.unidade}</strong>. Informe a quantidade real contada no inventário.</div>
+            <div style={{fontSize:12,color:"#888",marginBottom:10}}>Estoque atual: <strong>{qtdNum(ajusteForm.quantidade)} {ajusteForm.unidade}</strong>. Informe a quantidade real contada no inventário.</div>
             <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade real ({ajusteForm.unidade})</div><input type="number" step="0.1" value={ajusteQtd} onChange={e=>setAjusteQtd(e.target.value)} style={inp}/></div>
             <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Motivo</div><input value={ajusteMotivo} onChange={e=>setAjusteMotivo(e.target.value)} style={inp}/></div>
             <div style={{display:"flex",gap:8}}>
@@ -3052,7 +3063,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             {criticos.map(i=>(
               <div key={i._id} onClick={()=>setSelItem(i)} style={{fontSize:12,color:"#991b1b",cursor:"pointer",padding:"3px 0",display:"flex",justifyContent:"space-between"}}>
                 <span>⚠️ {i.nome}</span>
-                <span style={{fontWeight:700}}>{i.quantidade} {i.unidade} (mín: {i.minimo})</span>
+                <span style={{fontWeight:700}}>{qtdNum(i.quantidade)} {i.unidade} (mín: {qtdNum(i.minimo)})</span>
               </div>
             ))}
           </div>
@@ -3169,7 +3180,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
           <div style={{textAlign:"center",padding:"40px 0",color:"#ccc"}}><div style={{fontSize:40,marginBottom:8}}>📦</div><div>Nenhum item cadastrado ainda</div></div>
         ):itens.map(it=>{
           const pct = pctBarril(it);
-          const critico = it.quantidade<=it.minimo;
+          const critico = qtdNum(it.quantidade)<=qtdNum(it.minimo);
           return(
             <div key={it._id} onClick={()=>setSelItem(it)} style={{background:"#fff",borderRadius:14,padding:14,boxShadow:"0 2px 10px rgba(0,0,0,0.07)",cursor:"pointer",border:`1.5px solid ${critico?"#ef4444":"transparent"}`}}>
               <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -3181,8 +3192,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
                   <div style={{fontSize:11,color:"#888",marginTop:1}}>{it.cardapioNomes?.length>0?`🔗 ${it.cardapioNomes.join(", ")}`:"Sem vínculo com cardápio"}</div>
                 </div>
                 <div style={{textAlign:"right"}}>
-                  <div style={{fontWeight:800,fontSize:15,color:critico?"#ef4444":it.tipo==="chopp"?"#d97706":"#10b981"}}>{it.quantidade}{it.tipo==="chopp"?`L`:` ${it.unidade}`}</div>
-                  <div style={{fontSize:10,color:"#aaa"}}>mín: {it.minimo}</div>
+                  <div style={{fontWeight:800,fontSize:15,color:critico?"#ef4444":it.tipo==="chopp"?"#d97706":"#10b981"}}>{qtdNum(it.quantidade)}{it.tipo==="chopp"?`L`:` ${it.unidade}`}</div>
+                  <div style={{fontSize:10,color:"#aaa"}}>mín: {qtdNum(it.minimo)}</div>
                   {critico&&<div style={{fontSize:9,fontWeight:700,color:"#ef4444"}}>⚠️ CRÍTICO</div>}
                 </div>
               </div>
@@ -3217,7 +3228,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
                     <span style={{fontWeight:700,color:"#7b1a0a"}}>{r.total.toFixed(r.total%1===0?0:1)} un.</span>
                   </div>
                   <div style={{height:6,background:"#f0f0f0",borderRadius:3}}>
-                    <div style={{height:"100%",width:((r.total/relConsumo[0].total)*100)+"%",background:i===0?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#c0392b,#7b1a0a)",borderRadius:3}}/>
+                    <div style={{height:"100%",width:(relConsumo[0].total>0?(r.total/relConsumo[0].total)*100:0)+"%",background:i===0?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#c0392b,#7b1a0a)",borderRadius:3}}/>
                   </div>
                   <div style={{fontSize:10,color:"#aaa",marginTop:2}}>{r.movs} movimentaç{r.movs===1?"ão":"ões"}</div>
                 </div>
