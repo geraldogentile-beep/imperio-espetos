@@ -65,6 +65,33 @@ console.log("\n=== 3) relatório do mês ===");
   ok(mensal.perdas?.lancamentos === 3 && Math.round(mensal.perdas.custo * 100) === 1940, "relatório do mês mostra as perdas (informativo)");
 }
 
+console.log("\n=== 3b) o que aconteceu, semana e ano ===");
+{
+  const outro = await api("POST", `/estoque/${est._id}/perda`, { quantidade: 1, motivo: "Outro" });
+  ok(outro.status === 400 && /aconteceu/i.test(outro.corpo.erro || ""), `"Outro" sem descrição é recusado (${outro.corpo.erro})`);
+  const r = await api("POST", `/estoque/${est._id}/perda`, { quantidade: 1, motivo: "Outro", descricao: "cliente devolveu, estava cru" });
+  ok(r.status === 201 && r.corpo.movimento.descricao === "cliente devolveu, estava cru", "descrição gravada");
+  const r2 = await api("POST", `/estoque/${est._id}/perda`, { quantidade: 1, motivo: "Queimou", descricao: "esqueceu na grelha" });
+  ok(r2.status === 201 && r2.corpo.quantidade === 13, `estoque desceu de novo (15 -> 14 -> ${r2.corpo.quantidade})`);
+  const hojeBR = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  const sem = (await api("GET", "/estoque/perdas?semana=" + hojeBR)).corpo;
+  ok(sem.lancamentos === 5 && sem.agrupar === "dia" && sem.porPeriodo.length === 1 && sem.porPeriodo[0].periodo === hojeBR, `semana: 5 lançamentos, agrupados no dia de hoje (${JSON.stringify(sem.porPeriodo)})`);
+  const ini = new Date(sem.inicio);
+  ok(new Date(ini.getTime() - 3 * 3600 * 1000).getUTCDay() === 1 && (new Date(sem.fim) - ini) === 7 * 86400000, "semana vai de segunda a segunda (Brasília)");
+  ok(sem.lista.some(m => m.descricao === "esqueceu na grelha"), "descrição aparece na lista");
+  const anoAtual = hojeBR.slice(0, 4);
+  const ano = (await api("GET", "/estoque/perdas?ano=" + anoAtual)).corpo;
+  ok(ano.lancamentos === 5 && ano.agrupar === "mes" && ano.porPeriodo[0].periodo === hojeBR.slice(0, 7), `ano: agrupado por mês (${JSON.stringify(ano.porPeriodo)})`);
+  ok((await api("GET", "/estoque/perdas?ano=99")).status === 400 && (await api("GET", "/estoque/perdas?semana=ontem")).status === 400, "período inválido recusado");
+  const anual = (await api("GET", "/relatorio/mensal?ano=" + anoAtual)).corpo;
+  ok(Array.isArray(anual.porMes) && anual.porMes.some(m => m.mes === hojeBR.slice(0, 7) && m.perdas > 0) && anual.perdas.lancamentos === 5, "relatório do ano: mês a mês com as perdas");
+  const mensal = (await api("GET", "/relatorio/mensal?mes=" + MES)).corpo;
+  ok(Array.isArray(mensal.porDia) && mensal.porDia.some(d => d.perdas > 0), "relatório do mês: dia a dia com as perdas");
+  // volta ao estado que a parte 4 espera
+  await api("DELETE", `/estoque/movimentacoes/${r.corpo.movimento._id}`);
+  await api("DELETE", `/estoque/movimentacoes/${r2.corpo.movimento._id}`);
+}
+
 console.log("\n=== 4) desfazer uma perda devolve ao estoque ===");
 {
   const del = await api("DELETE", `/estoque/movimentacoes/${mov1._id}`);

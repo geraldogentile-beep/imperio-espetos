@@ -2798,16 +2798,25 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
   const [ajusteQtd, setAjusteQtd] = useState("");
   const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
-  // Perda: espeto que caiu, queimou, estragou. perdaForm = { item, qtd, motivo, outro }
+  // Perda: espeto que caiu, queimou, estragou. perdaForm = { item, qtd, motivo, descricao }
   const [perdaForm, setPerdaForm] = useState(null);
-  const [mesPerdas, setMesPerdas] = useState(mesAtual);
+  // Relatório de perdas por semana, mês ou ano; refPerdas = um dia dentro do período
+  const [modoPerdas, setModoPerdas] = useState("mes");
+  const [refPerdas, setRefPerdas] = useState(hojeISO);
   const [relPerdas, setRelPerdas] = useState(null);
   const salvarPrecoTimer = useRef(null);
   // Limpa o timer de debounce ao desmontar
   useEffect(() => () => { if (salvarPrecoTimer.current) clearTimeout(salvarPrecoTimer.current); }, []);
 
   // Dropdown cascata para vínculo com cardápio
-  function showMsg(texto, tipo="ok") { setMsg({texto,tipo}); setTimeout(()=>setMsg(null),3500); }
+  // Aviso fixo embaixo da tela (antes ficava no fim da lista e ninguém via).
+  // Um aviso novo não é apagado pelo relógio do anterior.
+  const timerMsg = useRef(null);
+  function showMsg(texto, tipo="ok") {
+    setMsg({texto,tipo});
+    clearTimeout(timerMsg.current);
+    timerMsg.current = setTimeout(()=>setMsg(null), tipo==="ok" ? 5000 : 7000);
+  }
 
   async function carregar() {
     try {
@@ -2832,13 +2841,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
   useEffect(() => { carregar(); }, []);
   useEffect(() => { if(subAba==="consumo") carregarConsumo(); }, [subAba]);
-  async function carregarPerdas(m = mesPerdas) {
+  async function carregarPerdas(modo = modoPerdas, ref = refPerdas) {
     try {
-      const r = await authFetch(backendUrl + "/estoque/perdas?mes=" + m);
+      const r = await authFetch(backendUrl + "/estoque/perdas?" + consultaPeriodo(modo, ref));
       if (r.ok) setRelPerdas(await r.json());
     } catch {}
   }
-  useEffect(() => { if (subAba === "perdas") carregarPerdas(mesPerdas); }, [subAba, mesPerdas]);
+  useEffect(() => { if (subAba === "perdas") carregarPerdas(modoPerdas, refPerdas); }, [subAba, modoPerdas, refPerdas]);
   useEffect(() => { if(selItem) carregarMovs(selItem._id); }, [selItem]);
 
   const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
@@ -2919,12 +2928,19 @@ function Estoque({ backendUrl, cardapio = [] }) {
     if (!f?.item) return showMsg("Escolha o item.", "erro");
     const q = lerDecimal(f.qtd);
     if (!(q > 0)) return showMsg("Informe quantos foram perdidos.", "erro");
-    const motivo = f.motivo === "Outro" ? (f.outro || "").trim() || "Outro" : f.motivo;
+    const motivo = f.motivo;
+    const descricao = String(f.descricao || "").trim();
+    if (motivo === "Outro" && !descricao) return showMsg("Escreva o que aconteceu.", "erro");
     setSaving(true);
     try {
-      const r = await authFetch(backendUrl + `/estoque/${f.item._id}/perda`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quantidade: q, motivo }) });
+      const r = await authFetch(backendUrl + `/estoque/${f.item._id}/perda`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quantidade: q, motivo, descricao }) });
       if (!r.ok) { const e = await r.json().catch(() => ({})); showMsg(e.erro || "Não foi possível lançar a perda.", "erro"); setSaving(false); return; }
-      showMsg(`🗑️ Perda lançada: ${q} ${f.item.tipo === "chopp" ? "L" : f.item.unidade} de ${f.item.nome} (${motivo}).`);
+      const d = await r.json().catch(() => ({}));
+      const u = f.item.tipo === "chopp" ? "L" : f.item.unidade;
+      const antes = qtdNum(f.item.quantidade);
+      showMsg(antes < q
+        ? `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. O estoque tinha só ${antes} ${u} e ficou em 0 — confira se as entradas foram lançadas.`
+        : `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. Estoque: ${antes} → ${qtdNum(d.quantidade)} ${u}.`);
       const id = f.item._id;
       setPerdaForm(null); carregar();
       if (selItem?._id === id) carregarMovs(id);
@@ -3014,8 +3030,21 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <button key={m} onClick={()=>setPerdaForm(p=>({...p,motivo:m}))} style={{padding:"8px 12px",borderRadius:20,border:`2px solid ${f.motivo===m?"#f97316":"#e0e0e0"}`,background:f.motivo===m?"#fff7ed":"#fff",color:f.motivo===m?"#c2410c":"#555",fontWeight:f.motivo===m?700:500,fontSize:13,cursor:"pointer"}}>{m}</button>
             ))}
           </div>
-          {f.motivo==="Outro"&&<input value={f.outro||""} onChange={e=>setPerdaForm(p=>({...p,outro:e.target.value}))} placeholder="Qual foi o motivo?" maxLength={80} style={{...inp,marginTop:8}}/>}
         </div>
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>O que aconteceu? {f.motivo==="Outro"?<span style={{color:"#c2410c"}}>(obrigatório em "Outro")</span>:"(opcional)"}</div>
+          <textarea value={f.descricao||""} onChange={e=>setPerdaForm(p=>({...p,descricao:e.target.value}))} rows={2} maxLength={200}
+            placeholder="ex.: caíram da grelha na hora de virar" style={{...inp,resize:"vertical",fontFamily:"inherit"}}/>
+        </div>
+        {f.item&&(()=>{
+          const antes = qtdNum(f.item.quantidade), q = lerDecimal(f.qtd) || 0, depois = Math.max(0, antes - q);
+          return (
+            <div style={{marginBottom:10,padding:"8px 10px",borderRadius:9,fontSize:12.5,background:antes<q?"#fef3c7":"#f8f7f5",color:antes<q?"#92400e":"#555"}}>
+              Em estoque: <strong>{antes} {unid}</strong> → fica <strong>{Math.round(depois*100)/100} {unid}</strong>
+              {antes<q&&<div style={{marginTop:2}}>O estoque tem menos do que a perda: vai ficar em 0. Confira se as entradas foram lançadas.</div>}
+            </div>
+          );
+        })()}
         <div style={{display:"flex",gap:8}}>
           <button onClick={lancarPerda} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"🗑️ Confirmar perda"}</button>
           <button onClick={()=>setPerdaForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
@@ -3152,7 +3181,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>{setEntradaForm(it);setEntradaQtd("");}} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>📥 Entrada</button>
               <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(qtdNum(it.quantidade)));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
-              <button onClick={()=>setPerdaForm({item:it,qtd:"1",motivo:"Caiu no chão",outro:""})} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🗑️ Perda</button>
+              <button onClick={()=>setPerdaForm({item:it,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🗑️ Perda</button>
             </div>
           </div>
         )}
@@ -3197,7 +3226,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px dashed #f0f0f0"}}>
                 <div style={{width:32,height:32,borderRadius:"50%",background:cor+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{icon}</div>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{m.tipo==="perda"?"Perda: ":""}{m.motivo||m.tipo}</div>
+                  <div style={{fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{m.tipo==="perda"?"Perda: ":""}{m.motivo||m.tipo}{m.tipo==="perda"&&m.descricao&&<span style={{fontWeight:400,color:"#666"}}> — {m.descricao}</span>}</div>
                   <div style={{fontSize:11,color:"#aaa"}}>{new Date(m.horario).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</div>
                 </div>
                 <div style={{fontWeight:800,fontSize:14,color:cor,marginRight:4}}>{sinal}{Math.abs(m.quantidade).toFixed(m.quantidade%1===0?0:1)} {it.unidade}</div>
@@ -3215,7 +3244,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             );
           })}
         </div>
-        {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
+        {msg&&<div onClick={()=>setMsg(null)} style={{position:"fixed",left:12,right:12,bottom:84,zIndex:9999,maxWidth:560,margin:"0 auto",padding:"12px 16px",borderRadius:12,background:msg.tipo==="ok"?"#065f46":"#991b1b",color:"#fff",fontSize:14,fontWeight:700,boxShadow:"0 8px 24px rgba(0,0,0,0.25)",lineHeight:1.4}}>{msg.texto}</div>}
       </div>
     );
   }
@@ -3254,7 +3283,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
         <button onClick={()=>setNovoForm(true)} style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>+ Cadastrar item no estoque</button>
         {itens.length>0&&!perdaForm&&(
-          <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",outro:""})} style={{background:"#fff",color:"#c2410c",border:"1.5px solid #fdba74",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda (caiu, queimou, estragou)</button>
+          <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{background:"#fff",color:"#c2410c",border:"1.5px solid #fdba74",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda (caiu, queimou, estragou)</button>
         )}
         {perdaForm&&formPerda(true)}
 
@@ -3431,9 +3460,14 @@ function Estoque({ backendUrl, cardapio = [] }) {
       {/* PERDAS DO MÊS */}
       {subAba==="perdas"&&(
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <NavMes mes={mesPerdas} setMes={setMesPerdas} />
+          <div style={{display:"flex",gap:6,background:"#fff",borderRadius:12,padding:5,boxShadow:"0 2px 8px rgba(0,0,0,0.07)"}}>
+            {[["semana","Semana"],["mes","Mês"],["ano","Ano"]].map(([k,l])=>(
+              <button key={k} onClick={()=>setModoPerdas(k)} style={{flex:1,padding:"8px 0",borderRadius:8,border:"none",background:modoPerdas===k?"#7b1a0a":"transparent",color:modoPerdas===k?"#fff":"#888",fontWeight:700,fontSize:13,cursor:"pointer"}}>{l}</button>
+            ))}
+          </div>
+          <NavPeriodo modo={modoPerdas} ref_={refPerdas} setRef={setRefPerdas} />
           {!perdaForm&&itens.length>0&&(
-            <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",outro:""})} style={{background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda</button>
+            <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda</button>
           )}
           {perdaForm&&formPerda(true)}
           {!relPerdas?<div style={{color:"#888",fontSize:13,textAlign:"center"}}>Carregando...</div>:(
@@ -3443,9 +3477,27 @@ function Estoque({ backendUrl, cardapio = [] }) {
                 <Metrica icon="💸" label="Custo perdido" valor={fmtBR(relPerdas.custoTotal)} sub={relPerdas.semCusto>0?`${relPerdas.semCusto} sem custo cadastrado`:null} cor="#ef4444"/>
               </div>
               {relPerdas.lancamentos===0?(
-                <div style={{textAlign:"center",padding:"30px 0",color:"#aaa",fontSize:13}}>Nenhuma perda lançada em {rotuloMes(mesPerdas)}. 👏</div>
+                <div style={{textAlign:"center",padding:"30px 0",color:"#aaa",fontSize:13}}>Nenhuma perda lançada {modoPerdas==="semana"?"nesta semana":modoPerdas==="ano"?"neste ano":"neste mês"}. 👏</div>
               ):(
                 <>
+                  {relPerdas.porPeriodo?.length>0&&(
+                    <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+                      <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:10}}>{relPerdas.agrupar==="mes"?"Mês a mês":"Dia a dia"}</div>
+                      {relPerdas.porPeriodo.map(pp=>{
+                        const max = Math.max(...relPerdas.porPeriodo.map(x=>x.lancamentos),1);
+                        const rotulo = relPerdas.agrupar==="mes" ? rotuloMes(pp.periodo) : `${fmtDataBR(pp.periodo)} (${["dom","seg","ter","qua","qui","sex","sáb"][new Date(pp.periodo+"T12:00:00").getDay()]})`;
+                        return (
+                          <div key={pp.periodo} style={{marginBottom:8}}>
+                            <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,marginBottom:3}}>
+                              <span style={{color:"#333",fontWeight:600}}>{rotulo}</span>
+                              <span style={{color:"#555"}}>{pp.lancamentos} {pp.lancamentos===1?"perda":"perdas"}{pp.custo>0?` · ${fmtBR(pp.custo)}`:""}</span>
+                            </div>
+                            <div style={{height:6,background:"#f0f0f0",borderRadius:3}}><div style={{height:"100%",width:(pp.lancamentos/max)*100+"%",background:"linear-gradient(90deg,#fb923c,#c2410c)",borderRadius:3}}/></div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
                     <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:10}}>Por item</div>
                     {relPerdas.porItem.map(i=>(
@@ -3471,6 +3523,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
                         <div style={{flex:1,minWidth:0}}>
                           <div style={{fontWeight:600,color:"#333"}}>{m.nome} <span style={{color:"#c2410c"}}>−{String(m.quantidade).replace(".",",")} {m.unidade}</span></div>
                           <div style={{color:"#888",fontSize:11}}>{m.motivo} · {new Date(m.horario).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}{m.custo>0?` · ${fmtBR(m.custo)}`:""}</div>
+                          {m.descricao&&<div style={{color:"#555",fontSize:11.5,fontStyle:"italic",marginTop:1}}>“{m.descricao}”</div>}
                         </div>
                         <button onClick={async()=>{
                           if(!window.confirm(`Desfazer a perda de ${m.quantidade} ${m.unidade} de ${m.nome}? A quantidade volta para o estoque.`)) return;
@@ -3518,7 +3571,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
         </div>
       )}
 
-      {msg&&<div style={{padding:"10px 14px",borderRadius:10,background:msg.tipo==="ok"?"#d1fae5":"#fee2e2",color:msg.tipo==="ok"?"#065f46":"#991b1b",fontSize:13,fontWeight:600}}>{msg.texto}</div>}
+      {msg&&<div onClick={()=>setMsg(null)} style={{position:"fixed",left:12,right:12,bottom:84,zIndex:9999,maxWidth:560,margin:"0 auto",padding:"12px 16px",borderRadius:12,background:msg.tipo==="ok"?"#065f46":"#991b1b",color:"#fff",fontSize:14,fontWeight:700,boxShadow:"0 8px 24px rgba(0,0,0,0.25)",lineHeight:1.4}}>{msg.texto}</div>}
     </div>
   );
 }
@@ -4535,6 +4588,40 @@ const diaBR = (d) => new Date(new Date(d).getTime() - 3 * 3600 * 1000).toISOStri
 // "35,90" / "35.90" / "R$ 1.234,50" -> número
 const lerValor = (s) => { const t = String(s || "").replace(/[R$\s]/g, ""); const n = t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t; return parseFloat(n); };
 
+// Período de relatório: semana (segunda a domingo), mês ou ano, a partir de um dia
+const isoDia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const diaDe = (iso) => { const [a, m, d] = String(iso).split("-").map(Number); return new Date(a, m - 1, d, 12); };
+function segundaDe(iso) { const d = diaDe(iso); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; }
+function consultaPeriodo(modo, ref) {
+  if (modo === "semana") return "semana=" + isoDia(segundaDe(ref));
+  if (modo === "ano") return "ano=" + String(ref).slice(0, 4);
+  return "mes=" + String(ref).slice(0, 7);
+}
+function moverPeriodo(modo, ref, delta) {
+  const d = diaDe(ref);
+  if (modo === "semana") d.setDate(d.getDate() + 7 * delta);
+  else if (modo === "ano") d.setFullYear(d.getFullYear() + delta, 0, 1);
+  else d.setMonth(d.getMonth() + delta, 1);
+  return isoDia(d);
+}
+function rotuloPeriodo(modo, ref) {
+  if (modo === "ano") return "Ano de " + String(ref).slice(0, 4);
+  if (modo === "mes") return rotuloMes(String(ref).slice(0, 7));
+  const seg = segundaDe(ref), dom = new Date(seg); dom.setDate(seg.getDate() + 6);
+  const f = (d) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return `Semana ${f(seg)} a ${f(dom)}/${dom.getFullYear()}`;
+}
+function NavPeriodo({ modo, ref_, setRef }) {
+  const b = { background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: 10, width: 40, height: 40, fontSize: 18, cursor: "pointer", color: "#7b1a0a", fontWeight: 800, flexShrink: 0 };
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+      <button onClick={() => setRef(moverPeriodo(modo, ref_, -1))} style={b} aria-label="Anterior">‹</button>
+      <div style={{ fontWeight: 800, fontSize: 15, color: "#333", minWidth: 180, textAlign: "center" }}>{rotuloPeriodo(modo, ref_)}</div>
+      <button onClick={() => setRef(moverPeriodo(modo, ref_, 1))} style={b} aria-label="Próximo">›</button>
+    </div>
+  );
+}
+
 function NavMes({ mes, setMes }) {
   const b = { background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: 10, width: 40, height: 40, fontSize: 18, cursor: "pointer", color: "#7b1a0a", fontWeight: 800 };
   return (
@@ -4695,19 +4782,26 @@ function RelatorioMensal({ mes, setMes }) {
   const [rel, setRel] = useState(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState("");
+  // Mês (dia a dia) ou ano inteiro (mês a mês)
+  const [anual, setAnual] = useState(false);
+  const ano = String(mes).slice(0, 4);
+  const titulo_ = anual ? `Ano de ${ano}` : rotuloMes(mes);
   useEffect(() => {
     let vivo = true;
     (async () => {
       setCarregando(true); setErro("");
       try {
-        const r = await authFetch(BACKEND_URL + "/relatorio/mensal?mes=" + mes);
+        const r = await authFetch(BACKEND_URL + "/relatorio/mensal?" + (anual ? "ano=" + ano : "mes=" + mes));
         if (!vivo) return;
         if (r.ok) setRel(await r.json()); else setErro("Não foi possível montar o relatório.");
       } catch { if (vivo) setErro("Sem conexão."); }
       if (vivo) setCarregando(false);
     })();
     return () => { vivo = false; };
-  }, [mes]);
+  }, [mes, anual]);
+  // Linhas do detalhe: dia a dia no mês, mês a mês no ano (com as perdas)
+  const periodos = rel ? (rel.porMes || rel.porDia || []).map(x => ({ chave: x.mes || x.dia, rotulo: x.mes ? (MESES_NOME[Number(x.mes.slice(5, 7)) - 1] || x.mes) : fmtDataBR(x.dia), entradas: x.entradas, gastos: x.gastos, perdas: x.perdas || 0 })) : [];
+  const perdasRel = rel?.perdas || { custo: 0, lancamentos: 0 };
 
   const card = { background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" };
   const titulo = { fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 10 };
@@ -4723,19 +4817,19 @@ function RelatorioMensal({ mes, setMes }) {
     if (!win) return;
     const e = rel.entradas, g = rel.gastos;
     const tr = (c) => `<tr>${c.map((x, i) => `<td class="${i ? "n" : ""}">${x}</td>`).join("")}</tr>`;
-    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relatório ${rotuloMes(mes)}</title>
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relatório ${titulo_}</title>
       <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 8px;border-bottom:2px solid #7b1a0a;padding-bottom:4px}
       table{width:100%;border-collapse:collapse}td,th{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}.tot td{font-weight:bold;border-top:2px solid #333}
       .res{display:flex;gap:16px;margin:12px 0}.res div{flex:1;border:1px solid #ddd;border-radius:8px;padding:10px}.res b{display:block;font-size:18px}@media print{button{display:none}}</style></head><body>
-      <h1>Império dos Espetos — ${rotuloMes(mes)}</h1><div style="color:#666">Entradas e gastos do mês · gerado em ${new Date().toLocaleString("pt-BR")}</div>
-      <div class="res"><div>Entradas<b>${fmtBR(e.total)}</b></div><div>Gastos<b>${fmtBR(g.total)}</b></div><div>Resultado<b style="color:${rel.resultado >= 0 ? "#047857" : "#b91c1c"}">${fmtBR(rel.resultado)}</b></div></div>
+      <h1>Império dos Espetos — ${titulo_}</h1><div style="color:#666">Entradas e gastos ${anual ? "do ano" : "do mês"} · gerado em ${new Date().toLocaleString("pt-BR")}</div>
+      <div class="res"><div>Entradas<b>${fmtBR(e.total)}</b></div><div>Gastos<b>${fmtBR(g.total)}</b></div><div>Resultado<b style="color:${rel.resultado >= 0 ? "#047857" : "#b91c1c"}">${fmtBR(rel.resultado)}</b></div><div>Perdas<b style="color:#c2410c">${fmtBR(perdasRel.custo)}</b><span style="font-size:11px;color:#888">${perdasRel.lancamentos} lançamento(s), informativo</span></div></div>
       <h2>Entradas</h2><table>${tr(["Salão (" + e.qtdVendas + " comandas)", fmtBR(e.salao)])}${tr(["Delivery (" + e.qtdDelivery + " pedidos)", fmtBR(e.delivery)])}
       ${tr(["Pix", fmtBR(e.porForma.pix)])}${tr(["Cartão", fmtBR(e.porForma.cartao)])}${tr(["Dinheiro", fmtBR(e.porForma.dinheiro)])}${e.porForma.outros ? tr(["Outros / não informado", fmtBR(e.porForma.outros)]) : ""}
       <tr class="tot">${tr(["Total de entradas", fmtBR(e.total)]).slice(4)}</table>
       <div style="color:#666;margin-top:6px">Gorjetas recebidas (fora das entradas): ${fmtBR(e.gorjetas)} · Descontos dados: ${fmtBR(e.descontos)}</div>
       <h2>Gastos por tipo</h2><table>${g.porTipo.map(t => tr([t.tipo + " (" + t.qtd + ")", fmtBR(t.total)])).join("")}<tr class="tot">${tr(["Total de gastos", fmtBR(g.total)]).slice(4)}</table>
-      <h2>Dia a dia</h2><table><tr><th>Dia</th><th class="n">Entradas</th><th class="n">Gastos</th><th class="n">Saldo</th></tr>
-      ${rel.porDia.map(d => tr([fmtDataBR(d.dia), fmtBR(d.entradas), fmtBR(d.gastos), fmtBR(d.entradas - d.gastos)])).join("")}</table>
+      <h2>${anual ? "Mês a mês" : "Dia a dia"}</h2><table><tr><th>${anual ? "Mês" : "Dia"}</th><th class="n">Entradas</th><th class="n">Gastos</th><th class="n">Saldo</th><th class="n">Perdas</th></tr>
+      ${periodos.map(d => tr([d.rotulo, fmtBR(d.entradas), fmtBR(d.gastos), fmtBR(d.entradas - d.gastos), d.perdas ? fmtBR(d.perdas) : "—"])).join("")}</table>
       <h2>Todos os gastos</h2><table><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th class="n">Valor</th></tr>
       ${g.lista.map(d => tr([fmtDataBR(diaBR(d.data)), d.tipo, d.descricao || "", fmtBR(d.valor)])).join("")}</table>
       <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
@@ -4745,14 +4839,15 @@ function RelatorioMensal({ mes, setMes }) {
     if (!rel) return;
     const e = rel.entradas, g = rel.gastos;
     const num = (v) => (Number(v) || 0).toFixed(2).replace(".", ",");
-    const linhas = [["Relatório", rotuloMes(mes)], [],
+    const linhas = [["Relatório", titulo_], [],
       ["ENTRADAS"], ["Salão", num(e.salao)], ["Delivery", num(e.delivery)], ["Pix", num(e.porForma.pix)], ["Cartão", num(e.porForma.cartao)], ["Dinheiro", num(e.porForma.dinheiro)], ["Outros", num(e.porForma.outros)], ["Total entradas", num(e.total)], ["Gorjetas (fora)", num(e.gorjetas)], ["Descontos", num(e.descontos)], [],
       ["GASTOS POR TIPO"], ...g.porTipo.map(t => [t.tipo, num(t.total)]), ["Total gastos", num(g.total)], [], ["RESULTADO", num(rel.resultado)], [],
-      ["DIA A DIA", "Entradas", "Gastos", "Saldo"], ...rel.porDia.map(d => [fmtDataBR(d.dia), num(d.entradas), num(d.gastos), num(d.entradas - d.gastos)]), [],
+      ["PERDAS (custo, informativo)", num(perdasRel.custo)], ["Lançamentos de perda", perdasRel.lancamentos], [],
+      [anual ? "MÊS A MÊS" : "DIA A DIA", "Entradas", "Gastos", "Saldo", "Perdas"], ...periodos.map(d => [d.rotulo, num(d.entradas), num(d.gastos), num(d.entradas - d.gastos), num(d.perdas)]), [],
       ["TODOS OS GASTOS", "Tipo", "Descrição", "Valor"], ...g.lista.map(d => [fmtDataBR(diaBR(d.data)), d.tipo, d.descricao || "", num(d.valor)])];
     const csv = "﻿" + linhas.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `relatorio-${mes}.csv`; a.click();
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `relatorio-${anual ? ano : mes}.csv`; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
@@ -4760,15 +4855,23 @@ function RelatorioMensal({ mes, setMes }) {
   const maxTipo = g?.porTipo?.[0]?.total || 1;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <NavMes mes={mes} setMes={setMes} />
+      <div style={{ display: "flex", gap: 6, background: "#fff", borderRadius: 12, padding: 5, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
+        {[[false, "Mês"], [true, "Ano"]].map(([v, l]) => (
+          <button key={l} onClick={() => setAnual(v)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: anual === v ? "#7b1a0a" : "transparent", color: anual === v ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+      {anual
+        ? <NavPeriodo modo="ano" ref_={mes + "-01"} setRef={(d) => setMes(String(d).slice(0, 4) + String(mes).slice(4, 7))} />
+        : <NavMes mes={mes} setMes={setMes} />}
       {erro && <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>{erro}</div>}
       {!rel && !erro && <div style={{ color: "#888", fontSize: 13, textAlign: "center" }}>Montando o relatório...</div>}
       {rel && (
         <>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", opacity: carregando ? 0.6 : 1 }}>
-            <Metrica icon="📥" label="Entradas" valor={fmtBR(e.total)} sub={`${e.qtdVendas + e.qtdDelivery} vendas`} cor="#10b981" />
+            <Metrica icon="📥" label="Entradas" valor={fmtBR(e.total)} sub={`${e.qtdVendas + e.qtdDelivery} ${e.qtdVendas + e.qtdDelivery === 1 ? "venda" : "vendas"}`} cor="#10b981" />
             <Metrica icon="📤" label="Gastos" valor={fmtBR(g.total)} sub={`${g.qtd} lançamentos`} cor="#ef4444" />
             <Metrica icon={rel.resultado >= 0 ? "✅" : "⚠️"} label="Resultado" valor={fmtBR(rel.resultado)} sub={rel.resultado >= 0 ? "sobrou" : "faltou"} cor={rel.resultado >= 0 ? "#10b981" : "#ef4444"} />
+            <Metrica icon="🗑️" label="Perdas" valor={fmtBR(perdasRel.custo)} sub={`${perdasRel.lancamentos} lançamento(s) · informativo`} cor="#f97316" />
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -4791,7 +4894,7 @@ function RelatorioMensal({ mes, setMes }) {
 
           <div style={card}>
             <div style={titulo}>📤 Gastos por tipo</div>
-            {g.porTipo.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nenhum gasto lançado neste mês. Lance em "💸 Gastos".</div>}
+            {g.porTipo.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nenhum gasto lançado {anual ? "neste ano" : "neste mês"}. Lance em "💸 Gastos".</div>}
             {g.porTipo.map(t => (
               <div key={t.tipo} style={{ marginBottom: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
@@ -4804,25 +4907,26 @@ function RelatorioMensal({ mes, setMes }) {
             {g.porTipo.length > 0 && linha("Total de gastos", fmtBR(g.total), "#b91c1c", 800)}
             {rel.perdas?.lancamentos > 0 && (
               <div style={{ fontSize: 11.5, color: "#c2410c", marginTop: 8 }}>
-                🗑️ Perdas de mercadoria no mês: {rel.perdas.lancamentos} lançamento(s){rel.perdas.custo > 0 ? `, custo estimado ${fmtBR(rel.perdas.custo)}` : ""}. Já estão dentro das compras; veja em Estoque → Perdas.
+                🗑️ Perdas de mercadoria {anual ? "no ano" : "no mês"}: {rel.perdas.lancamentos} lançamento(s){rel.perdas.custo > 0 ? `, custo estimado ${fmtBR(rel.perdas.custo)}` : ""}. Já estão dentro das compras, por isso não entram no resultado; o detalhe está em Estoque → Perdas.
               </div>
             )}
           </div>
 
           <div style={card}>
-            <div style={titulo}>📅 Dia a dia</div>
-            {rel.porDia.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nada registrado neste mês.</div>}
-            {rel.porDia.length > 0 && (
+            <div style={titulo}>📅 {anual ? "Mês a mês" : "Dia a dia"}</div>
+            {periodos.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nada registrado {anual ? "neste ano" : "neste mês"}.</div>}
+            {periodos.length > 0 && (
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                  <thead><tr style={{ color: "#888", fontSize: 11, textTransform: "uppercase" }}><th style={{ textAlign: "left", padding: "4px 6px" }}>Dia</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Entradas</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Gastos</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Saldo</th></tr></thead>
+                  <thead><tr style={{ color: "#888", fontSize: 11, textTransform: "uppercase" }}><th style={{ textAlign: "left", padding: "4px 6px" }}>{anual ? "Mês" : "Dia"}</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Entradas</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Gastos</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Saldo</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Perdas</th></tr></thead>
                   <tbody>
-                    {rel.porDia.map(d => (
-                      <tr key={d.dia} style={{ borderTop: "1px solid #f3f3f3" }}>
-                        <td style={{ padding: "6px" }}>{fmtDataBR(d.dia)}</td>
+                    {periodos.map(d => (
+                      <tr key={d.chave} style={{ borderTop: "1px solid #f3f3f3" }}>
+                        <td style={{ padding: "6px" }}>{d.rotulo}</td>
                         <td style={{ padding: "6px", textAlign: "right", color: "#047857" }}>{d.entradas ? fmtBR(d.entradas) : "—"}</td>
                         <td style={{ padding: "6px", textAlign: "right", color: "#b91c1c" }}>{d.gastos ? fmtBR(d.gastos) : "—"}</td>
                         <td style={{ padding: "6px", textAlign: "right", fontWeight: 700, color: d.entradas - d.gastos >= 0 ? "#333" : "#b91c1c" }}>{fmtBR(d.entradas - d.gastos)}</td>
+                        <td style={{ padding: "6px", textAlign: "right", color: "#c2410c" }}>{d.perdas ? fmtBR(d.perdas) : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -4847,6 +4951,15 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const [loadingGarcons, setLoadingGarcons] = useState(false);
   const [relLucro, setRelLucro] = useState(null);
   const [loadingLucro, setLoadingLucro] = useState(false);
+  // Perdas de mercadoria no mesmo período do relatório
+  const [perdasPeriodo, setPerdasPeriodo] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    const de = new Date(); de.setDate(de.getDate() - ({ hoje: 0, semana: 6, mes: 29 }[periodo] ?? 6)); de.setHours(0, 0, 0, 0);
+    authFetch(`${BACKEND_URL}/estoque/perdas?de=${de.toISOString()}&ate=${new Date().toISOString()}`)
+      .then(r => (r.ok ? r.json() : null)).then(d => { if (vivo) setPerdasPeriodo(d); }).catch(() => {});
+    return () => { vivo = false; };
+  }, [periodo]);
   // Emissao de NFC-e em lote: escolher varias comandas e mandar de uma vez
   const [modoLote, setModoLote] = useState(false);
   const [selecionadas, setSelecionadas] = useState([]);
@@ -4998,7 +5111,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
@@ -5021,6 +5134,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
           {totalGorjetas > 0 && <Metrica icon="🙏" label="Gorjetas" valor={fmtBR(totalGorjetas)} sub="fora do faturamento" cor="#10b981" />}
           {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={fmtBR(totalDescontos)} sub={descontoSalao > 0 && descontoDelivery > 0 ? "cupons + comandas" : descontoSalao > 0 ? "no fechamento" : "via cupons"} cor="#8b5cf6" />}
+          {perdasPeriodo?.lancamentos > 0 && <Metrica icon="🗑️" label="Perdas" valor={fmtBR(perdasPeriodo.custoTotal)} sub={`${perdasPeriodo.lancamentos} lançamento(s)${perdasPeriodo.porItem?.[0] ? " · mais: " + perdasPeriodo.porItem[0].nome : ""}`} cor="#f97316" />}
         </div>
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px 14px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 12 }}>📊 {periodo === "hoje" ? "Por hora" : periodo === "semana" ? "Por dia" : "Por semana"}</div>

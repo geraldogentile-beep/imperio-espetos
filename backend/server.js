@@ -450,6 +450,7 @@ const MovEstoqueSchema = new mongoose.Schema({
   // custo unitário no dia, para o relatório dizer quanto se perdeu em R$
   baixado:       Number,
   custoUnitario: Number,
+  descricao:     String,   // perda: o que aconteceu, nas palavras de quem lançou
 });
 
 const PedidoDB    = mongoose.model("Pedido",    PedidoSchema);
@@ -2609,7 +2610,9 @@ app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
 app.post("/estoque/:id/perda", authMiddleware(["dono"]), async (req, res) => {
   const quantidade = lerQtd(req.body.quantidade);
   const motivo = String(req.body.motivo || "").trim().slice(0, 80) || "Perda";
+  const descricao = String(req.body.descricao || "").trim().slice(0, 200);
   if (!Number.isFinite(quantidade) || quantidade <= 0 || quantidade > 1e6) return res.status(400).json({ erro: "Informe a quantidade perdida" });
+  if (motivo === "Outro" && !descricao) return res.status(400).json({ erro: "Escreva o que aconteceu" });
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Item inválido" });
   try {
     const est = await EstoqueDB.findById(req.params.id);
@@ -2621,7 +2624,7 @@ app.post("/estoque/:id/perda", authMiddleware(["dono"]), async (req, res) => {
     // quanto saiu de fato do saldo para desfazer certo.
     const mov = await MovEstoqueDB.create({
       estoqueId: est._id, estoqueNome: est.nome, tipo: "perda",
-      quantidade, baixado: Math.min(quantidade, atual), motivo,
+      quantidade, baixado: Math.min(quantidade, atual), motivo, descricao,
       custoUnitario: Number(est.custoPorUnidade) || 0,
     });
     await alertaEstoqueMinimo(est, novaQtd);
@@ -2632,15 +2635,18 @@ app.post("/estoque/:id/perda", authMiddleware(["dono"]), async (req, res) => {
   }
 });
 
-// GET /estoque/perdas?mes=AAAA-MM — perdas do mês, por item e por motivo
+// GET /estoque/perdas — perdas da semana, do mês ou do ano (ou de/ate),
+// por item, por motivo e período a período.
+//   ?semana=AAAA-MM-DD (qualquer dia da semana; vai de segunda a domingo)
+//   ?mes=AAAA-MM   ?ano=AAAA   ?de=ISO&ate=ISO
 app.get("/estoque/perdas", authMiddleware(["dono"]), async (req, res) => {
-  const lim = limitesDoMes(req.query.mes);
-  if (!lim) return res.status(400).json({ erro: "Informe mes=AAAA-MM" });
+  const per = periodoDaConsulta(req.query);
+  if (!per) return res.status(400).json({ erro: "Informe semana=AAAA-MM-DD, mes=AAAA-MM, ano=AAAA ou de/ate" });
   try {
-    const lista = await MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).sort({ horario: -1 }).lean();
+    const lista = await MovEstoqueDB.find({ tipo: "perda", horario: { $gte: per.inicio, $lt: per.fim } }).sort({ horario: -1 }).lean();
     const estoques = await EstoqueDB.find({ _id: { $in: [...new Set(lista.map(m => String(m.estoqueId)))] } }).select("unidade tipo").lean();
     const unidadeDe = Object.fromEntries(estoques.map(e => [String(e._id), e.tipo === "chopp" ? "L" : (e.unidade || "un")]));
-    const porItem = {}, porMotivo = {};
+    const porItem = {}, porMotivo = {}, porPeriodo = {};
     let custoTotal = 0, semCusto = 0;
     for (const m of lista) {
       const custo = arred((m.quantidade || 0) * (m.custoUnitario || 0));
@@ -2651,13 +2657,17 @@ app.get("/estoque/perdas", authMiddleware(["dono"]), async (req, res) => {
       porItem[k].quantidade += m.quantidade || 0; porItem[k].custo += custo; porItem[k].vezes++;
       if (!porMotivo[m.motivo]) porMotivo[m.motivo] = { motivo: m.motivo, vezes: 0, custo: 0 };
       porMotivo[m.motivo].vezes++; porMotivo[m.motivo].custo += custo;
+      const p = per.chave(m.horario);
+      if (!porPeriodo[p]) porPeriodo[p] = { periodo: p, lancamentos: 0, custo: 0 };
+      porPeriodo[p].lancamentos++; porPeriodo[p].custo += custo;
     }
     res.json({
-      mes: req.query.mes,
+      mes: req.query.mes, agrupar: per.agrupar, inicio: per.inicio, fim: per.fim,
       custoTotal: arred(custoTotal), lancamentos: lista.length, semCusto,
       porItem: Object.values(porItem).map(i => ({ ...i, custo: arred(i.custo) })).sort((a, b) => b.custo - a.custo || b.quantidade - a.quantidade),
       porMotivo: Object.values(porMotivo).map(m => ({ ...m, custo: arred(m.custo) })).sort((a, b) => b.vezes - a.vezes),
-      lista: lista.map(m => ({ _id: m._id, estoqueId: m.estoqueId, nome: m.estoqueNome, unidade: unidadeDe[String(m.estoqueId)] || "un", quantidade: m.quantidade, motivo: m.motivo, horario: m.horario, custo: arred((m.quantidade || 0) * (m.custoUnitario || 0)) })),
+      porPeriodo: Object.values(porPeriodo).map(p => ({ ...p, custo: arred(p.custo) })).sort((a, b) => a.periodo.localeCompare(b.periodo)),
+      lista: lista.map(m => ({ _id: m._id, estoqueId: m.estoqueId, nome: m.estoqueNome, unidade: unidadeDe[String(m.estoqueId)] || "un", quantidade: m.quantidade, motivo: m.motivo, descricao: m.descricao || "", horario: m.horario, custo: arred((m.quantidade || 0) * (m.custoUnitario || 0)) })),
     });
   } catch (e) {
     console.error("Erro ao listar perdas:", e.message);
@@ -2714,6 +2724,38 @@ function limitesDoMes(mes) {
 }
 const diaBrasilia = (d) => new Date(new Date(d).getTime() - FUSO_MS).toISOString().slice(0, 10);
 const arred = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+// Período pedido por um relatório, sempre no horário de Brasília:
+//   semana=AAAA-MM-DD (segunda a domingo da semana desse dia) | mes=AAAA-MM |
+//   ano=AAAA | de=ISO&ate=ISO. Devolve o intervalo e como agrupar (dia ou mês).
+function periodoDaConsulta(q = {}) {
+  const porDia = (d) => diaBrasilia(d);
+  const porMes = (d) => diaBrasilia(d).slice(0, 7);
+  if (q.ano !== undefined) {
+    const a = Number(q.ano);
+    if (!Number.isInteger(a) || a < 2000 || a > 2100) return null;
+    return { inicio: new Date(Date.UTC(a, 0, 1) + FUSO_MS), fim: new Date(Date.UTC(a + 1, 0, 1) + FUSO_MS), agrupar: "mes", chave: porMes };
+  }
+  if (q.mes !== undefined) {
+    const lim = limitesDoMes(q.mes);
+    return lim ? { ...lim, agrupar: "dia", chave: porDia } : null;
+  }
+  if (q.semana !== undefined) {
+    const m = String(q.semana).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    const dia = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+    if (isNaN(dia)) return null;
+    const desdeSegunda = (dia.getUTCDay() + 6) % 7;   // segunda = 0
+    const seg = Date.UTC(dia.getUTCFullYear(), dia.getUTCMonth(), dia.getUTCDate() - desdeSegunda);
+    return { inicio: new Date(seg + FUSO_MS), fim: new Date(seg + 7 * 86400000 + FUSO_MS), agrupar: "dia", chave: porDia };
+  }
+  if (q.de !== undefined || q.ate !== undefined) {
+    const de = new Date(q.de), ate = q.ate ? new Date(q.ate) : new Date();
+    if (isNaN(de) || isNaN(ate) || ate < de) return null;
+    return { inicio: de, fim: ate, agrupar: "dia", chave: porDia };
+  }
+  return null;
+}
 
 function validarDespesa(b, parcial = false) {
   const out = {};
@@ -2790,13 +2832,16 @@ app.delete("/despesas/:id", authMiddleware(["dono"]), async (req, res) => {
   }
 });
 
-// GET /relatorio/mensal?mes=YYYY-MM — tudo que entrou e tudo que saiu no mês.
-// Entradas = vendas do salão (pelo fechamento) + delivery entregue (pelo
-// momento da entrega). Gorjeta não é receita: vai à parte. Desconto já está
-// descontado do total das vendas.
+// GET /relatorio/mensal?mes=YYYY-MM (ou ?ano=YYYY) — tudo que entrou e tudo
+// que saiu no mês ou no ano. Entradas = vendas do salão (pelo fechamento) +
+// delivery entregue (pelo momento da entrega). Gorjeta não é receita: vai à
+// parte. Desconto já está descontado do total das vendas. No ano, o detalhe
+// vem mês a mês (porMes); no mês, dia a dia (porDia).
 app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
-  const lim = limitesDoMes(req.query.mes);
-  if (!lim) return res.status(400).json({ erro: "Informe mes=AAAA-MM" });
+  const anual = req.query.ano !== undefined;
+  const lim = anual ? periodoDaConsulta({ ano: req.query.ano }) : limitesDoMes(req.query.mes);
+  if (!lim) return res.status(400).json({ erro: anual ? "Informe ano=AAAA" : "Informe mes=AAAA-MM" });
+  const chavePeriodo = (d) => (anual ? diaBrasilia(d).slice(0, 7) : diaBrasilia(d));
   try {
     const [vendas, pedidos, despesas, perdasMes] = await Promise.all([
       VendaSalaoDB.find({ fechamento: { $gte: lim.inicio, $lt: lim.fim } }).lean(),
@@ -2805,11 +2850,11 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
         { entregueEm: null, horario: { $gte: lim.inicio, $lt: lim.fim } },
       ] }).lean(),
       DespesaDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).sort({ data: 1, createdAt: 1 }).lean(),
-      MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).select("quantidade custoUnitario").lean(),
+      MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).select("quantidade custoUnitario horario").lean(),
     ]);
 
     const porDia = {};
-    const dia = (d) => { const k = diaBrasilia(d); if (!porDia[k]) porDia[k] = { dia: k, salao: 0, delivery: 0, gastos: 0 }; return porDia[k]; };
+    const dia = (d) => { const k = chavePeriodo(d); if (!porDia[k]) porDia[k] = { dia: k, salao: 0, delivery: 0, gastos: 0, perdas: 0 }; return porDia[k]; };
     const porForma = { pix: 0, cartao: 0, dinheiro: 0, outros: 0 };
     const somarForma = (tipo, valor) => { porForma[["pix", "cartao", "dinheiro"].includes(tipo) ? tipo : "outros"] += Number(valor) || 0; };
 
@@ -2841,9 +2886,14 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
       tipos[d.tipo].total += d.valor; tipos[d.tipo].qtd++;
     }
 
+    for (const m of perdasMes) dia(m.horario).perdas += (m.quantidade || 0) * (m.custoUnitario || 0);
+
     const entradas = arred(salao + delivery);
+    const periodos = Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia))
+      .map(d => ({ ...d, salao: arred(d.salao), delivery: arred(d.delivery), gastos: arred(d.gastos), perdas: arred(d.perdas), entradas: arred(d.salao + d.delivery) }));
     res.json({
-      mes: req.query.mes,
+      mes: anual ? undefined : req.query.mes,
+      ano: anual ? String(req.query.ano) : undefined,
       inicio: lim.inicio, fim: lim.fim,
       entradas: {
         total: entradas, salao: arred(salao), delivery: arred(delivery),
@@ -2863,8 +2913,7 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
         lancamentos: perdasMes.length,
       },
       resultado: arred(entradas - gastos),
-      porDia: Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia))
-        .map(d => ({ ...d, salao: arred(d.salao), delivery: arred(d.delivery), gastos: arred(d.gastos), entradas: arred(d.salao + d.delivery) })),
+      ...(anual ? { porMes: periodos.map(({ dia: mes, ...r }) => ({ mes, ...r })) } : { porDia: periodos }),
     });
   } catch (e) {
     console.error("Erro no relatorio mensal:", e.message);
