@@ -3987,9 +3987,315 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
   );
 }
 
+// ── GASTOS DA LOJA E RELATÓRIO DO MÊS ─────────────────────────
+// A dona lança o que saiu (tipo + valor) e, no fim do mês, vê tudo que
+// entrou e tudo que saiu num lugar só. Só o 9999 enxerga isto.
+const TIPOS_GASTO = ["Mercadoria / carnes", "Bebidas", "Pães e insumos", "Carvão / gás", "Funcionários", "Aluguel", "Energia", "Água", "Internet / telefone", "Embalagens / descartáveis", "Manutenção", "Impostos / taxas", "Marketing", "Outro"];
+const MESES_NOME = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+const fmtBR = (v) => "R$ " + (Number(v) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const mesAtual = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
+const hojeISO = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+const rotuloMes = (m) => { const [a, mm] = String(m).split("-"); return (MESES_NOME[Number(mm) - 1] || mm) + " de " + a; };
+const mudarMes = (m, delta) => { const [a, mm] = String(m).split("-").map(Number); const d = new Date(a, mm - 1 + delta, 1); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
+const fmtDataBR = (iso) => { const [a, m, d] = String(iso).slice(0, 10).split("-"); return `${d}/${m}/${a}`; };
+// Dia em Brasília (UTC-3, sem horário de verão) de uma data vinda do servidor
+const diaBR = (d) => new Date(new Date(d).getTime() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+// "35,90" / "35.90" / "R$ 1.234,50" -> número
+const lerValor = (s) => { const t = String(s || "").replace(/[R$\s]/g, ""); const n = t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t; return parseFloat(n); };
+
+function NavMes({ mes, setMes }) {
+  const b = { background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: 10, width: 40, height: 40, fontSize: 18, cursor: "pointer", color: "#7b1a0a", fontWeight: 800 };
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+      <button onClick={() => setMes(mudarMes(mes, -1))} style={b} aria-label="Mês anterior">‹</button>
+      <div style={{ fontWeight: 800, fontSize: 16, color: "#333", minWidth: 170, textAlign: "center" }}>{rotuloMes(mes)}</div>
+      <button onClick={() => setMes(mudarMes(mes, 1))} style={b} aria-label="Próximo mês">›</button>
+    </div>
+  );
+}
+
+function LancamentoGastos({ mes, setMes }) {
+  const vazio = () => ({ data: hojeISO(), tipo: TIPOS_GASTO[0], tipoOutro: "", valor: "", descricao: "" });
+  const [lista, setLista] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [form, setForm] = useState(vazio);
+  const [editando, setEditando] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const topo = useRef(null);
+  const aviso = (texto, tipo = "ok") => { setMsg({ texto, tipo }); setTimeout(() => setMsg(null), 3500); };
+
+  async function carregar(m = mes) {
+    setCarregando(true);
+    try { const r = await authFetch(BACKEND_URL + "/despesas?mes=" + m); if (r.ok) setLista(await r.json()); }
+    catch { aviso("Sem conexão para carregar os gastos.", "erro"); }
+    setCarregando(false);
+  }
+  useEffect(() => { carregar(mes); }, [mes]);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  async function salvar() {
+    const valor = lerValor(form.valor);
+    const tipo = form.tipo === "Outro" ? form.tipoOutro.trim() : form.tipo;
+    if (!tipo) return aviso("Escreva o tipo do gasto.", "erro");
+    if (!(valor > 0)) return aviso("Informe o valor (ex.: 35,90).", "erro");
+    if (!form.data) return aviso("Informe a data.", "erro");
+    setSalvando(true);
+    try {
+      const corpo = { data: form.data + "T12:00:00-03:00", tipo, valor, descricao: form.descricao.trim() };
+      const r = await authFetch(BACKEND_URL + (editando ? "/despesas/" + editando : "/despesas"), {
+        method: editando ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { aviso(d.erro || "Não foi possível salvar.", "erro"); setSalvando(false); return; }
+      aviso(editando ? "Gasto alterado." : `Gasto lançado: ${tipo}, ${fmtBR(valor)}.`);
+      setEditando(null);
+      setForm(f => ({ ...vazio(), data: f.data }));
+      const mesDoGasto = form.data.slice(0, 7);
+      if (mesDoGasto !== mes) setMes(mesDoGasto); else carregar(mes);
+    } catch { aviso("Sem conexão. Tente de novo.", "erro"); }
+    setSalvando(false);
+  }
+  function editar(d) {
+    const tipoConhecido = TIPOS_GASTO.includes(d.tipo);
+    setEditando(d._id);
+    setForm({ data: diaBR(d.data), tipo: tipoConhecido ? d.tipo : "Outro", tipoOutro: tipoConhecido ? "" : d.tipo, valor: String(d.valor).replace(".", ","), descricao: d.descricao || "" });
+    topo.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  async function excluir(d) {
+    if (!window.confirm(`Excluir o gasto "${d.tipo}" de ${fmtBR(d.valor)} (${fmtDataBR(diaBR(d.data))})?`)) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/despesas/" + d._id, { method: "DELETE" });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); aviso(e.erro || "Não foi possível excluir.", "erro"); return; }
+      setLista(l => l.filter(x => x._id !== d._id));
+      if (editando === d._id) { setEditando(null); setForm(vazio()); }
+      aviso("Gasto excluído.");
+    } catch { aviso("Sem conexão. Tente de novo.", "erro"); }
+  }
+
+  const total = lista.reduce((s, d) => s + (Number(d.valor) || 0), 0);
+  const inp = { width: "100%", padding: "11px 12px", border: "1.5px solid #e0e0e0", borderRadius: 10, fontSize: 15, color: "#333", outline: "none", boxSizing: "border-box", background: "#fff" };
+  const lbl = { fontSize: 11, color: "#888", marginBottom: 4, fontWeight: 600 };
+  // Agrupa por dia para a lista ficar legível
+  const porDia = [];
+  for (const d of lista) { const k = diaBR(d.data); let g = porDia.find(x => x.dia === k); if (!g) { g = { dia: k, itens: [] }; porDia.push(g); } g.itens.push(d); }
+
+  return (
+    <div ref={topo} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <NavMes mes={mes} setMes={setMes} />
+
+      {/* Lançar */}
+      <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: editando ? "1.5px solid #f59e0b" : "1.5px solid transparent" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 10 }}>{editando ? "✏️ Alterar gasto" : "💸 Lançar gasto"}</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: "2 1 180px" }}>
+            <div style={lbl}>Tipo</div>
+            <select value={form.tipo} onChange={e => set("tipo", e.target.value)} style={inp}>
+              {TIPOS_GASTO.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          {form.tipo === "Outro" && (
+            <div style={{ flex: "2 1 180px" }}>
+              <div style={lbl}>Qual?</div>
+              <input value={form.tipoOutro} onChange={e => set("tipoOutro", e.target.value)} placeholder="ex.: Uniformes" maxLength={40} style={inp} />
+            </div>
+          )}
+          <div style={{ flex: "1 1 120px" }}>
+            <div style={lbl}>Valor (R$)</div>
+            <input value={form.valor} onChange={e => set("valor", e.target.value)} placeholder="0,00" inputMode="decimal" style={{ ...inp, fontWeight: 700, fontSize: 17 }} />
+          </div>
+          <div style={{ flex: "1 1 140px" }}>
+            <div style={lbl}>Data</div>
+            <input type="date" value={form.data} onChange={e => set("data", e.target.value)} style={inp} />
+          </div>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <div style={lbl}>Descrição (opcional)</div>
+          <input value={form.descricao} onChange={e => set("descricao", e.target.value)} placeholder="ex.: 20 kg de alcatra no Zé" maxLength={200} style={inp} onKeyDown={e => { if (e.key === "Enter") salvar(); }} />
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <button onClick={salvar} disabled={salvando} style={{ flex: 2, minWidth: 160, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "13px 0", fontWeight: 800, fontSize: 15, cursor: "pointer", opacity: salvando ? 0.6 : 1 }}>
+            {salvando ? "Salvando..." : editando ? "💾 Salvar alteração" : "➕ Lançar gasto"}
+          </button>
+          {editando && <button onClick={() => { setEditando(null); setForm(vazio()); }} style={{ flex: 1, background: "#f0f0f0", color: "#555", border: "none", borderRadius: 10, padding: "13px 0", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Cancelar</button>}
+        </div>
+        {msg && <div style={{ marginTop: 10, padding: "9px 12px", borderRadius: 9, fontSize: 13, background: msg.tipo === "erro" ? "#fee2e2" : "#d1fae5", color: msg.tipo === "erro" ? "#991b1b" : "#065f46", fontWeight: 600 }}>{msg.texto}</div>}
+      </div>
+
+      {/* Lista do mês */}
+      <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>Gastos de {rotuloMes(mes)}</div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: "#b91c1c" }}>{fmtBR(total)}</div>
+        </div>
+        {carregando && lista.length === 0 ? <div style={{ color: "#888", fontSize: 13 }}>Carregando...</div>
+          : lista.length === 0 ? <div style={{ color: "#888", fontSize: 13, textAlign: "center", padding: "14px 0" }}>Nenhum gasto lançado neste mês.</div>
+          : porDia.map(g => (
+            <div key={g.dia} style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: 0.5, margin: "6px 0 4px" }}>{fmtDataBR(g.dia)}</div>
+              {g.itens.map(d => (
+                <div key={d._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #f3f3f3" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: "#333" }}>{d.tipo}</div>
+                    {d.descricao && <div style={{ fontSize: 12, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.descricao}</div>}
+                  </div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: "#b91c1c", whiteSpace: "nowrap" }}>{fmtBR(d.valor)}</div>
+                  <button onClick={() => editar(d)} title="Alterar" style={{ background: "#f5f5f5", border: "none", borderRadius: 8, width: 34, height: 34, cursor: "pointer", fontSize: 14 }}>✏️</button>
+                  <button onClick={() => excluir(d)} title="Excluir" style={{ background: "#fee2e2", border: "none", borderRadius: 8, width: 34, height: 34, cursor: "pointer", fontSize: 14 }}>🗑️</button>
+                </div>
+              ))}
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+function RelatorioMensal({ mes, setMes }) {
+  const [rel, setRel] = useState(null);
+  const [carregando, setCarregando] = useState(false);
+  const [erro, setErro] = useState("");
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCarregando(true); setErro("");
+      try {
+        const r = await authFetch(BACKEND_URL + "/relatorio/mensal?mes=" + mes);
+        if (!vivo) return;
+        if (r.ok) setRel(await r.json()); else setErro("Não foi possível montar o relatório.");
+      } catch { if (vivo) setErro("Sem conexão."); }
+      if (vivo) setCarregando(false);
+    })();
+    return () => { vivo = false; };
+  }, [mes]);
+
+  const card = { background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" };
+  const titulo = { fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 10 };
+  const linha = (rotulo, valor, cor = "#333", peso = 500) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #f3f3f3", fontSize: 13 }}>
+      <span style={{ color: "#555" }}>{rotulo}</span><span style={{ fontWeight: peso, color: cor }}>{valor}</span>
+    </div>
+  );
+
+  function imprimir() {
+    if (!rel) return;
+    const win = abrirJanelaImpressao("width=800,height=900");
+    if (!win) return;
+    const e = rel.entradas, g = rel.gastos;
+    const tr = (c) => `<tr>${c.map((x, i) => `<td class="${i ? "n" : ""}">${x}</td>`).join("")}</tr>`;
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relatório ${rotuloMes(mes)}</title>
+      <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 8px;border-bottom:2px solid #7b1a0a;padding-bottom:4px}
+      table{width:100%;border-collapse:collapse}td,th{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}.tot td{font-weight:bold;border-top:2px solid #333}
+      .res{display:flex;gap:16px;margin:12px 0}.res div{flex:1;border:1px solid #ddd;border-radius:8px;padding:10px}.res b{display:block;font-size:18px}@media print{button{display:none}}</style></head><body>
+      <h1>Império dos Espetos — ${rotuloMes(mes)}</h1><div style="color:#666">Entradas e gastos do mês · gerado em ${new Date().toLocaleString("pt-BR")}</div>
+      <div class="res"><div>Entradas<b>${fmtBR(e.total)}</b></div><div>Gastos<b>${fmtBR(g.total)}</b></div><div>Resultado<b style="color:${rel.resultado >= 0 ? "#047857" : "#b91c1c"}">${fmtBR(rel.resultado)}</b></div></div>
+      <h2>Entradas</h2><table>${tr(["Salão (" + e.qtdVendas + " comandas)", fmtBR(e.salao)])}${tr(["Delivery (" + e.qtdDelivery + " pedidos)", fmtBR(e.delivery)])}
+      ${tr(["Pix", fmtBR(e.porForma.pix)])}${tr(["Cartão", fmtBR(e.porForma.cartao)])}${tr(["Dinheiro", fmtBR(e.porForma.dinheiro)])}${e.porForma.outros ? tr(["Outros / não informado", fmtBR(e.porForma.outros)]) : ""}
+      <tr class="tot">${tr(["Total de entradas", fmtBR(e.total)]).slice(4)}</table>
+      <div style="color:#666;margin-top:6px">Gorjetas recebidas (fora das entradas): ${fmtBR(e.gorjetas)} · Descontos dados: ${fmtBR(e.descontos)}</div>
+      <h2>Gastos por tipo</h2><table>${g.porTipo.map(t => tr([t.tipo + " (" + t.qtd + ")", fmtBR(t.total)])).join("")}<tr class="tot">${tr(["Total de gastos", fmtBR(g.total)]).slice(4)}</table>
+      <h2>Dia a dia</h2><table><tr><th>Dia</th><th class="n">Entradas</th><th class="n">Gastos</th><th class="n">Saldo</th></tr>
+      ${rel.porDia.map(d => tr([fmtDataBR(d.dia), fmtBR(d.entradas), fmtBR(d.gastos), fmtBR(d.entradas - d.gastos)])).join("")}</table>
+      <h2>Todos os gastos</h2><table><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th class="n">Valor</th></tr>
+      ${g.lista.map(d => tr([fmtDataBR(diaBR(d.data)), d.tipo, d.descricao || "", fmtBR(d.valor)])).join("")}</table>
+      <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
+    win.document.close();
+  }
+  function baixarCsv() {
+    if (!rel) return;
+    const e = rel.entradas, g = rel.gastos;
+    const num = (v) => (Number(v) || 0).toFixed(2).replace(".", ",");
+    const linhas = [["Relatório", rotuloMes(mes)], [],
+      ["ENTRADAS"], ["Salão", num(e.salao)], ["Delivery", num(e.delivery)], ["Pix", num(e.porForma.pix)], ["Cartão", num(e.porForma.cartao)], ["Dinheiro", num(e.porForma.dinheiro)], ["Outros", num(e.porForma.outros)], ["Total entradas", num(e.total)], ["Gorjetas (fora)", num(e.gorjetas)], ["Descontos", num(e.descontos)], [],
+      ["GASTOS POR TIPO"], ...g.porTipo.map(t => [t.tipo, num(t.total)]), ["Total gastos", num(g.total)], [], ["RESULTADO", num(rel.resultado)], [],
+      ["DIA A DIA", "Entradas", "Gastos", "Saldo"], ...rel.porDia.map(d => [fmtDataBR(d.dia), num(d.entradas), num(d.gastos), num(d.entradas - d.gastos)]), [],
+      ["TODOS OS GASTOS", "Tipo", "Descrição", "Valor"], ...g.lista.map(d => [fmtDataBR(diaBR(d.data)), d.tipo, d.descricao || "", num(d.valor)])];
+    const csv = "﻿" + linhas.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `relatorio-${mes}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  const e = rel?.entradas, g = rel?.gastos;
+  const maxTipo = g?.porTipo?.[0]?.total || 1;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <NavMes mes={mes} setMes={setMes} />
+      {erro && <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>{erro}</div>}
+      {!rel && !erro && <div style={{ color: "#888", fontSize: 13, textAlign: "center" }}>Montando o relatório...</div>}
+      {rel && (
+        <>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", opacity: carregando ? 0.6 : 1 }}>
+            <Metrica icon="📥" label="Entradas" valor={fmtBR(e.total)} sub={`${e.qtdVendas + e.qtdDelivery} vendas`} cor="#10b981" />
+            <Metrica icon="📤" label="Gastos" valor={fmtBR(g.total)} sub={`${g.qtd} lançamentos`} cor="#ef4444" />
+            <Metrica icon={rel.resultado >= 0 ? "✅" : "⚠️"} label="Resultado" valor={fmtBR(rel.resultado)} sub={rel.resultado >= 0 ? "sobrou" : "faltou"} cor={rel.resultado >= 0 ? "#10b981" : "#ef4444"} />
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={imprimir} style={{ flex: 1, minWidth: 150, background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🖨️ Imprimir / salvar PDF</button>
+            <button onClick={baixarCsv} style={{ flex: 1, minWidth: 150, background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>⬇️ Planilha para o contador</button>
+          </div>
+
+          <div style={card}>
+            <div style={titulo}>📥 Entradas</div>
+            {linha(`Salão (${e.qtdVendas} comandas)`, fmtBR(e.salao))}
+            {linha(`Delivery (${e.qtdDelivery} pedidos)`, fmtBR(e.delivery))}
+            <div style={{ fontSize: 11, color: "#888", margin: "10px 0 2px", fontWeight: 700, textTransform: "uppercase" }}>Por forma de pagamento</div>
+            {linha("Pix", fmtBR(e.porForma.pix))}
+            {linha("Cartão", fmtBR(e.porForma.cartao))}
+            {linha("Dinheiro", fmtBR(e.porForma.dinheiro))}
+            {e.porForma.outros > 0 && linha("Outros / não informado", fmtBR(e.porForma.outros))}
+            {linha("Total de entradas", fmtBR(e.total), "#047857", 800)}
+            <div style={{ fontSize: 11, color: "#888", marginTop: 8 }}>Gorjetas recebidas, fora das entradas: {fmtBR(e.gorjetas)} · Descontos dados: {fmtBR(e.descontos)}</div>
+          </div>
+
+          <div style={card}>
+            <div style={titulo}>📤 Gastos por tipo</div>
+            {g.porTipo.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nenhum gasto lançado neste mês. Lance em "💸 Gastos".</div>}
+            {g.porTipo.map(t => (
+              <div key={t.tipo} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
+                  <span style={{ color: "#333", fontWeight: 600 }}>{t.tipo} <span style={{ color: "#aaa", fontWeight: 400 }}>· {t.qtd}</span></span>
+                  <span style={{ fontWeight: 700, color: "#b91c1c" }}>{fmtBR(t.total)}</span>
+                </div>
+                <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}><div style={{ height: "100%", width: (t.total / maxTipo) * 100 + "%", background: "linear-gradient(90deg,#ef4444,#b91c1c)", borderRadius: 3 }} /></div>
+              </div>
+            ))}
+            {g.porTipo.length > 0 && linha("Total de gastos", fmtBR(g.total), "#b91c1c", 800)}
+          </div>
+
+          <div style={card}>
+            <div style={titulo}>📅 Dia a dia</div>
+            {rel.porDia.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nada registrado neste mês.</div>}
+            {rel.porDia.length > 0 && (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr style={{ color: "#888", fontSize: 11, textTransform: "uppercase" }}><th style={{ textAlign: "left", padding: "4px 6px" }}>Dia</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Entradas</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Gastos</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Saldo</th></tr></thead>
+                  <tbody>
+                    {rel.porDia.map(d => (
+                      <tr key={d.dia} style={{ borderTop: "1px solid #f3f3f3" }}>
+                        <td style={{ padding: "6px" }}>{fmtDataBR(d.dia)}</td>
+                        <td style={{ padding: "6px", textAlign: "right", color: "#047857" }}>{d.entradas ? fmtBR(d.entradas) : "—"}</td>
+                        <td style={{ padding: "6px", textAlign: "right", color: "#b91c1c" }}>{d.gastos ? fmtBR(d.gastos) : "—"}</td>
+                        <td style={{ padding: "6px", textAlign: "right", fontWeight: 700, color: d.entradas - d.gastos >= 0 ? "#333" : "#b91c1c" }}>{fmtBR(d.entradas - d.gastos)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
   const [periodo, setPeriodo] = useState("semana");
   const [subAba, setSubAba] = useState("geral");
+  const [mesRel, setMesRel] = useState(mesAtual);   // Gastos e relatório do mês andam juntos
   const [vendaAberta, setVendaAberta] = useState(null);
   const [corrigindo, setCorrigindo] = useState(null);   // _id da venda em correcao
   const [zerarAberto, setZerarAberto] = useState(false);
@@ -4137,16 +4443,18 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   return (
     <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
 
-      {/* Período */}
-      <div style={{ display: "flex", gap: 8, background: "#fff", borderRadius: 12, padding: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
-        {[["hoje","Hoje"],["semana","7 dias"],["mes","30 dias"]].map(([k, l]) => (
-          <button key={k} onClick={() => setPeriodo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: periodo === k ? "#7b1a0a" : "transparent", color: periodo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
-        ))}
-      </div>
+      {/* Período (as telas do mês têm o próprio seletor) */}
+      {!["gastos", "mes"].includes(subAba) && (
+        <div style={{ display: "flex", gap: 8, background: "#fff", borderRadius: 12, padding: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
+          {[["hoje","Hoje"],["semana","7 dias"],["mes","30 dias"]].map(([k, l]) => (
+            <button key={k} onClick={() => setPeriodo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: periodo === k ? "#7b1a0a" : "transparent", color: periodo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
+          ))}
+        </div>
+      )}
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
@@ -4155,6 +4463,10 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       {subAba === "dash" && (
         <DashboardCharts pedidos={pedidos} historicoSalao={historicoSalao} periodo={periodo} taxaEntrega={taxaEntrega} />
       )}
+
+      {/* GASTOS DA LOJA e RELATÓRIO DO MÊS */}
+      {subAba === "gastos" && <LancamentoGastos mes={mesRel} setMes={setMesRel} />}
+      {subAba === "mes" && <RelatorioMensal mes={mesRel} setMes={setMesRel} />}
 
       {/* GERAL */}
       {subAba === "geral" && <>

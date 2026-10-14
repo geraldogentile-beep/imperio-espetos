@@ -229,6 +229,18 @@ const CardapioSchema = new mongoose.Schema({
   },
 });
 
+// ── GASTOS DA LOJA ────────────────────────────────────────────
+// Lançamento manual da dona: o que saiu do caixa (mercadoria, gás, energia,
+// funcionários...). Entra no relatório do mês ao lado das entradas.
+const DespesaSchema = new mongoose.Schema({
+  data:      { type: Date, required: true },
+  tipo:      { type: String, required: true, trim: true, maxlength: 40 },
+  descricao: { type: String, default: "", trim: true, maxlength: 200 },
+  valor:     { type: Number, required: true, min: 0.01 },
+  forma:     { type: String, default: "", enum: ["", "dinheiro", "pix", "cartao", "boleto", "outro"] },
+  criadoPor: { type: String, default: "" },
+}, { timestamps: true });
+
 const VendaSalaoSchema = new mongoose.Schema({
   mesa: { type: Number, required: true, min: 0 },
   // De qual comanda veio. Antes o painel mandava e o schema descartava.
@@ -415,6 +427,7 @@ const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
 const EstoqueDB    = mongoose.model("Estoque",        EstoqueSchema);
 const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
+const DespesaDB    = mongoose.model("Despesa",        DespesaSchema);
 const NotaFiscalDB = mongoose.model("NotaFiscal",     NotaFiscalSchema);
 
 // ── MESAS DO SALÃO ────────────────────────────────────────────
@@ -2438,6 +2451,172 @@ app.get("/estoque/:id/movimentacoes", authMiddleware(["dono"]), async (req, res)
 });
 
 // ── LUCRO API ─────────────────────────────────────────────────
+// ── GASTOS DA LOJA E RELATÓRIO DO MÊS ─────────────────────────
+// O mês é o de Brasília (UTC-3, sem horário de verão), não o do servidor:
+// uma venda fechada às 23h30 do dia 31 é do mês que acabou.
+const FUSO_MS = 3 * 60 * 60 * 1000;
+function limitesDoMes(mes) {
+  const m = String(mes || "").match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  const ano = Number(m[1]), mesN = Number(m[2]);
+  if (mesN < 1 || mesN > 12) return null;
+  return {
+    inicio: new Date(Date.UTC(ano, mesN - 1, 1) + FUSO_MS),
+    fim: new Date(Date.UTC(ano, mesN, 1) + FUSO_MS),
+  };
+}
+const diaBrasilia = (d) => new Date(new Date(d).getTime() - FUSO_MS).toISOString().slice(0, 10);
+const arred = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+function validarDespesa(b, parcial = false) {
+  const out = {};
+  if (b.data !== undefined || !parcial) {
+    const d = new Date(b.data);
+    if (isNaN(d)) return { erro: "Data inválida" };
+    out.data = d;
+  }
+  if (b.tipo !== undefined || !parcial) {
+    const t = String(b.tipo || "").trim();
+    if (!t) return { erro: "Informe o tipo do gasto" };
+    out.tipo = t.slice(0, 40);
+  }
+  if (b.valor !== undefined || !parcial) {
+    const v = typeof b.valor === "string" ? parseFloat(b.valor.replace(/\./g, "").replace(",", ".")) : Number(b.valor);
+    if (!Number.isFinite(v) || v <= 0) return { erro: "Valor deve ser maior que zero" };
+    if (v > 1000000) return { erro: "Valor alto demais; confira" };
+    out.valor = arred(v);
+  }
+  if (b.descricao !== undefined) out.descricao = String(b.descricao || "").trim().slice(0, 200);
+  if (b.forma !== undefined) out.forma = ["dinheiro", "pix", "cartao", "boleto", "outro"].includes(b.forma) ? b.forma : "";
+  return { dados: out };
+}
+
+// GET /despesas?mes=YYYY-MM
+app.get("/despesas", authMiddleware(["dono"]), async (req, res) => {
+  const lim = limitesDoMes(req.query.mes);
+  if (!lim) return res.status(400).json({ erro: "Informe mes=AAAA-MM" });
+  try {
+    const lista = await DespesaDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).sort({ data: -1, createdAt: -1 }).lean();
+    res.json(lista);
+  } catch (e) {
+    console.error("Erro ao listar despesas:", e.message);
+    res.status(500).json({ erro: "Erro ao listar gastos" });
+  }
+});
+
+app.post("/despesas", authMiddleware(["dono"]), async (req, res) => {
+  const v = validarDespesa(req.body || {});
+  if (v.erro) return res.status(400).json({ erro: v.erro });
+  try {
+    const d = await DespesaDB.create({ ...v.dados, criadoPor: req.user?.nome || req.user?.role || "" });
+    res.status(201).json(d);
+  } catch (e) {
+    console.error("Erro ao lançar despesa:", e.message);
+    res.status(500).json({ erro: "Erro ao salvar o gasto" });
+  }
+});
+
+app.put("/despesas/:id", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
+  const v = validarDespesa(req.body || {}, true);
+  if (v.erro) return res.status(400).json({ erro: v.erro });
+  try {
+    const d = await DespesaDB.findByIdAndUpdate(req.params.id, { $set: v.dados }, { new: true }).lean();
+    if (!d) return res.status(404).json({ erro: "Gasto não encontrado" });
+    res.json(d);
+  } catch (e) {
+    console.error("Erro ao alterar despesa:", e.message);
+    res.status(500).json({ erro: "Erro ao alterar o gasto" });
+  }
+});
+
+app.delete("/despesas/:id", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
+  try {
+    const d = await DespesaDB.findByIdAndDelete(req.params.id).lean();
+    if (!d) return res.status(404).json({ erro: "Gasto não encontrado" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Erro ao excluir despesa:", e.message);
+    res.status(500).json({ erro: "Erro ao excluir o gasto" });
+  }
+});
+
+// GET /relatorio/mensal?mes=YYYY-MM — tudo que entrou e tudo que saiu no mês.
+// Entradas = vendas do salão (pelo fechamento) + delivery entregue (pelo
+// momento da entrega). Gorjeta não é receita: vai à parte. Desconto já está
+// descontado do total das vendas.
+app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
+  const lim = limitesDoMes(req.query.mes);
+  if (!lim) return res.status(400).json({ erro: "Informe mes=AAAA-MM" });
+  try {
+    const [vendas, pedidos, despesas] = await Promise.all([
+      VendaSalaoDB.find({ fechamento: { $gte: lim.inicio, $lt: lim.fim } }).lean(),
+      PedidoDB.find({ status: "entregue", $or: [
+        { entregueEm: { $gte: lim.inicio, $lt: lim.fim } },
+        { entregueEm: null, horario: { $gte: lim.inicio, $lt: lim.fim } },
+      ] }).lean(),
+      DespesaDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).sort({ data: 1, createdAt: 1 }).lean(),
+    ]);
+
+    const porDia = {};
+    const dia = (d) => { const k = diaBrasilia(d); if (!porDia[k]) porDia[k] = { dia: k, salao: 0, delivery: 0, gastos: 0 }; return porDia[k]; };
+    const porForma = { pix: 0, cartao: 0, dinheiro: 0, outros: 0 };
+    const somarForma = (tipo, valor) => { porForma[["pix", "cartao", "dinheiro"].includes(tipo) ? tipo : "outros"] += Number(valor) || 0; };
+
+    let salao = 0, gorjetas = 0, descontos = 0;
+    for (const v of vendas) {
+      const t = Number(v.total) || 0;
+      salao += t; gorjetas += Number(v.gorjeta) || 0; descontos += Number(v.desconto) || 0;
+      dia(v.fechamento).salao += t;
+      if (Array.isArray(v.pagamentos) && v.pagamentos.length) {
+        // Gorjeta paga junto: a soma dos pagamentos passa do total; a receita e o total
+        const somaPg = v.pagamentos.reduce((s, p) => s + (Number(p.valor) || 0), 0) || 1;
+        for (const p of v.pagamentos) somarForma(p.tipo, (Number(p.valor) || 0) * (t / somaPg));
+      } else somarForma(v.pagamento, t);
+    }
+    let delivery = 0;
+    for (const p of pedidos) {
+      const t = Number(p.total) || 0;
+      delivery += t; descontos += Number(p.desconto) || 0;
+      dia(p.entregueEm || p.horario).delivery += t;
+      somarForma(p.pagamento, t);
+    }
+
+    const tipos = {};
+    let gastos = 0;
+    for (const d of despesas) {
+      gastos += d.valor;
+      dia(d.data).gastos += d.valor;
+      if (!tipos[d.tipo]) tipos[d.tipo] = { tipo: d.tipo, total: 0, qtd: 0 };
+      tipos[d.tipo].total += d.valor; tipos[d.tipo].qtd++;
+    }
+
+    const entradas = arred(salao + delivery);
+    res.json({
+      mes: req.query.mes,
+      inicio: lim.inicio, fim: lim.fim,
+      entradas: {
+        total: entradas, salao: arred(salao), delivery: arred(delivery),
+        qtdVendas: vendas.length, qtdDelivery: pedidos.length,
+        gorjetas: arred(gorjetas), descontos: arred(descontos),
+        porForma: Object.fromEntries(Object.entries(porForma).map(([k, v]) => [k, arred(v)])),
+      },
+      gastos: {
+        total: arred(gastos), qtd: despesas.length,
+        porTipo: Object.values(tipos).map(t => ({ ...t, total: arred(t.total) })).sort((a, b) => b.total - a.total),
+        lista: despesas,
+      },
+      resultado: arred(entradas - gastos),
+      porDia: Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia))
+        .map(d => ({ ...d, salao: arred(d.salao), delivery: arred(d.delivery), gastos: arred(d.gastos), entradas: arred(d.salao + d.delivery) })),
+    });
+  } catch (e) {
+    console.error("Erro no relatorio mensal:", e.message);
+    res.status(500).json({ erro: "Erro ao montar o relatório do mês" });
+  }
+});
+
 // Calcula lucro cruzando vendas com custo cadastrado no estoque
 app.get("/relatorio/lucro", authMiddleware(["dono"]), async (req, res) => {
   try {
