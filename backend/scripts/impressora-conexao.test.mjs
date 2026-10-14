@@ -171,6 +171,24 @@ console.log("\n=== 6b) aviso de troca de mesa: destaque no topo, sem itens ===")
   ok(t.includes("Mesa 7") && t.includes("Pedidos da Mesa 3 agora sao da MESA 7"), "diz de onde veio e para onde foi");
 }
 
+console.log("\n=== 6b2) observacao do item sai embaixo dele; a da mesa no fim ===");
+{
+  aparelho.recebido = [];
+  await impressora.imprimirComanda({ mesa: 902, label: "Comanda 2", garcom: "Rafael", cliente: "Vilela", hora: new Date().toISOString(),
+    itens: [
+      { nome: "Lanche Imperial (Kafta com queijo)", qty: 1, nota: "sem salada" },
+      { nome: "Lanche Imperial (Kafta com queijo)", qty: 1 },
+      { nome: "Lanche Imperial (2x Coracaozinho de frango)", qty: 1 },
+    ],
+    obs: "cliente alergico a amendoim" });
+  const t = texto(aparelho.recebido);
+  const iKafta = t.indexOf("1x Lanche Imperial (Kafta com queijo)");
+  const iNota = t.indexOf(">> sem salada");
+  const iKafta2 = t.indexOf("1x Lanche Imperial (Kafta com queijo)", iKafta + 1);
+  ok(iKafta >= 0 && iNota > iKafta && iNota < iKafta2, "\"sem salada\" sai logo abaixo do lanche dele, antes do outro igual");
+  ok(t.indexOf(">> OBS: cliente alergico a amendoim") > t.indexOf("Coracaozinho"), "observacao geral da mesa continua no fim");
+}
+
 console.log("\n=== 6c) abrir a lista e fechar sem escolher nao derruba a impressora ===");
 {
   ok(impressora.isConnected(), "conectada antes");

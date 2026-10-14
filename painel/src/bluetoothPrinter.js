@@ -483,10 +483,13 @@ class ImpressoraBT {
     // Itens em altura dobrada pra cozinha ler de longe
     for (const it of (itens || [])) {
       cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`${it.qty||1}x ${it.nome}`), NL, SIZE_NORMAL, BOLD_OFF);
+      // Observacao DESTE item ("sem salada"), logo embaixo dele e no mesmo
+      // tamanho: a cozinha precisa saber qual unidade e diferente
+      if (it.nota) cmds.push(SIZE_DOUBLE_H, BOLD_ON, texto(`  >> ${it.nota}`), NL, SIZE_NORMAL, BOLD_OFF);
       if (it.obs) cmds.push(texto(`   obs: ${it.obs}`), NL);
       cmds.push(NL);
     }
-    // Observacao da mesa em negrito, depois dos itens (a dona pediu so embaixo)
+    // Observacao geral da mesa (alergia etc.), depois dos itens
     if (obs) cmds.push(BOLD_ON, texto(`>> OBS: ${obs}`), NL, BOLD_OFF, NL);
     cmds.push(texto("--------------------------------"), NL);
     cmds.push(ALIGN_CENTER, texto("--- fim ---"), NL);

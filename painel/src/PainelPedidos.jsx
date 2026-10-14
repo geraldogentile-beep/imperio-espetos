@@ -5909,6 +5909,11 @@ function mesclarVendasServidor(locais, servidor, agora = Date.now()) {
 }
 
 function chaveItem(it) { return String(it?.id) + "|" + (it?.variacao || ""); }
+// Linha da comanda ainda não enviada: o mesmo item com observação diferente
+// ("sem salada") é outra linha, para a cozinha saber qual unidade é qual.
+// Conta, resumo e pagamento continuam somando pelo chaveItem.
+function chaveLinha(it) { return chaveItem(it) + "|" + String(it?.nota || "").trim().toLowerCase(); }
+const NOTAS_RAPIDAS = ["sem salada", "sem cebola", "sem vinagrete", "sem molho", "bem passado", "mal passado", "sem sal"];
 
 // Soma linhas iguais (mesmo item e mesma variacao) numa lista so
 function juntarItens(lista) {
@@ -6392,7 +6397,7 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir, onMandarCozinha 
               {editItens.map((it, ii) => (
                 <div key={ii} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid #f8f8f8"}}>
                   <button onClick={() => setEditItens(prev => prev.filter((_, i) => i !== ii))} style={{width:22,height:22,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:12,cursor:"pointer",flexShrink:0}}>×</button>
-                  <div style={{flex:1,fontSize:12}}>{it.nome}</div>
+                  <div style={{flex:1,fontSize:12}}>{it.nome}{it.nota&&<div style={{fontSize:11,color:"#c2410c",fontWeight:700}}>📝 {it.nota}</div>}</div>
                   <div style={{display:"flex",alignItems:"center",gap:4}}>
                     <button onClick={() => chgEditQty(ii, -1)} style={{width:24,height:24,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:14,cursor:"pointer"}}>−</button>
                     <span style={{fontWeight:800,minWidth:16,textAlign:"center",fontSize:13}}>{it.qty}</span>
@@ -6410,7 +6415,7 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir, onMandarCozinha 
             <>
               {r.itens.map((it, ii) => (
                 <div key={ii} style={{display:"flex",justifyContent:"space-between",gap:8,fontSize:12,color:"#555",padding:"2px 0"}}>
-                  <span>{it.qty||1}x {it.nome}</span>
+                  <span>{it.qty||1}x {it.nome}{it.nota&&<span style={{display:"block",fontSize:11,color:"#c2410c",fontWeight:700}}>📝 {it.nota}</span>}</span>
                   <span style={{whiteSpace:"nowrap"}}>{fmtR((it.qty||1) * (Number(it.preco) || 0))}</span>
                 </div>
               ))}
@@ -6753,11 +6758,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           ...(variacao.espeto ? { espeto: variacao.espeto } : {}) }
       : item;
     const precoAgora = variacao ? Number(variacao.preco) || 0 : precoItem(item);
-    const chave = chaveItem(base);
-    const existe=sc.itens.find(i=>chaveItem(i)===chave);
+    const chave = chaveLinha(base);
+    const existe=sc.itens.find(i=>chaveLinha(i)===chave);
     const itens=existe
       // Sempre atualiza o preço para o atual (caso modo evento tenha ligado/desligado)
-      ? sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+1,preco:precoAgora}:i)
+      ? sc.itens.map(i=>chaveLinha(i)===chave?{...i,qty:(i.qty||1)+1,preco:precoAgora}:i)
       : [...sc.itens,{...base,preco:precoAgora,qty:1}];
     const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
     const novaAbertura = mesa.abertura||new Date().toISOString();
@@ -6779,10 +6784,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
       preco: total, qty: 1, precoPromocional: null, espetos,
       variacoes: undefined, montarCom: undefined, montarRotulo: undefined,
     };
-    const chave = chaveItem(novo);
-    const existe = sc.itens.find(i=>chaveItem(i)===chave);
+    const chave = chaveLinha(novo);
+    const existe = sc.itens.find(i=>chaveLinha(i)===chave);
     const itens = existe
-      ? sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+1,preco:total}:i)
+      ? sc.itens.map(i=>chaveLinha(i)===chave?{...i,qty:(i.qty||1)+1,preco:total}:i)
       : [...sc.itens, novo];
     upd({...mesa,
       garcom: mesa.garcom || (garcomLogado?.nome) || "",
@@ -6793,8 +6798,35 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     msgSalao(`🥪 ${rotulo} no lanche — ${fmtR(total)}`);
   }
 
+  // Observação de um item ("sem salada"). Com mais de uma unidade na linha,
+  // vale para 1 (separa a linha) ou para todas. Linhas iguais com a mesma
+  // observação se juntam.
+  const [notaAberta, setNotaAberta] = useState(null);   // { chave, texto }
+  function abrirNota(it) { setNotaAberta(n => n?.chave === chaveLinha(it) ? null : { chave: chaveLinha(it), texto: it.nota || "" }); }
+  function salvarNota(it, quantas, textoForcado) {
+    const texto = String(textoForcado !== undefined ? textoForcado : (notaAberta?.texto || "")).trim().slice(0, 80);
+    const qtd = it.qty || 1;
+    const n = Math.min(Math.max(1, quantas), qtd);
+    const alvo = chaveLinha(it);
+    const novaLinha = { ...it, qty: n, nota: texto || undefined };
+    let itens = [];
+    for (const x of sc.itens) {
+      if (chaveLinha(x) !== alvo) { itens.push(x); continue; }
+      if (qtd - n > 0) itens.push({ ...x, qty: qtd - n });
+      itens.push(novaLinha);
+    }
+    // Junta linhas que ficaram iguais (mesmo item e mesma observação)
+    itens = itens.reduce((acc, x) => {
+      const ex = acc.find(y => chaveLinha(y) === chaveLinha(x));
+      if (ex) ex.qty = (ex.qty || 1) + (x.qty || 1); else acc.push({ ...x });
+      return acc;
+    }, []);
+    upd({ ...mesa, subComandas: mesa.subComandas.map((s, i) => i === scIdx ? { ...s, itens } : s) });
+    setNotaAberta(null);
+  }
+
   function chgQty(chave,d){
-    const itens=sc.itens.map(i=>chaveItem(i)===chave?{...i,qty:(i.qty||1)+d}:i).filter(i=>i.qty>0);
+    const itens=sc.itens.map(i=>chaveLinha(i)===chave?{...i,qty:(i.qty||1)+d}:i).filter(i=>i.qty>0);
     const allEmpty = mesa.subComandas.every((s,i)=>i===scIdx?itens.length===0:s.itens.length===0&&(s.rodadas||[]).length===0);
     // Mesa que ficou sem nada volta a "livre" de verdade: sem hora de abertura
     // nem garcom. Antes so o status mudava e o cronometro seguia contando —
@@ -6872,7 +6904,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   </div>
   <hr>
   ${rodada.itens.map(it=>`
-    <div class="item"><span class="qty">${it.qty||1}x</span><span>${it.nome}</span></div>
+    <div class="item"><span class="qty">${it.qty||1}x</span><span>${it.nome}${it.nota ? `<br><span style="font-size:14px;font-weight:900">&gt;&gt; ${it.nota}</span>` : ""}</span></div>
   `).join('')}
   ${ticket.obs ? `<div class="obs">⚠️ OBS: ${ticket.obs}</div>` : ""}
   <div class="rodape">— Fim do pedido —</div>
@@ -7168,7 +7200,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           const temPromo = emModoEvento && item.precoPromocional && item.precoPromocional > 0 && item.precoPromocional < item.preco;
 
           // Item com variação: a linha soma todas as carnes lançadas
-          const naSimples = sc.itens.find(i=>chaveItem(i)===chaveItem(item));
+          const naSimples = sc.itens.find(i=>chaveLinha(i)===chaveLinha(item));
           const qtdTotal = temVariacao
             ? sc.itens.filter(i=>i.id===item.id).reduce((soma,i)=>soma+(i.qty||1),0)
             : (naSimples ? naSimples.qty||1 : 0);
@@ -7210,7 +7242,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                 </div>
               ) : (
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
-                  <button onClick={()=>naSimples&&chgQty(chaveItem(item),-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:naSimples?"#fee2e2":"#f0f0f0",color:naSimples?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:naSimples?"pointer":"default"}}>−</button>
+                  <button onClick={()=>naSimples&&chgQty(chaveLinha(item),-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:naSimples?"#fee2e2":"#f0f0f0",color:naSimples?"#ef4444":"#ccc",fontWeight:800,fontSize:18,cursor:naSimples?"pointer":"default"}}>−</button>
                   <span style={{fontWeight:800,fontSize:16,minWidth:20,textAlign:"center"}}>{qtdTotal}</span>
                   <button onClick={()=>addItem(item)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"#7b1a0a",color:"#fff",fontWeight:800,fontSize:18,cursor:"pointer"}}>+</button>
                 </div>
@@ -7233,7 +7265,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                         : addItem(item,v);
                       const menos = () => opcoesMontar.length
                         ? setMontagem(p=>{const n={...p};if(!n[v.nome])return p;n[v.nome]--;if(!n[v.nome])delete n[v.nome];return n;})
-                        : (qtd && chgQty(chaveItem({id:item.id,variacao:v.nome}),-1));
+                        : (qtd && chgQty(chaveLinha({id:item.id,variacao:v.nome}),-1));
                       return (
                         <div key={v.nome} style={{display:"flex",flexDirection:"column",gap:4,background:qtd?"#fef0ed":"#faf9f8",borderRadius:10,padding:"8px 10px",border:`1.5px solid ${qtd?"#7b1a0a":"transparent"}`}}>
                           <div style={{fontSize:13,fontWeight:qtd?700:500,color:"#333",lineHeight:1.2}}>{v.nome}</div>
@@ -7816,14 +7848,41 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             <div style={card2}>
               <div style={{fontWeight:700,fontSize:12,color:"#888",marginBottom:8,textTransform:"uppercase"}}>{rotuloComanda(sc)} — Itens</div>
               {sc.itens.map((it,i)=>(
-                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
-                  <div style={{flex:1}}><div style={{fontWeight:600,fontSize:13}}>{it.nome}</div><div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div></div>
-                  <div style={{display:"flex",alignItems:"center",gap:5}}>
-                    <button onClick={()=>chgQty(chaveItem(it),-1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:15,cursor:"pointer"}}>−</button>
-                    <span style={{fontWeight:800,minWidth:18,textAlign:"center"}}>{it.qty||1}</span>
-                    <button onClick={()=>chgQty(chaveItem(it),1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:15,cursor:"pointer"}}>+</button>
+                <div key={chaveLinha(it)} style={{padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:600,fontSize:13}}>{it.nome}</div>
+                      {it.nota
+                        ? <div onClick={()=>abrirNota(it)} style={{fontSize:12,color:"#c2410c",fontWeight:700,cursor:"pointer"}}>📝 {it.nota}</div>
+                        : <div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div>}
+                    </div>
+                    <button onClick={()=>abrirNota(it)} title="Observação deste item" style={{height:26,borderRadius:13,border:`1.5px solid ${it.nota?"#fdba74":"#e5e7eb"}`,background:it.nota?"#fff7ed":"#fff",color:it.nota?"#c2410c":"#666",fontWeight:700,fontSize:11,padding:"0 8px",cursor:"pointer",flexShrink:0}}>📝{it.nota?"":" obs"}</button>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <button onClick={()=>chgQty(chaveLinha(it),-1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#fee2e2",color:"#ef4444",fontWeight:800,fontSize:15,cursor:"pointer"}}>−</button>
+                      <span style={{fontWeight:800,minWidth:18,textAlign:"center"}}>{it.qty||1}</span>
+                      <button onClick={()=>chgQty(chaveLinha(it),1)} style={{width:26,height:26,borderRadius:"50%",border:"none",background:"#d1fae5",color:"#10b981",fontWeight:800,fontSize:15,cursor:"pointer"}}>+</button>
+                    </div>
+                    <div style={{fontWeight:800,fontSize:13,color:"#7b1a0a",minWidth:50,textAlign:"right"}}>{fmtR((it.qty||1)*it.preco)}</div>
                   </div>
-                  <div style={{fontWeight:800,fontSize:13,color:"#7b1a0a",minWidth:50,textAlign:"right"}}>{fmtR((it.qty||1)*it.preco)}</div>
+                  {notaAberta?.chave===chaveLinha(it)&&(
+                    <div style={{marginTop:8,background:"#fff7ed",border:"1.5px solid #fdba74",borderRadius:10,padding:10}}>
+                      <div style={{fontSize:11,fontWeight:700,color:"#9a3412",marginBottom:6}}>Observação para a cozinha{(it.qty||1)>1?` (${it.qty} unidades nesta linha)`:""}</div>
+                      <input autoFocus value={notaAberta.texto} onChange={e=>setNotaAberta(n=>({...n,texto:e.target.value}))} placeholder="ex.: sem salada" maxLength={80}
+                        onKeyDown={e=>{ if(e.key==="Enter") salvarNota(it, 1); }}
+                        style={{width:"100%",padding:"9px 10px",border:"1.5px solid #fdba74",borderRadius:8,fontSize:14,outline:"none",boxSizing:"border-box",background:"#fff"}}/>
+                      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:6}}>
+                        {NOTAS_RAPIDAS.map(n=>(
+                          <button key={n} onClick={()=>setNotaAberta(x=>({...x,texto:x.texto&&!x.texto.toLowerCase().includes(n)?`${x.texto}, ${n}`:(x.texto||n)}))} style={{padding:"5px 9px",borderRadius:14,border:"1px solid #fed7aa",background:"#fff",color:"#9a3412",fontSize:11.5,cursor:"pointer"}}>{n}</button>
+                        ))}
+                      </div>
+                      <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                        <button onClick={()=>salvarNota(it, 1)} style={{flex:1,minWidth:110,background:"#c2410c",color:"#fff",border:"none",borderRadius:8,padding:"9px 6px",fontWeight:700,fontSize:12,cursor:"pointer"}}>{(it.qty||1)>1?"Salvar só para 1":"Salvar"}</button>
+                        {(it.qty||1)>1&&<button onClick={()=>salvarNota(it, it.qty)} style={{flex:1,minWidth:110,background:"#fff",color:"#c2410c",border:"1.5px solid #c2410c",borderRadius:8,padding:"9px 6px",fontWeight:700,fontSize:12,cursor:"pointer"}}>Para os {it.qty}</button>}
+                        {it.nota&&<button onClick={()=>salvarNota(it, it.qty||1, "")} style={{background:"#fff",color:"#666",border:"1px solid #ddd",borderRadius:8,padding:"9px 10px",fontSize:12,cursor:"pointer"}}>Tirar obs</button>}
+                        <button onClick={()=>setNotaAberta(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:8,padding:"9px 10px",fontSize:12,cursor:"pointer"}}>Cancelar</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
               {(sc.rodadas||[]).length>0&&<div style={{fontSize:11,color:"#aaa",marginTop:6}}>+ {fmtR((sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0))} em {(sc.rodadas||[]).length} rodada{(sc.rodadas||[]).length>1?"s":""} anteriores</div>}
@@ -7838,7 +7897,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           )}
           <ResumoMesa mesa={mesa} />
           <div style={{...card2}}>
-            <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observações da mesa..." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
+            <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observação geral da mesa (ex.: alergia). Para um item só, use o 📝 no item." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
           </div>
         </div>
 
