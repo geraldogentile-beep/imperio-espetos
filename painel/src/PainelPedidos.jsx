@@ -2458,6 +2458,12 @@ function mascaraMoeda(val) {
 function parseMoedaGlobal(str) {
   return parseFloat(String(str||0).replace(/R\$\s?/g,"").replace(/\./g,"").replace(",",".")) || 0;
 }
+// Campo de dinheiro com máscara automática: digita "15000" e vê "R$ 150,00".
+// Mesma máscara do troco e do estoque, para a dona não ter de pensar na vírgula.
+function InputDinheiro({ value, onChange, style, inputRef, ...rest }) {
+  return <input ref={inputRef} value={value} onChange={e => onChange(mascaraMoeda(e.target.value))} placeholder="R$ 0,00" inputMode="numeric" style={style} {...rest} />;
+}
+const moedaDeNumero = (n) => (n == null || n === "" ? "" : mascaraMoeda(String(Math.round(Number(n) * 100))));
 
 function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, cardapioNomes = [], cardapio = [], backendUrl = "" }) {
   const [modoPreco, setModoPreco] = useState("sugerido"); // "sugerido" | "manual"
@@ -3556,11 +3562,11 @@ function CaixaGaveta({ backendUrl, conf, recarregar }) {
   const [erro, setErro] = useState("");
   const campo = useRef(null);
 
-  function abrirModo(m) { setModo(m); setValor(m === "abrir" && conf?.abertura != null ? String(conf.abertura).replace(".", ",") : ""); setTexto(""); setErro(""); setTimeout(() => campo.current?.focus(), 50); }
+  function abrirModo(m) { setModo(m); setValor(m === "abrir" && conf?.abertura != null ? moedaDeNumero(conf.abertura) : ""); setTexto(""); setErro(""); setTimeout(() => campo.current?.focus(), 50); }
   function fechar() { setModo(null); setErro(""); }
 
   async function confirmar() {
-    const v = lerValor(valor);
+    const v = valor.trim() === "" ? NaN : parseMoedaGlobal(valor);
     if (!Number.isFinite(v) || v < 0 || (modo !== "abrir" && v <= 0)) return setErro("Informe o valor (ex.: 150,00).");
     setSalvando(true); setErro("");
     try {
@@ -3634,7 +3640,7 @@ function CaixaGaveta({ backendUrl, conf, recarregar }) {
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <div style={{ flex: "1 1 130px" }}>
               <div style={lbl}>Valor (R$)</div>
-              <input ref={campo} value={valor} onChange={e => setValor(e.target.value)} placeholder="0,00" inputMode="decimal" style={{ ...inp, fontWeight: 700, fontSize: 18 }} onKeyDown={e => { if (e.key === "Enter") confirmar(); }} />
+              <InputDinheiro inputRef={campo} value={valor} onChange={setValor} style={{ ...inp, fontWeight: 700, fontSize: 18 }} onKeyDown={e => { if (e.key === "Enter") confirmar(); }} />
             </div>
             {modo === "saida" && (
               <div style={{ flex: "2 1 200px" }}>
@@ -3775,8 +3781,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   async function fecharDia() {
     setLoading(true);
     try {
-      const contadoN = contado.trim() === "" ? null : lerValor(contado);
-      if (contadoN !== null && !Number.isFinite(contadoN)) { setLoading(false); return showMsg("Valor contado inválido (ex.: 312,50).", "erro"); }
+      const contadoN = contado.trim() === "" ? null : parseMoedaGlobal(contado);
       const r = await authFetch(backendUrl+"/fechamento-dia",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({obs, contado: contadoN, deliveryNaGaveta})});
       const data = await r.json();
       if(!r.ok) { setLoading(false); return showMsg(data.erro||"Erro ao fechar o dia.","erro"); }
@@ -3946,8 +3951,8 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
             {/* Conferência da gaveta: esperado x contado */}
             {conf && (() => {
               const esperado = deliveryNaGaveta ? conf.esperadoComDelivery : conf.esperadoSemDelivery;
-              const c = contado.trim() === "" ? null : lerValor(contado);
-              const dif = c === null || !Number.isFinite(c) ? null : Math.round((c - esperado) * 100) / 100;
+              const c = contado.trim() === "" ? null : parseMoedaGlobal(contado);
+              const dif = c === null ? null : Math.round((c - esperado) * 100) / 100;
               const li = (r, v, cor = "#555") => <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,padding:"3px 0",color:cor}}><span>{r}</span><span>{v}</span></div>;
               return (
                 <div style={{background:"#faf9f8",borderRadius:12,padding:12,marginBottom:12}}>
@@ -3966,7 +3971,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:800,padding:"6px 0",borderTop:"1px solid #e5e5e5",marginTop:4,color:"#333"}}><span>Deveria ter na gaveta</span><span>{fmtBR(esperado)}</span></div>
                   <div style={{marginTop:8}}>
                     <div style={{fontSize:11,color:"#888",marginBottom:3,fontWeight:600}}>Quanto você contou na gaveta? (opcional)</div>
-                    <input value={contado} onChange={e=>setContado(e.target.value)} placeholder="0,00" inputMode="decimal" style={{...inp,fontSize:17,fontWeight:700,padding:"10px 12px"}} />
+                    <InputDinheiro value={contado} onChange={setContado} style={{...inp,fontSize:17,fontWeight:700,padding:"10px 12px"}} />
                   </div>
                   {dif !== null && (
                     <div style={{marginTop:8,padding:"8px 10px",borderRadius:9,fontWeight:800,fontSize:14,background:Math.abs(dif)<0.005?"#d1fae5":dif>0?"#fef3c7":"#fee2e2",color:Math.abs(dif)<0.005?"#065f46":dif>0?"#92400e":"#991b1b"}}>
@@ -4272,7 +4277,7 @@ function LancamentoGastos({ mes, setMes }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   async function salvar() {
-    const valor = lerValor(form.valor);
+    const valor = parseMoedaGlobal(form.valor);
     const tipo = form.tipo === "Outro" ? form.tipoOutro.trim() : form.tipo;
     if (!tipo) return aviso("Escreva o tipo do gasto.", "erro");
     if (!(valor > 0)) return aviso("Informe o valor (ex.: 35,90).", "erro");
@@ -4299,7 +4304,7 @@ function LancamentoGastos({ mes, setMes }) {
   function editar(d) {
     const tipoConhecido = TIPOS_GASTO.includes(d.tipo);
     setEditando(d._id);
-    setForm({ data: diaBR(d.data), tipo: tipoConhecido ? d.tipo : "Outro", tipoOutro: tipoConhecido ? "" : d.tipo, valor: String(d.valor).replace(".", ","), descricao: d.descricao || "", doCaixa: !!d.doCaixa });
+    setForm({ data: diaBR(d.data), tipo: tipoConhecido ? d.tipo : "Outro", tipoOutro: tipoConhecido ? "" : d.tipo, valor: moedaDeNumero(d.valor), descricao: d.descricao || "", doCaixa: !!d.doCaixa });
     topo.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   async function excluir(d) {
@@ -4342,7 +4347,7 @@ function LancamentoGastos({ mes, setMes }) {
           )}
           <div style={{ flex: "1 1 120px" }}>
             <div style={lbl}>Valor (R$)</div>
-            <input value={form.valor} onChange={e => set("valor", e.target.value)} placeholder="0,00" inputMode="decimal" style={{ ...inp, fontWeight: 700, fontSize: 17 }} />
+            <InputDinheiro value={form.valor} onChange={v => set("valor", v)} style={{ ...inp, fontWeight: 700, fontSize: 17 }} />
           </div>
           <div style={{ flex: "1 1 140px" }}>
             <div style={lbl}>Data</div>
