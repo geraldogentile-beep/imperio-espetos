@@ -2354,7 +2354,7 @@ app.get("/estoque", authMiddleware(["dono"]), async (req, res) => {
 });
 
 app.post("/estoque", authMiddleware(["dono"]), async (req, res) => {
-  const { nome, unidade, quantidade, minimo, cardapioNomes, consumoPorVenda, tipo, capacidadeBarril, alertaTelefone } = req.body;
+  const { nome, unidade, quantidade, minimo, cardapioNomes, consumoPorVenda, tipo, capacidadeBarril, alertaTelefone, custoPorUnidade, margemDesejada, precoVendaAtual } = req.body;
   if (!nome) return res.status(400).json({ erro: "nome é obrigatório" });
   try {
     const item = await EstoqueDB.create({
@@ -2366,6 +2366,11 @@ app.post("/estoque", authMiddleware(["dono"]), async (req, res) => {
       tipo: tipo || "normal",
       capacidadeBarril: parseFloat(capacidadeBarril) || 0,
       alertaTelefone: alertaTelefone || "",
+      // Formador de preço preenchido no cadastro: antes era descartado aqui e
+      // a dona precisava abrir o item e digitar tudo de novo.
+      custoPorUnidade: numOr(custoPorUnidade, 0, LIMITES_ESTOQUE.custoPorUnidade),
+      margemDesejada: numOr(margemDesejada, 0, LIMITES_ESTOQUE.margemDesejada),
+      precoVendaAtual: numOr(precoVendaAtual, 0, LIMITES_ESTOQUE.precoVendaAtual),
       ativo: true,
     });
     res.status(201).json(item);

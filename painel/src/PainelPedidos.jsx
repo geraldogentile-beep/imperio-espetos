@@ -2466,6 +2466,10 @@ function InputDinheiro({ value, onChange, style, inputRef, ...rest }) {
 const moedaDeNumero = (n) => (n == null || n === "" ? "" : mascaraMoeda(String(Math.round(Number(n) * 100))));
 // Quantidade de estoque segura para mostrar: nunca "null", "NaN" ou "Infinity"
 const qtdNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+// Porcentagem digitada com vírgula ("33,5") ou ponto -> número. parseFloat
+// sozinho parava na vírgula e "33,5" virava 33.
+const parsePct = (s) => { const n = parseFloat(String(s ?? "").replace(",", ".")); return Number.isFinite(n) ? n : 0; };
+const pctTexto = (v) => (v === null || v === undefined || v === "" ? "" : String(v).replace(".", ","));
 
 function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, cardapioNomes = [], cardapio = [], backendUrl = "" }) {
   const [modoPreco, setModoPreco] = useState("sugerido"); // "sugerido" | "manual"
@@ -2480,7 +2484,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   }
 
   const c   = parseMoeda(custo);
-  const m   = parseFloat(margem) || 0;
+  const m   = parsePct(margem);
   const pv  = parseMoeda(precoVenda);
   const cpv = parseFloat(consumoPorVenda) || 1;
 
@@ -2557,8 +2561,14 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
           </div>
           <div style={{width:80}}>
             <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem (%)</div>
-            <input type="text" inputMode="numeric" value={margem}
-              onChange={e=>{ let v = e.target.value.replace(/[^\d]/g,""); if (Number(v) > 99) v = "99"; onChange("margemDesejada", v); }}
+            <input type="text" inputMode="decimal" value={pctTexto(margem)}
+              onChange={e=>{
+                // Aceita "33,5" ou "33.5": até 2 inteiros e 2 decimais, máximo 99
+                const mm = e.target.value.replace(/[^\d.,]/g,"").replace(".", ",").match(/^(\d{0,2})(,\d{0,2})?/);
+                let v = mm ? mm[1] + (mm[2] || "") : "";
+                if (parsePct(v) > 99) v = "99";
+                onChange("margemDesejada", v);
+              }}
               placeholder="60" style={{...inpBase,textAlign:"center",borderColor:m>=100?"#ef4444":"#e0e0e0"}}/>
           </div>
         </div>
@@ -2796,7 +2806,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
     if(!novo.nome.trim()) return showMsg("Nome é obrigatório.","erro");
     setSaving(true);
     try {
-      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean), custoPorUnidade:parseMoedaGlobal(novo.custoPorUnidade), margemDesejada:parseFloat(novo.margemDesejada)||0, precoVendaAtual:parseMoedaGlobal(novo.precoVendaAtual) };
+      const body = { ...novo, quantidade:parseFloat(novo.quantidade)||0, minimo:parseFloat(novo.minimo)||0, consumoPorVenda:parseFloat(novo.consumoPorVenda)||1, capacidadeBarril:parseFloat(novo.capacidadeBarril)||0, cardapioNomes:novo.cardapioNomes.split(",").map(s=>s.trim()).filter(Boolean), custoPorUnidade:parseMoedaGlobal(novo.custoPorUnidade), margemDesejada:parsePct(novo.margemDesejada), precoVendaAtual:parseMoedaGlobal(novo.precoVendaAtual) };
       const r = await authFetch(backendUrl+"/estoque",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok) return showMsg((await r.json()).erro||"Erro ao criar.","erro");
       showMsg(`✅ ${novo.nome} cadastrado!`);
@@ -2816,7 +2826,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
         // Campos com mascara de moeda: converter antes de enviar (Number no schema)
         custoPorUnidade: parseMoedaGlobal(editando.custoPorUnidade),
         precoVendaAtual: parseMoedaGlobal(editando.precoVendaAtual),
-        margemDesejada:  parseFloat(editando.margemDesejada) || 0,
+        margemDesejada:  parsePct(editando.margemDesejada),
         quantidade:      parseFloat(editando.quantidade) || 0,
         minimo:          parseFloat(editando.minimo) || 0,
         consumoPorVenda: parseFloat(editando.consumoPorVenda) || 1,
@@ -2963,7 +2973,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
                 onChange={(campo,val)=>{
                   // Debounce: antes disparava 1 PUT + 1 GET por tecla digitada.
                   // E parseFloat("R$ 12,50") era NaN -> gravava 0.
-                  const valorNum = campo === "margemDesejada" ? (parseFloat(val)||0) : parseMoedaGlobal(val);
+                  const valorNum = campo === "margemDesejada" ? parsePct(val) : parseMoedaGlobal(val);
                   if (salvarPrecoTimer.current) clearTimeout(salvarPrecoTimer.current);
                   salvarPrecoTimer.current = setTimeout(async () => {
                     try {
