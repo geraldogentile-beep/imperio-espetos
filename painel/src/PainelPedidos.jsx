@@ -2506,8 +2506,13 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   // A margem é a parte do preço que é lucro: só faz sentido entre 1% e 99%.
   // Com 100% a conta dividia por zero e a tela mostrava "R$ Infinity".
   const margemValida  = m > 0 && m < 100;
-  const precoSugerido = custoVenda > 0 && margemValida ? custoVenda / (1 - m / 100) : 0;
+  // Sugestão redonda: sobe para o próximo R$ 0,50, que é o passo dos preços
+  // do cardápio. R$ 15,04 virava "15.04" na tela e ninguém cobra isso; subindo
+  // (nunca descendo) a margem pedida continua garantida.
+  const precoSugeridoExato = custoVenda > 0 && margemValida ? custoVenda / (1 - m / 100) : 0;
+  const precoSugerido = precoSugeridoExato > 0 ? Math.ceil(precoSugeridoExato * 2 - 1e-9) / 2 : 0;
   const precoFinal    = modoPreco === "manual" ? parseMoeda(precoManual) : precoSugerido;
+  const pct1 = (v) => (Number(v) || 0).toFixed(1).replace(".", ",") + "%";
   const margemReal    = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / pv) * 100 : null;
   const margemFinal   = precoFinal > 0 && custoVenda > 0 ? ((precoFinal - custoVenda) / precoFinal) * 100 : null;
   const lucroPorVenda = pv > 0 ? pv - custoVenda : 0;
@@ -2523,9 +2528,9 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const txtStatus = { ok:"#065f46", atencao:"#92400e", alerta:"#991b1b" };
   const icnStatus = { ok:"✅", atencao:"⚠️", alerta:"🚨" };
   const msgStatus = {
-    ok:      `Margem real ${margemReal?.toFixed(1)}% — acima da meta!`,
-    atencao: `Margem real ${margemReal?.toFixed(1)}% — próximo do limite.`,
-    alerta:  `Margem real ${margemReal?.toFixed(1)}% — abaixo da meta de ${m}%!`,
+    ok:      `Margem real ${pct1(margemReal)} — acima da meta!`,
+    atencao: `Margem real ${pct1(margemReal)} — próximo do limite.`,
+    alerta:  `Margem real ${pct1(margemReal)} — abaixo da meta de ${pctTexto(m)}%!`,
   };
 
   // Aplica preço ao cardápio via API
@@ -2546,10 +2551,10 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...item, preco: parseFloat(precoFinal.toFixed(2)) }),
         });
-        if (r.ok) { sucessos++; onChange("precoVendaAtual", String(precoFinal.toFixed(2))); }
+        if (r.ok) { sucessos++; onChange("precoVendaAtual", mascaraMoeda(String(Math.round(precoFinal * 100)))); }
       }
       setAplicadoMsg(sucessos > 0
-        ? { tipo:"ok", txt:`✅ Preço R$ ${precoFinal.toFixed(2)} aplicado ao cardápio!` }
+        ? { tipo:"ok", txt:`✅ Preço ${fmtBR(precoFinal)} aplicado ao cardápio!` }
         : { tipo:"erro", txt:"❌ Nenhum item do cardápio atualizado." }
       );
     } catch { setAplicadoMsg({ tipo:"erro", txt:"❌ Erro ao atualizar cardápio." }); }
@@ -2606,18 +2611,19 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
           <div style={{flex:1,background:"#fff",borderRadius:8,padding:"8px 10px",minWidth:90}}>
             <div style={{fontSize:10,color:"#888"}}>Custo por venda</div>
-            <div style={{fontWeight:700,fontSize:13,color:"#1a1a1a",marginTop:2}}>R$ {custoVenda.toFixed(2)}</div>
+            <div style={{fontWeight:700,fontSize:13,color:"#1a1a1a",marginTop:2}}>{fmtBR(custoVenda)}</div>
           </div>
           {precoSugerido > 0 && (
             <div style={{flex:1,background:"#fff",borderRadius:8,padding:"8px 10px",minWidth:90}}>
               <div style={{fontSize:10,color:"#888"}}>Preço sugerido</div>
-              <div style={{fontWeight:700,fontSize:13,color:"#7b1a0a",marginTop:2}}>R$ {precoSugerido.toFixed(2)}</div>
+              <div style={{fontWeight:700,fontSize:13,color:"#7b1a0a",marginTop:2}}>{fmtBR(precoSugerido)}</div>
+              {Math.abs(precoSugerido - precoSugeridoExato) > 0.004 && <div style={{fontSize:9.5,color:"#aaa",marginTop:1}}>exato {fmtBR(precoSugeridoExato)}</div>}
             </div>
           )}
           {pv > 0 && (
             <div style={{flex:1,background:"#fff",borderRadius:8,padding:"8px 10px",minWidth:90}}>
               <div style={{fontSize:10,color:"#888"}}>Lucro por venda</div>
-              <div style={{fontWeight:700,fontSize:13,color:lucroPorVenda>=0?"#10b981":"#ef4444",marginTop:2}}>R$ {lucroPorVenda.toFixed(2)}</div>
+              <div style={{fontWeight:700,fontSize:13,color:lucroPorVenda>=0?"#10b981":"#ef4444",marginTop:2}}>{fmtBR(lucroPorVenda)}</div>
             </div>
           )}
         </div>
@@ -2631,7 +2637,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
             <div style={{fontWeight:700,fontSize:12,color:txtStatus[status]}}>{msgStatus[status]}</div>
             {status==="alerta"&&precoSugerido>0&&(
               <div style={{fontSize:11,color:txtStatus[status],marginTop:2}}>
-                Preço mínimo para atingir a meta: <strong>R$ {precoSugerido.toFixed(2)}</strong>
+                Preço mínimo para atingir a meta: <strong>{fmtBR(precoSugerido)}</strong>
               </div>
             )}
           </div>
@@ -2646,7 +2652,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
           {/* Modo de preço */}
           <div style={{display:"flex",gap:6,marginBottom:10}}>
             <button onClick={()=>setModoPreco("sugerido")} style={{flex:1,padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:modoPreco==="sugerido"?700:500,background:modoPreco==="sugerido"?"#7b1a0a":"#f0f0f0",color:modoPreco==="sugerido"?"#fff":"#666"}}>
-              🧮 Usar sugerido {precoSugerido>0?`(R$ ${precoSugerido.toFixed(2)})`:""}
+              🧮 Usar sugerido {precoSugerido>0?`(${fmtBR(precoSugerido)})`:""}
             </button>
             <button onClick={()=>setModoPreco("manual")} style={{flex:1,padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:modoPreco==="manual"?700:500,background:modoPreco==="manual"?"#7b1a0a":"#f0f0f0",color:modoPreco==="manual"?"#fff":"#666"}}>
               ✏️ Digitar manualmente
@@ -2663,7 +2669,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
                 style={{width:"100%",padding:"8px 10px",border:"1.5px solid #e0e0e0",borderRadius:8,fontSize:13,color:"#333",outline:"none",boxSizing:"border-box",background:"#fff"}}/>
               {margemFinal!==null&&precoManual&&(
                 <div style={{fontSize:11,color:margemFinal>=m?"#10b981":margemFinal>=m*0.8?"#f59e0b":"#ef4444",marginTop:4,fontWeight:600}}>
-                  → Margem resultante: {margemFinal.toFixed(1)}% {margemFinal>=m?"✅":"⚠️"}
+                  → Margem resultante: {pct1(margemFinal)} {margemFinal>=m?"✅":"⚠️"}
                 </div>
               )}
             </div>
@@ -2675,7 +2681,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
             disabled={aplicando||precoFinal<=0}
             style={{width:"100%",background:precoFinal>0?"linear-gradient(135deg,#7b1a0a,#c0392b)":"#ccc",color:"#fff",border:"none",borderRadius:9,padding:"10px 0",fontWeight:700,fontSize:13,cursor:precoFinal>0?"pointer":"not-allowed"}}
           >
-            {aplicando?"⏳ Atualizando...":`📤 Aplicar R$ ${precoFinal>0?precoFinal.toFixed(2):"—"} ao cardápio`}
+            {aplicando?"⏳ Atualizando...":`📤 Aplicar ${precoFinal>0?fmtBR(precoFinal):"R$ —"} ao cardápio`}
           </button>
 
           {aplicadoMsg&&(
