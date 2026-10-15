@@ -4778,6 +4778,202 @@ function LancamentoGastos({ mes, setMes }) {
   );
 }
 
+// ── RELATÓRIO DA EQUIPE ───────────────────────────────────────
+// Consumo de donos e funcionários, por nome. Dono paga o custo; funcionário
+// paga o cardápio com R$ 2 de desconto por espeto (o valor do funcionário
+// pode ser corrigido à mão). Fica fora do caixa: é o acerto com a equipe.
+function RelatorioEquipe() {
+  const [modo, setModo] = useState("mes");
+  const [ref, setRef] = useState(hojeISO);
+  const [rel, setRel] = useState(null);
+  const [erro, setErro] = useState("");
+  const [aberta, setAberta] = useState(null);            // pessoa com lançamentos abertos
+  const [valores, setValores] = useState({});            // _id -> texto (correção à mão)
+  const [cfg, setCfg] = useState(null);
+  const [verRegras, setVerRegras] = useState(false);
+  const [novoDono, setNovoDono] = useState("");
+  const [descTxt, setDescTxt] = useState("");
+
+  async function carregar() {
+    setErro("");
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno?" + consultaPeriodo(modo, ref));
+      if (r.ok) setRel(await r.json()); else setErro("Não foi possível carregar o relatório da equipe.");
+    } catch { setErro("Sem conexão."); }
+  }
+  useEffect(() => { carregar(); }, [modo, ref]);
+  useEffect(() => {
+    authFetch(BACKEND_URL + "/config/equipe").then(r => (r.ok ? r.json() : null)).then(c => {
+      if (c) { setCfg(c); setDescTxt(moedaDeNumero(c.descontoEspeto)); }
+    }).catch(() => {});
+  }, []);
+
+  async function salvarRegras(nova) {
+    try {
+      const r = await authFetch(BACKEND_URL + "/config/equipe", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nova) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.erro || "Não foi possível salvar."); return; }
+      setCfg(d); setDescTxt(moedaDeNumero(d.descontoEspeto)); setNovoDono("");
+    } catch { alert("Sem conexão."); }
+  }
+  async function salvarValor(c, limpar = false) {
+    const txt = valores[c._id];
+    const valor = limpar ? null : (txt === undefined ? undefined : (txt.trim() === "" ? null : parseMoedaGlobal(txt)));
+    if (valor === undefined) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ valor }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.erro || "Não foi possível salvar."); return; }
+      setValores(v => { const n = { ...v }; delete n[c._id]; return n; });
+      carregar();
+    } catch { alert("Sem conexão."); }
+  }
+  async function desfazer(c) {
+    if (!window.confirm(`Desfazer o consumo de ${c.pessoa || "sem nome"} (${c.itens.map(i => i.qty + "x " + i.nome).join(", ")})? Os itens voltam para o estoque.`)) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id, { method: "DELETE" });
+      if (r.ok) carregar(); else alert("Não foi possível desfazer.");
+    } catch { alert("Sem conexão."); }
+  }
+
+  const titulo = rotuloPeriodo(modo, ref);
+  const regraTxt = (tipo) => tipo === "dono" ? "preço de custo" : `cardápio − ${fmtBR(cfg?.descontoEspeto ?? 2)} por espeto`;
+  function imprimir() {
+    if (!rel) return;
+    const win = abrirJanelaImpressao("width=800,height=900");
+    if (!win) return;
+    const linhas = rel.porPessoa.map(pp => `<tr><td><b>${pp.pessoa}</b><br><span style="color:#666;font-size:11px">${pp.tipo === "dono" ? "Dono · custo" : "Funcionário · " + regraTxt("funcionario")}</span></td><td>${pp.produtos.map(x => x.qtd + "x " + x.nome).join(", ")}</td><td class="n"><b>${fmtBR(pp.total)}</b></td></tr>`).join("");
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Equipe ${titulo}</title>
+      <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{padding:6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}td.n,th.n{text-align:right;white-space:nowrap}@media print{button{display:none}}</style></head><body>
+      <h1>Império dos Espetos — Consumo da equipe</h1><div style="color:#666">${titulo} · fora do caixa · gerado em ${new Date().toLocaleString("pt-BR")}</div>
+      <p>Donos (preço de custo): <b>${fmtBR(rel.donos.total)}</b> · Funcionários (a cobrar): <b>${fmtBR(rel.funcionarios.total)}</b></p>
+      <table><tr><th>Nome</th><th>Consumo</th><th class="n">Valor</th></tr>${linhas}</table>
+      <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
+    win.document.close();
+  }
+  function baixarCsv() {
+    if (!rel) return;
+    const num = (v) => (Number(v) || 0).toFixed(2).replace(".", ",");
+    const linhas = [["Consumo da equipe", titulo], [], ["Nome", "Tipo", "Itens", "Consumo", "Valor"],
+      ...rel.porPessoa.map(pp => [pp.pessoa, pp.tipo === "dono" ? "Dono (custo)" : "Funcionário", pp.itens, pp.produtos.map(x => x.qtd + "x " + x.nome).join(", "), num(pp.total)]), [],
+      ["Total donos (custo)", "", "", "", num(rel.donos.total)], ["Total funcionários (a cobrar)", "", "", "", num(rel.funcionarios.total)], [],
+      ["LANÇAMENTOS", "Data", "Tipo", "Itens", "Valor"],
+      ...rel.lista.map(c => [c.pessoa || "Sem nome", new Date(c.data).toLocaleString("pt-BR"), c.tipo === "dono" ? "Dono" : "Funcionário", c.itens.map(i => i.qty + "x " + i.nome).join(", "), num(c.valorEfetivo)])];
+    const csv = "\ufeff" + linhas.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `equipe-${consultaPeriodo(modo, ref).split("=")[1]}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  const card = { background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" };
+  const selo = (tipo) => (
+    <span style={{ fontSize: 10, fontWeight: 800, borderRadius: 6, padding: "2px 7px", marginLeft: 6, background: tipo === "dono" ? "#fef3c7" : "#ecfeff", color: tipo === "dono" ? "#92400e" : "#155e75", verticalAlign: "middle" }}>
+      {tipo === "dono" ? "DONO · CUSTO" : "FUNCIONÁRIO"}
+    </span>
+  );
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "flex", gap: 6, background: "#fff", borderRadius: 12, padding: 5, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
+        {[["semana", "Semana"], ["mes", "Mês"], ["ano", "Ano"]].map(([k, l]) => (
+          <button key={k} onClick={() => setModo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: modo === k ? "#7b1a0a" : "transparent", color: modo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+      <NavPeriodo modo={modo} ref_={ref} setRef={setRef} />
+      {erro && <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>{erro}</div>}
+      {!rel && !erro && <div style={{ color: "#888", fontSize: 13, textAlign: "center" }}>Carregando...</div>}
+      {rel && (
+        <>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Metrica icon="👑" label="Donos (custo)" valor={fmtBR(rel.donos.total)} sub={`${rel.donos.pessoas} ${rel.donos.pessoas === 1 ? "pessoa" : "pessoas"}`} cor="#d97706" />
+            <Metrica icon="👥" label="Funcionários (a cobrar)" valor={fmtBR(rel.funcionarios.total)} sub={`${rel.funcionarios.pessoas} ${rel.funcionarios.pessoas === 1 ? "pessoa" : "pessoas"}`} cor="#0891b2" />
+            <Metrica icon="🍢" label="Itens" valor={rel.itensTotal} sub={`${rel.lancamentos} lançamento(s) · fora do caixa`} cor="#7b1a0a" />
+          </div>
+          {rel.semCusto > 0 && (
+            <div style={{ background: "#fef3c7", border: "1.5px solid #fcd34d", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
+              ⚠️ {rel.semCusto === 1 ? "1 lançamento de dono tem" : `${rel.semCusto} lançamentos de dono têm`} itens <strong>sem custo cadastrado</strong>: o valor de custo está incompleto. Cadastre o custo no Estoque (Formador de Preço) do item.
+            </div>
+          )}
+          {rel.lancamentos > 0 && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={imprimir} style={{ flex: 1, minWidth: 150, background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🖨️ Imprimir / salvar PDF</button>
+              <button onClick={baixarCsv} style={{ flex: 1, minWidth: 150, background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>⬇️ Planilha (por nome)</button>
+            </div>
+          )}
+          {rel.lancamentos === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>Nenhum consumo da equipe {modo === "semana" ? "nesta semana" : modo === "ano" ? "neste ano" : "neste mês"}. Lance na mesa "Funcionários" do salão.</div>}
+          {rel.porPessoa.map(pp => {
+            const minhas = rel.lista.filter(c => (c.pessoa || "Sem nome").trim().toLowerCase() === pp.pessoa.toLowerCase());
+            const aberto = aberta === pp.pessoa;
+            return (
+              <div key={pp.pessoa} style={card}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: "#333" }}>{pp.pessoa}{selo(pp.tipo)}</div>
+                  <div style={{ fontWeight: 800, fontSize: 16, color: pp.tipo === "dono" ? "#b45309" : "#0e7490", whiteSpace: "nowrap" }}>{fmtBR(pp.total)}</div>
+                </div>
+                <div style={{ fontSize: 11.5, color: "#888", marginTop: 2 }}>{pp.itens} {pp.itens === 1 ? "item" : "itens"} em {pp.vezes} {pp.vezes === 1 ? "vez" : "vezes"} · {regraTxt(pp.tipo)}{pp.editados > 0 ? ` · ${pp.editados} com valor corrigido` : ""}{pp.tipo === "dono" && pp.semCusto > 0 ? " · ⚠️ itens sem custo" : ""}</div>
+                <div style={{ fontSize: 12.5, color: "#555", marginTop: 6, lineHeight: 1.5 }}>{pp.produtos.map(x => `${x.qtd}x ${x.nome}`).join(", ")}</div>
+                <button onClick={() => setAberta(aberto ? null : pp.pessoa)} style={{ marginTop: 6, background: "none", border: "none", color: "#7b1a0a", fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0 }}>{aberto ? "▴ Esconder lançamentos" : (minhas.length === 1 ? "▾ Ver o lançamento" : `▾ Ver os ${minhas.length} lançamentos`)}</button>
+                {aberto && minhas.map(c => (
+                  <div key={c._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid #f3f3f3", fontSize: 12.5, flexWrap: "wrap" }}>
+                    <div style={{ flex: "1 1 160px", minWidth: 0 }}>
+                      <div style={{ color: "#888", fontSize: 11 }}>{new Date(c.data).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
+                      <div style={{ color: "#444" }}>{c.itens.map(i => `${i.qty}x ${i.nome}`).join(", ")}</div>
+                      {c.tipo === "funcionario" && c.valor !== null && <div style={{ color: "#888", fontSize: 11 }}>pela regra seria {fmtBR(c.valorRegra)}</div>}
+                    </div>
+                    {c.tipo === "dono" ? (
+                      <span style={{ fontWeight: 700, color: "#b45309", whiteSpace: "nowrap" }}>{fmtBR(c.valorEfetivo)}{c.semCusto > 0 && <span title="itens sem custo cadastrado"> ⚠️</span>}</span>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <InputDinheiro value={valores[c._id] !== undefined ? valores[c._id] : moedaDeNumero(c.valorEfetivo)}
+                          onChange={(t) => setValores(v => ({ ...v, [c._id]: t }))}
+                          onKeyDown={(e) => { if (e.key === "Enter") salvarValor(c); }}
+                          style={{ width: 100, padding: "6px 8px", border: `1.5px solid ${valores[c._id] !== undefined ? "#0891b2" : "#e0e0e0"}`, borderRadius: 8, fontSize: 13, textAlign: "right", fontWeight: 700, boxSizing: "border-box" }} />
+                        {valores[c._id] !== undefined && <button onClick={() => salvarValor(c)} style={{ background: "#0891b2", color: "#fff", border: "none", borderRadius: 7, padding: "6px 9px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>OK</button>}
+                        {c.valor !== null && valores[c._id] === undefined && <button onClick={() => salvarValor(c, true)} title="Voltar ao valor da regra" style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 7, padding: "6px 8px", cursor: "pointer", fontSize: 12 }}>↺ regra</button>}
+                      </div>
+                    )}
+                    <button onClick={() => desfazer(c)} title="Desfazer (devolve ao estoque)" style={{ background: "#fee2e2", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 13 }}>↩️</button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* Regras: quem é dono e o desconto do funcionário */}
+      <div style={card}>
+        <button onClick={() => setVerRegras(v => !v)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 700, fontSize: 13, color: "#333", width: "100%", textAlign: "left" }}>
+          ⚙️ Regras da equipe {verRegras ? "▴" : "▾"}
+          {cfg && !verRegras && <span style={{ fontWeight: 400, color: "#888", fontSize: 12 }}> — donos: {cfg.donos.join(", ")} · desconto {fmtBR(cfg.descontoEspeto)} por espeto</span>}
+        </button>
+        {verRegras && cfg && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: "#555", lineHeight: 1.5 }}>
+            <div style={{ marginBottom: 6 }}><strong>Donos</strong> pagam o preço de custo. O nome da comanda na mesa "Funcionários" é comparado com esta lista (sem diferença de maiúscula e acento).</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+              {cfg.donos.map(n => (
+                <span key={n} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#fef3c7", color: "#92400e", borderRadius: 16, padding: "4px 10px", fontWeight: 700 }}>
+                  {n}<span onClick={() => { if (window.confirm(`Tirar ${n} da lista de donos?`)) salvarRegras({ donos: cfg.donos.filter(x => x !== n) }); }} style={{ cursor: "pointer", opacity: 0.7 }}>×</span>
+                </span>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              <input value={novoDono} onChange={e => setNovoDono(e.target.value)} placeholder="Adicionar dono" maxLength={40} style={{ flex: 1, padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13 }} />
+              <button onClick={() => novoDono.trim() && salvarRegras({ donos: [...cfg.donos, novoDono.trim()] })} style={{ background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 8, padding: "8px 12px", fontWeight: 700, cursor: "pointer" }}>Adicionar</button>
+            </div>
+            <div style={{ marginBottom: 6 }}><strong>Funcionários</strong> pagam o preço do cardápio com desconto em cada espeto (bebida e o resto, preço cheio). O valor de cada lançamento pode ser corrigido à mão.</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span>Desconto por espeto:</span>
+              <InputDinheiro value={descTxt} onChange={setDescTxt} style={{ width: 110, padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, fontWeight: 700 }} />
+              <button onClick={() => salvarRegras({ descontoEspeto: parseMoedaGlobal(descTxt) })} style={{ background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 8, padding: "8px 12px", fontWeight: 700, cursor: "pointer" }}>Salvar</button>
+            </div>
+            <div style={{ fontSize: 11, color: "#888", marginTop: 8 }}>Mudar a regra vale para os próximos lançamentos; os já feitos guardam o valor calculado no dia.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RelatorioMensal({ mes, setMes }) {
   const [rel, setRel] = useState(null);
   const [carregando, setCarregando] = useState(false);
@@ -4802,7 +4998,6 @@ function RelatorioMensal({ mes, setMes }) {
   // Linhas do detalhe: dia a dia no mês, mês a mês no ano (com as perdas)
   // Consumo da equipe no mesmo período (fora do caixa), por pessoa
   const [equipe, setEquipe] = useState(null);
-  const [verEquipe, setVerEquipe] = useState(false);
   async function carregarEquipe() {
     try {
       const r = await authFetch(BACKEND_URL + "/consumo-interno?" + (anual ? "ano=" + ano : "mes=" + mes));
@@ -4810,25 +5005,6 @@ function RelatorioMensal({ mes, setMes }) {
     } catch { setEquipe(null); }
   }
   useEffect(() => { carregarEquipe(); }, [mes, anual]);
-  const [valoresEquipe, setValoresEquipe] = useState({});   // _id -> texto com máscara
-  async function salvarValorEquipe(c) {
-    const txt = valoresEquipe[c._id];
-    if (txt === undefined) return;
-    const valor = txt.trim() === "" ? null : parseMoedaGlobal(txt);
-    try {
-      const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ valor }) });
-      if (!r.ok) { alert("Não foi possível salvar o valor."); return; }
-      setValoresEquipe(v => { const n = { ...v }; delete n[c._id]; return n; });
-      carregarEquipe();
-    } catch { alert("Sem conexão."); }
-  }
-  async function desfazerEquipe(c) {
-    if (!window.confirm(`Desfazer o consumo de ${c.pessoa || "sem nome"} (${c.itens.map(i => i.qty + "x " + i.nome).join(", ")})? Os itens voltam para o estoque.`)) return;
-    try {
-      const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id, { method: "DELETE" });
-      if (r.ok) carregarEquipe(); else alert("Não foi possível desfazer.");
-    } catch { alert("Sem conexão."); }
-  }
   const periodos = rel ? (rel.porMes || rel.porDia || []).map(x => ({ chave: x.mes || x.dia, rotulo: x.mes ? (MESES_NOME[Number(x.mes.slice(5, 7)) - 1] || x.mes) : fmtDataBR(x.dia), entradas: x.entradas, gastos: x.gastos, perdas: x.perdas || 0 })) : [];
   const perdasRel = rel?.perdas || { custo: 0, lancamentos: 0 };
 
@@ -4901,7 +5077,7 @@ function RelatorioMensal({ mes, setMes }) {
             <Metrica icon="📤" label="Gastos" valor={fmtBR(g.total)} sub={`${g.qtd} lançamentos`} cor="#ef4444" />
             <Metrica icon={rel.resultado >= 0 ? "✅" : "⚠️"} label="Resultado" valor={fmtBR(rel.resultado)} sub={rel.resultado >= 0 ? "sobrou" : "faltou"} cor={rel.resultado >= 0 ? "#10b981" : "#ef4444"} />
             <Metrica icon="🗑️" label="Perdas" valor={fmtBR(perdasRel.custo)} sub={`${perdasRel.lancamentos} lançamento(s) · informativo`} cor="#f97316" />
-            {equipe?.lancamentos > 0 && <Metrica icon="👥" label="Consumo da equipe" valor={`${equipe.itensTotal} ${equipe.itensTotal === 1 ? "item" : "itens"}`} sub={equipe.aCobrarTotal > 0 ? `a cobrar ${fmtBR(equipe.aCobrarTotal)} · fora do caixa` : "fora do caixa"} cor="#0891b2" />}
+            {equipe?.lancamentos > 0 && <Metrica icon="👥" label="Consumo da equipe" valor={fmtBR(equipe.donos.total + equipe.funcionarios.total)} sub={`donos ${fmtBR(equipe.donos.total)} · func. ${fmtBR(equipe.funcionarios.total)} · fora do caixa`} cor="#0891b2" />}
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -4946,37 +5122,15 @@ function RelatorioMensal({ mes, setMes }) {
             <div style={card}>
               <div style={{ ...titulo, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                 <span>👥 Consumo da equipe</span>
-                <span style={{ fontSize: 11, color: "#888", fontWeight: 500 }}>saiu do estoque · não entra no caixa</span>
+                <span style={{ fontSize: 11, color: "#888", fontWeight: 500 }}>fora do caixa</span>
               </div>
               {equipe.porPessoa.map(pp => (
-                <div key={pp.pessoa} style={{ padding: "7px 0", borderBottom: "1px solid #f3f3f3", fontSize: 13 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ color: "#333", fontWeight: 700 }}>{pp.pessoa} <span style={{ color: "#aaa", fontWeight: 400 }}>· {pp.itens} {pp.itens === 1 ? "item" : "itens"} em {pp.vezes} {pp.vezes === 1 ? "vez" : "vezes"}</span></span>
-                    <span style={{ whiteSpace: "nowrap", fontWeight: 700, color: pp.aCobrar > 0 ? "#0e7490" : "#aaa", fontSize: 12.5 }}>
-                      {pp.aCobrar > 0 ? `a cobrar ${fmtBR(pp.aCobrar)}` : "sem valor"}{pp.aCobrar > 0 && pp.semValor > 0 ? ` (+${pp.semValor} sem valor)` : ""}
-                    </span>
-                  </div>
-                  <div style={{ color: "#666", fontSize: 12, marginTop: 2 }}>{pp.produtos.map(x => `${x.qtd}x ${x.nome}`).join(", ")}</div>
+                <div key={pp.pessoa} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderBottom: "1px solid #f3f3f3", fontSize: 13 }}>
+                  <span style={{ color: "#333", fontWeight: 700 }}>{pp.pessoa} <span style={{ color: "#aaa", fontWeight: 400 }}>· {pp.tipo === "dono" ? "dono, custo" : "funcionário"} · {pp.itens} {pp.itens === 1 ? "item" : "itens"}</span></span>
+                  <span style={{ whiteSpace: "nowrap", fontWeight: 700, color: pp.tipo === "dono" ? "#b45309" : "#0e7490" }}>{fmtBR(pp.total)}</span>
                 </div>
               ))}
-              <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>O valor a cobrar é definido por você em cada lançamento (abra a lista abaixo). Sem valor, aparecem só as quantidades.</div>
-              <button onClick={() => setVerEquipe(v => !v)} style={{ marginTop: 8, background: "none", border: "none", color: "#0e7490", fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0 }}>{verEquipe ? "▴ Esconder lançamentos" : `▾ Ver os ${equipe.lancamentos} lançamentos`}</button>
-              {verEquipe && equipe.lista.map(c => (
-                <div key={c._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px solid #f5f5f5", fontSize: 12.5 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, color: "#333" }}>{c.pessoa || "Sem nome"} <span style={{ color: "#888", fontWeight: 400 }}>· {new Date(c.data).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span></div>
-                    <div style={{ color: "#666", fontSize: 11.5 }}>{c.itens.map(i => `${i.qty}x ${i.nome}`).join(", ")}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-                    <InputDinheiro value={valoresEquipe[c._id] !== undefined ? valoresEquipe[c._id] : (c.valor != null ? moedaDeNumero(c.valor) : "")}
-                      onChange={(t) => setValoresEquipe(v => ({ ...v, [c._id]: t }))}
-                      onKeyDown={(e) => { if (e.key === "Enter") salvarValorEquipe(c); }}
-                      placeholder="a cobrar" style={{ width: 96, padding: "6px 8px", border: `1.5px solid ${valoresEquipe[c._id] !== undefined ? "#0891b2" : "#e0e0e0"}`, borderRadius: 8, fontSize: 12.5, textAlign: "right", boxSizing: "border-box" }} />
-                    {valoresEquipe[c._id] !== undefined && <button onClick={() => salvarValorEquipe(c)} title="Salvar valor" style={{ background: "#0891b2", color: "#fff", border: "none", borderRadius: 7, padding: "6px 8px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>OK</button>}
-                  </div>
-                  <button onClick={() => desfazerEquipe(c)} title="Desfazer (devolve ao estoque)" style={{ background: "#fee2e2", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>↩️</button>
-                </div>
-              ))}
+              <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>Detalhes, correção de valores e regras em Rel. → 👥 Equipe.</div>
             </div>
           )}
 
@@ -5169,7 +5323,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
     <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
 
       {/* Período (as telas do mês têm o próprio seletor) */}
-      {!["gastos", "mes"].includes(subAba) && (
+      {!["gastos", "mes", "equipe"].includes(subAba) && (
         <div style={{ display: "flex", gap: 8, background: "#fff", borderRadius: 12, padding: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
           {[["hoje","Hoje"],["semana","7 dias"],["mes","30 dias"]].map(([k, l]) => (
             <button key={k} onClick={() => setPeriodo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: periodo === k ? "#7b1a0a" : "transparent", color: periodo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
@@ -5179,7 +5333,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["equipe","👥 Equipe"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
@@ -5192,6 +5346,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       {/* GASTOS DA LOJA e RELATÓRIO DO MÊS */}
       {subAba === "gastos" && <LancamentoGastos mes={mesRel} setMes={setMesRel} />}
       {subAba === "mes" && <RelatorioMensal mes={mesRel} setMes={setMesRel} />}
+      {subAba === "equipe" && <RelatorioEquipe />}
 
       {/* GERAL */}
       {subAba === "geral" && <>

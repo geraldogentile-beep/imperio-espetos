@@ -12,6 +12,7 @@ import * as sefapr from "./fiscal/sefapr.js";
 import { aplicarPagamentoNaMesa, mesaZeradaServidor } from "./salao/fechamento.js";
 import { transferirMesa } from "./salao/transferencia.js";
 import { ehMontado, opcoesMontado, lerItemMontado, textoMontado } from "./cardapio/montado.js";
+import { EQUIPE_PADRAO, calcularConsumo, valorEfetivo } from "./salao/equipe.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -254,10 +255,15 @@ const ConsumoInternoSchema = new mongoose.Schema({
   subComanda: { type: String, default: "" },
   pessoa:     { type: String, default: "", trim: true, maxlength: 60 },   // quem consumiu (nome da comanda)
   itens:      { type: Array, required: true },
-  // O preço da equipe não é o do cardápio e a casa ainda não decidiu a regra:
-  // o valor a cobrar nasce vazio e a dona preenche depois, lançamento a lançamento.
-  valor:         { type: Number, default: null },
-  valorCardapio: { type: Number, default: 0 },   // só referência, não aparece como cobrança
+  // Regra da casa (salao/equipe.js): dono paga o custo; funcionário paga o
+  // cardápio com R$ 2 de desconto por espeto. Tudo calculado no momento do
+  // consumo, para mudança de custo ou de regra não reescrever o passado.
+  tipo:          { type: String, default: null },   // "dono" | "funcionario"
+  custo:         { type: Number, default: 0 },
+  semCusto:      { type: Number, default: 0 },      // partes sem custo cadastrado no estoque
+  valorRegra:    { type: Number, default: null },   // o que a regra manda cobrar
+  valor:         { type: Number, default: null },   // correção à mão (só funcionário)
+  valorCardapio: { type: Number, default: 0 },      // só referência
   data:       { type: Date, default: Date.now },
   criadoPor:  { type: String, default: "" },
 }, { timestamps: true });
@@ -2850,6 +2856,81 @@ app.delete("/despesas/:id", authMiddleware(["dono"]), async (req, res) => {
   }
 });
 
+// ── CONSUMO DA EQUIPE: regra, configuração e relatório ───────
+// Lista de donos e desconto por espeto (Rel. → Equipe). Guardado na config.
+async function configEquipe() {
+  try {
+    const doc = await ConfigDB.findOne({ chave: "equipe" }).lean();
+    if (doc?.valor) return { ...EQUIPE_PADRAO, ...doc.valor };
+  } catch (e) { console.error("Erro ao ler config da equipe:", e.message); }
+  return { ...EQUIPE_PADRAO };
+}
+app.get("/config/equipe", authMiddleware(["dono"]), async (req, res) => res.json(await configEquipe()));
+app.put("/config/equipe", authMiddleware(["dono"]), async (req, res) => {
+  const atual = await configEquipe();
+  const novo = { ...atual };
+  if (Array.isArray(req.body?.donos)) {
+    const nomes = [...new Set(req.body.donos.map(n => String(n || "").trim()).filter(Boolean))].slice(0, 20);
+    if (!nomes.length) return res.status(400).json({ erro: "Informe ao menos um dono" });
+    novo.donos = nomes.map(n => n.slice(0, 40));
+  }
+  if (req.body?.descontoEspeto !== undefined) {
+    const d = Number(String(req.body.descontoEspeto).replace(",", "."));
+    if (!Number.isFinite(d) || d < 0 || d > 100) return res.status(400).json({ erro: "Desconto inválido" });
+    novo.descontoEspeto = arred(d);
+  }
+  try {
+    await ConfigDB.updateOne({ chave: "equipe" }, { valor: novo }, { upsert: true });
+    res.json(novo);
+  } catch (e) { res.status(500).json({ erro: "Erro ao salvar" }); }
+});
+
+// Registros de antes da regra (sem tipo/valorRegra) são calculados agora
+async function completarRegistrosEquipe(lista) {
+  if (!lista.some(c => !c.tipo || c.valorRegra === null || c.valorRegra === undefined)) return lista;
+  const [config, estoques] = await Promise.all([configEquipe(), EstoqueDB.find({ ativo: true }).lean()]);
+  return lista.map(c => (c.tipo && c.valorRegra !== null && c.valorRegra !== undefined)
+    ? c : { ...c, ...calcularConsumo({ pessoa: c.pessoa, itens: c.itens, cardapio: CARDAPIO, estoques, config }) });
+}
+
+// Relatório por nome: o que cada um consumiu e quanto deve (dono = custo,
+// funcionário = regra ou valor corrigido)
+async function relatorioEquipe(listaBruta) {
+  const lista = await completarRegistrosEquipe(listaBruta);
+  const porPessoa = {};
+  for (const c of lista) {
+    const nome = (c.pessoa || "").trim() || "Sem nome";
+    const k = nome.toLowerCase();
+    if (!porPessoa[k]) porPessoa[k] = { pessoa: nome, tipo: c.tipo, vezes: 0, itens: 0, total: 0, custo: 0, editados: 0, semCusto: 0, produtos: {} };
+    const pp = porPessoa[k];
+    pp.vezes++; pp.total += valorEfetivo(c); pp.custo += Number(c.custo) || 0; pp.semCusto += Number(c.semCusto) || 0;
+    if (c.tipo === "funcionario" && c.valor !== null && c.valor !== undefined) pp.editados++;
+    if (c.tipo === "dono") pp.tipo = "dono";
+    for (const it of c.itens || []) {
+      const q = Number(it.qty) || 1;
+      pp.itens += q;
+      pp.produtos[it.nome] = (pp.produtos[it.nome] || 0) + q;
+    }
+  }
+  const pessoas = Object.values(porPessoa)
+    .map(pp => ({ ...pp, total: arred(pp.total), custo: arred(pp.custo), produtos: Object.entries(pp.produtos).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd) }))
+    .sort((a, b) => (a.tipo === b.tipo ? b.total - a.total : a.tipo === "dono" ? -1 : 1));
+  const soma = (tipo) => arred(pessoas.filter(p => p.tipo === tipo).reduce((s, p) => s + p.total, 0));
+  return {
+    lancamentos: lista.length,
+    itensTotal: pessoas.reduce((s, p) => s + p.itens, 0),
+    donos: { total: soma("dono"), pessoas: pessoas.filter(p => p.tipo === "dono").length },
+    funcionarios: { total: soma("funcionario"), pessoas: pessoas.filter(p => p.tipo === "funcionario").length },
+    semCusto: lista.filter(c => c.tipo === "dono" && c.semCusto > 0).length,
+    porPessoa: pessoas,
+    lista: lista.map(c => ({
+      _id: c._id, pessoa: c.pessoa, tipo: c.tipo, subComanda: c.subComanda, data: c.data,
+      custo: arred(c.custo), semCusto: c.semCusto || 0, valorRegra: arred(c.valorRegra), valor: c.valor ?? null, valorEfetivo: valorEfetivo(c),
+      itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1 })),
+    })),
+  };
+}
+
 // ── CONSUMO DA EQUIPE: lançar, listar e desfazer ─────────────
 // POST /consumo-interno { mesa, subComanda, pessoa, itens, liberarMesa }
 // Baixa o estoque (motivo "consumo da equipe") e tira os itens da mesa, como
@@ -2874,10 +2955,12 @@ app.post("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
   const quem = req.user?.nome || req.user?.role || "";
   try {
     const valorCardapio = arred(itens.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.preco) || 0), 0));
+    const pessoa = String(req.body.pessoa || "").trim().slice(0, 60);
+    const [config, estoques] = await Promise.all([configEquipe(), EstoqueDB.find({ ativo: true }).lean()]);
+    const regra = calcularConsumo({ pessoa, itens, cardapio: CARDAPIO, estoques, config });
     const reg = await ConsumoInternoDB.create({
       mesa, subComanda: String(req.body.subComanda || "").slice(0, 40),
-      pessoa: String(req.body.pessoa || "").trim().slice(0, 60),
-      itens, valor: null, valorCardapio, criadoPor: quem,
+      pessoa, itens, ...regra, valor: null, valorCardapio, criadoPor: quem,
     });
     await baixarEstoqueVenda(itens, "interno:" + reg._id, "consumo da equipe");
     const resposta = reg.toObject();
@@ -2903,33 +2986,7 @@ app.get("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
   if (!per) return res.status(400).json({ erro: "Informe semana, mes, ano ou de/ate" });
   try {
     const lista = await ConsumoInternoDB.find({ data: { $gte: per.inicio, $lt: per.fim } }).sort({ data: -1 }).lean();
-    const definido = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
-    const porPessoa = {}, porItem = {};
-    for (const c of lista) {
-      const p = c.pessoa || "Sem nome";
-      if (!porPessoa[p]) porPessoa[p] = { pessoa: p, vezes: 0, itens: 0, aCobrar: 0, semValor: 0, produtos: {} };
-      const pp = porPessoa[p];
-      pp.vezes++;
-      if (definido(c.valor)) pp.aCobrar += Number(c.valor); else pp.semValor++;
-      for (const it of c.itens || []) {
-        const q = Number(it.qty) || 1;
-        pp.itens += q;
-        pp.produtos[it.nome] = (pp.produtos[it.nome] || 0) + q;
-        if (!porItem[it.nome]) porItem[it.nome] = { nome: it.nome, qtd: 0 };
-        porItem[it.nome].qtd += q;
-      }
-    }
-    res.json({
-      lancamentos: lista.length,
-      itensTotal: lista.reduce((s, c) => s + (c.itens || []).reduce((q, it) => q + (Number(it.qty) || 1), 0), 0),
-      aCobrarTotal: arred(lista.reduce((s, c) => s + (definido(c.valor) ? Number(c.valor) : 0), 0)),
-      semValor: lista.filter(c => !definido(c.valor)).length,
-      porPessoa: Object.values(porPessoa)
-        .map(pp => ({ ...pp, aCobrar: arred(pp.aCobrar), produtos: Object.entries(pp.produtos).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd) }))
-        .sort((a, b) => b.itens - a.itens),
-      porItem: Object.values(porItem).sort((a, b) => b.qtd - a.qtd),
-      lista: lista.map(c => ({ _id: c._id, pessoa: c.pessoa, subComanda: c.subComanda, data: c.data, valor: definido(c.valor) ? Number(c.valor) : null, itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1 })) })),
-    });
+    res.json(await relatorioEquipe(lista));
   } catch (e) {
     console.error("Erro ao listar consumo da equipe:", e.message);
     res.status(500).json({ erro: "Erro ao listar o consumo da equipe" });
@@ -2948,9 +3005,12 @@ app.patch("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => 
     valor = arred(valor);
   }
   try {
+    const atual = await ConsumoInternoDB.findById(req.params.id).lean();
+    if (!atual) return res.status(404).json({ erro: "Lançamento não encontrado" });
+    const [reg] = await completarRegistrosEquipe([atual]);
+    if (reg.tipo === "dono") return res.status(400).json({ erro: "Dono paga o preço de custo; esse valor não se edita" });
     const c = await ConsumoInternoDB.findByIdAndUpdate(req.params.id, { $set: { valor } }, { new: true }).lean();
-    if (!c) return res.status(404).json({ erro: "Lançamento não encontrado" });
-    res.json({ ok: true, valor: c.valor });
+    res.json({ ok: true, valor: c.valor, valorEfetivo: valorEfetivo({ ...reg, valor: c.valor }) });
   } catch (e) {
     console.error("Erro ao definir valor do consumo:", e.message);
     res.status(500).json({ erro: "Erro ao salvar o valor" });
@@ -2990,7 +3050,7 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
       ] }).lean(),
       DespesaDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).sort({ data: 1, createdAt: 1 }).lean(),
       MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).select("quantidade custoUnitario horario").lean(),
-      ConsumoInternoDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).select("valor pessoa itens").lean(),
+      ConsumoInternoDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).lean(),
     ]);
 
     const porDia = {};
@@ -3028,6 +3088,7 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
 
     for (const m of perdasMes) dia(m.horario).perdas += (m.quantidade || 0) * (m.custoUnitario || 0);
 
+    const equipe = await relatorioEquipe(consumoEquipe);
     const entradas = arred(salao + delivery);
     const periodos = Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia))
       .map(d => ({ ...d, salao: arred(d.salao), delivery: arred(d.delivery), gastos: arred(d.gastos), perdas: arred(d.perdas), entradas: arred(d.salao + d.delivery) }));
@@ -3055,9 +3116,9 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
       // Informativo: consumo da equipe (não é venda). Valor = o que a dona
       // definiu para cobrar; sem valor definido, conta só itens.
       consumoEquipe: {
-        lancamentos: consumoEquipe.length,
-        itens: consumoEquipe.reduce((s, c) => s + (c.itens || []).reduce((q, it) => q + (Number(it.qty) || 1), 0), 0),
-        aCobrar: arred(consumoEquipe.reduce((s, c) => s + (c.valor !== null && c.valor !== undefined ? Number(c.valor) || 0 : 0), 0)),
+        lancamentos: equipe.lancamentos, itens: equipe.itensTotal,
+        donos: equipe.donos.total, funcionarios: equipe.funcionarios.total,
+        porPessoa: equipe.porPessoa.map(p => ({ pessoa: p.pessoa, tipo: p.tipo, itens: p.itens, total: p.total })),
       },
       resultado: arred(entradas - gastos),
       ...(anual ? { porMes: periodos.map(({ dia: mes, ...r }) => ({ mes, ...r })) } : { porDia: periodos }),

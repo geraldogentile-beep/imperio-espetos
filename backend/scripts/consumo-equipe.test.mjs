@@ -1,4 +1,6 @@
-// Consumo da equipe (mesa "Funcionários"): sai do estoque, não entra no caixa.
+// Consumo da equipe (mesa "Funcionários"): sai do estoque, não entra no caixa,
+// e cada um paga pela regra da casa: dono = custo; funcionário = cardápio com
+// R$ 2 de desconto por espeto (valor corrigível à mão).
 //   TESTE_URL=http://localhost:3000 node scripts/consumo-equipe.test.mjs   (dentro de backend/)
 // Banco de teste LIMPO (o caixa e o relatório do mês somam tudo do período).
 
@@ -20,76 +22,109 @@ const api = async (metodo, rota, corpo, tk = token) => {
 };
 const MES = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 7);
 const qtdDe = async (id) => (await api("GET", "/estoque")).corpo.find(e => e._id === id)?.quantidade;
+// Alcatra (Tradicionais, R$ 9) e Heineken (Cervejas, R$ 12) existem no cardápio padrão
+const alcatra = (q) => ({ id: 1, nome: "Alcatra", qty: q, preco: 9, categoria: "Tradicionais" });
+const cerveja = (q) => ({ id: 3001, nome: "Heineken Long Neck", qty: q, preco: 12, categoria: "Cervejas" });
 
 console.log(`\nServidor: ${BASE}\n`);
-const est = (await api("POST", "/estoque", { nome: "Alcatra equipe", unidade: "un", quantidade: 20, minimo: 2, cardapioNomes: ["Alcatra"] })).corpo;
+const est = (await api("POST", "/estoque", { nome: "Alcatra equipe", unidade: "un", quantidade: 20, minimo: 2, cardapioNomes: ["Alcatra"], custoPorUnidade: 3.8 })).corpo;
 
-console.log("=== 1) só o dono registra ===");
-ok((await api("POST", "/consumo-interno", { mesa: 901, itens: [{ nome: "Alcatra", qty: 1, preco: 9 }] }, tokenGarcom)).status === 403, "garçom não registra");
-ok((await api("GET", "/consumo-interno?mes=" + MES, null, tokenGarcom)).status === 403, "garçom não vê");
-
-console.log("\n=== 2) registrar consumo ===");
-let reg;
+console.log("=== 0) regras ===");
 {
-  ok((await api("POST", "/consumo-interno", { mesa: 901, itens: [] })).status === 400, "sem itens: recusado");
-  ok((await api("POST", "/consumo-interno", { mesa: 901, itens: [{ nome: "Alcatra", qty: 0 }] })).status === 400, "quantidade zero: recusado");
-  // Mesa da equipe no servidor, com a comanda do Rafael
-  const mesa = { id: 901, nome: "Funcionários", tipo: "funcionarios", icon: "👥", status: "ocupada", garcom: "", obs: "", abertura: new Date().toISOString(),
-    subComandas: [
-      { id: 1, label: "Comanda 1", cliente: "Rafael", itens: [{ id: 1, nome: "Alcatra", qty: 3, preco: 9 }], rodadas: [] },
-      { id: 2, label: "Comanda 2", cliente: "Ana", itens: [{ id: 1, nome: "Alcatra", qty: 1, preco: 9 }], rodadas: [] },
-    ] };
-  const atual = await api("GET", "/mesas");
-  const versao = (atual.corpo?.mesas || atual.corpo || []).find?.(m => (m.dados?.id ?? m.id) === 901)?.versao;
-  const put = await api("PUT", "/mesas/901", { dados: mesa, ...(versao ? { versao } : {}) });
-  ok(put.status === 200 || put.status === 201, `mesa da equipe gravada (HTTP ${put.status})`);
-  const r = await api("POST", "/consumo-interno", { mesa: 901, subComanda: "Comanda 1", pessoa: "Rafael", itens: [{ id: 1, nome: "Alcatra", qty: 3, preco: 9 }],
-    liberarMesa: { mesaId: 901, modo: "comanda", scIds: [1] } });
-  ok(r.status === 201 && r.corpo.valor === null && r.corpo.pessoa === "Rafael", `registrado: Rafael, sem valor a cobrar (o preço da equipe não é o do cardápio) — valor=${r.corpo.valor}`);
-  reg = r.corpo;
-  ok((await qtdDe(est._id)) === 17, "estoque baixou 3 (20 -> 17)");
-  const movs = (await api("GET", `/estoque/${est._id}/movimentacoes`)).corpo;
-  ok(movs.some(m => m.tipo === "saida" && m.motivo === "consumo da equipe" && m.quantidade === 3), "movimentação de saída com motivo \"consumo da equipe\"");
-  const m = r.corpo.mesaAtualizada?.dados;
-  ok(m && m.subComandas.length === 1 && m.subComandas[0].cliente === "Ana" && m.tipo === "funcionarios", "a comanda do Rafael saiu da mesa; a da Ana continua; a mesa segue sendo da equipe");
+  const cfg = (await api("GET", "/config/equipe")).corpo;
+  ok(cfg.donos?.join(",") === "Daiane,Rafael,Amanda,Leonardo" && cfg.descontoEspeto === 2, `padrão: donos ${cfg.donos?.join(", ")}, desconto R$ ${cfg.descontoEspeto}`);
+  ok((await api("GET", "/config/equipe", null, tokenGarcom)).status === 403, "garçom não vê as regras");
+  ok((await api("PUT", "/config/equipe", { donos: [] })).status === 400, "lista de donos vazia recusada");
 }
 
-console.log("\n=== 3) NÃO entra no caixa nem no faturamento ===");
+console.log("\n=== 1) só o dono registra ===");
+ok((await api("POST", "/consumo-interno", { mesa: 901, itens: [alcatra(1)] }, tokenGarcom)).status === 403, "garçom não registra");
+ok((await api("GET", "/consumo-interno?mes=" + MES, null, tokenGarcom)).status === 403, "garçom não vê");
+
+console.log("\n=== 2) dono paga o custo ===");
+let regRafael;
+{
+  ok((await api("POST", "/consumo-interno", { mesa: 901, itens: [] })).status === 400, "sem itens: recusado");
+  const mesa = { id: 901, nome: "Funcionários", tipo: "funcionarios", icon: "👥", status: "ocupada", garcom: "", obs: "", abertura: new Date().toISOString(),
+    subComandas: [
+      { id: 1, label: "Comanda 1", cliente: "Rafael", itens: [alcatra(3)], rodadas: [] },
+      { id: 2, label: "Comanda 2", cliente: "João", itens: [alcatra(1)], rodadas: [] },
+    ] };
+  const put = await api("PUT", "/mesas/901", { dados: mesa });
+  ok(put.status === 200 || put.status === 201, `mesa da equipe gravada (HTTP ${put.status})`);
+  const r = await api("POST", "/consumo-interno", { mesa: 901, subComanda: "Comanda 1", pessoa: "Rafael", itens: [alcatra(3)],
+    liberarMesa: { mesaId: 901, modo: "comanda", scIds: [1] } });
+  ok(r.status === 201 && r.corpo.tipo === "dono" && r.corpo.custo === 11.4 && r.corpo.valorRegra === 11.4, `Rafael é dono: 3 x custo R$ 3,80 = R$ ${r.corpo.valorRegra}`);
+  regRafael = r.corpo;
+  ok((await qtdDe(est._id)) === 17, "estoque baixou 3 (20 -> 17)");
+  const movs = (await api("GET", `/estoque/${est._id}/movimentacoes`)).corpo;
+  ok(movs.some(m => m.tipo === "saida" && m.motivo === "consumo da equipe" && m.quantidade === 3), "saída com motivo \"consumo da equipe\"");
+  const m = r.corpo.mesaAtualizada?.dados;
+  ok(m && m.subComandas.length === 1 && m.subComandas[0].cliente === "João" && m.tipo === "funcionarios", "a comanda do Rafael saiu; a do João continua; a mesa segue sendo da equipe");
+}
+
+console.log("\n=== 3) funcionário: cardápio com R$ 2 de desconto por espeto ===");
+let regJoao;
+{
+  const r = await api("POST", "/consumo-interno", { mesa: 901, pessoa: "João", itens: [alcatra(2), cerveja(1)] });
+  ok(r.status === 201 && r.corpo.tipo === "funcionario" && r.corpo.valorRegra === 26, `João: 2 x (R$ 9 - R$ 2) + cerveja R$ 12 = R$ ${r.corpo.valorRegra}`);
+  regJoao = r.corpo;
+  const amanda = await api("POST", "/consumo-interno", { mesa: 901, pessoa: "amanda", itens: [cerveja(1)] });
+  ok(amanda.corpo.tipo === "dono" && amanda.corpo.semCusto === 1 && amanda.corpo.valorRegra === 0, "\"amanda\" (minúscula) é dona; cerveja sem custo cadastrado fica R$ 0 e avisa");
+}
+
+console.log("\n=== 4) NÃO entra no caixa nem no faturamento ===");
 {
   ok((await api("GET", "/vendas-salao")).corpo.length === 0, "nenhuma venda criada");
   const conf = (await api("GET", "/caixa/conferencia")).corpo;
   ok(conf.dinheiroSalao === 0 && conf.esperadoComDelivery === 0, "gaveta não muda");
-  const fecha = await api("POST", "/fechamento-dia", {});
-  ok(fecha.status === 400, `fechar caixa: "nenhum movimento" (o consumo não é venda) (HTTP ${fecha.status})`);
+  ok((await api("POST", "/fechamento-dia", {})).status === 400, "fechar caixa: \"nenhum movimento\"");
   const mensal = (await api("GET", "/relatorio/mensal?mes=" + MES)).corpo;
   ok(mensal.entradas.total === 0 && mensal.resultado === 0, "relatório do mês: entradas 0");
-  ok(mensal.consumoEquipe?.itens === 3 && mensal.consumoEquipe?.lancamentos === 1 && mensal.consumoEquipe?.aCobrar === 0, "mas mostra o consumo da equipe à parte (3 itens, 1 lançamento, nada a cobrar ainda)");
+  ok(mensal.consumoEquipe?.donos === 11.4 && mensal.consumoEquipe?.funcionarios === 26 && mensal.consumoEquipe?.lancamentos === 3, `mas mostra a equipe à parte: donos R$ ${mensal.consumoEquipe?.donos}, funcionários R$ ${mensal.consumoEquipe?.funcionarios}`);
 }
 
-console.log("\n=== 4) relatório por pessoa e desfazer ===");
+console.log("\n=== 5) relatório por nome ===");
 {
-  await api("POST", "/consumo-interno", { mesa: 901, pessoa: "Ana", itens: [{ id: 1, nome: "Alcatra", qty: 1, preco: 9 }, { id: 99, nome: "Coca lata", qty: 2, preco: 6 }] });
-  let r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
-  ok(r.lancamentos === 2 && r.itensTotal === 6 && r.aCobrarTotal === 0 && r.semValor === 2, `2 lançamentos, 6 itens, nada a cobrar ainda`);
-  const ana = r.porPessoa.find(p => p.pessoa === "Ana"), rafa = r.porPessoa.find(p => p.pessoa === "Rafael");
-  ok(rafa?.itens === 3 && ana?.itens === 3 && JSON.stringify(ana.produtos) === JSON.stringify([{ nome: "Coca lata", qtd: 2 }, { nome: "Alcatra", qtd: 1 }]), `por pessoa, com o que cada um consumiu: ${JSON.stringify(r.porPessoa.map(p => [p.pessoa, p.itens, p.produtos]))}`);
-  ok(r.porItem[0].nome === "Alcatra" && r.porItem[0].qtd === 4, "por item: 4 Alcatra");
-  ok(r.lista.every(c => !("preco" in c.itens[0])), "o preço do cardápio não aparece na lista");
+  const r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  ok(r.lancamentos === 3 && r.donos.total === 11.4 && r.donos.pessoas === 2 && r.funcionarios.total === 26 && r.funcionarios.pessoas === 1, `donos R$ ${r.donos.total} (2 pessoas), funcionários R$ ${r.funcionarios.total} (1)`);
+  ok(r.porPessoa.map(p => `${p.pessoa}:${p.tipo}:${p.total}`).join("|") === "Rafael:dono:11.4|amanda:dono:0|João:funcionario:26", `por nome, donos primeiro: ${r.porPessoa.map(p => p.pessoa + " " + p.total).join(", ")}`);
+  ok(JSON.stringify(r.porPessoa.find(p => p.pessoa === "João").produtos) === JSON.stringify([{ nome: "Alcatra", qtd: 2 }, { nome: "Heineken Long Neck", qtd: 1 }]), "o que cada um consumiu");
+  ok(r.semCusto === 1, "avisa 1 lançamento de dono com item sem custo");
+  ok((await api("GET", "/consumo-interno?semana=" + new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10))).corpo.lancamentos === 3, "também por semana");
+}
 
-  // A dona define depois quanto cobrar de cada lançamento
-  const idAna = r.lista.find(c => c.pessoa === "Ana")._id;
-  ok((await api("PATCH", "/consumo-interno/" + idAna, { valor: -1 })).status === 400, "valor negativo recusado");
-  const pt = await api("PATCH", "/consumo-interno/" + idAna, { valor: "12,50" });
-  ok(pt.status === 200 && pt.corpo.valor === 12.5, `valor a cobrar da Ana: R$ ${pt.corpo.valor} (digitado "12,50")`);
-  r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
-  ok(r.aCobrarTotal === 12.5 && r.semValor === 1 && r.porPessoa.find(p => p.pessoa === "Ana").aCobrar === 12.5 && r.porPessoa.find(p => p.pessoa === "Rafael").aCobrar === 0, "total a cobrar soma só o que foi definido");
-  ok((await api("GET", "/relatorio/mensal?mes=" + MES)).corpo.consumoEquipe.aCobrar === 12.5, "relatório do mês mostra o total a cobrar");
-  const limpa = await api("PATCH", "/consumo-interno/" + idAna, { valor: "" });
-  ok(limpa.status === 200 && limpa.corpo.valor === null, "apagar o valor volta a \"sem valor\"");
-  ok((await api("GET", "/consumo-interno?ano=" + MES.slice(0, 4))).corpo.lancamentos === 2, "também por ano");
-  const del = await api("DELETE", "/consumo-interno/" + reg._id);
-  ok(del.status === 200 && (await qtdDe(est._id)) === 19, "desfazer devolve os 3 ao estoque (16 -> 19)");
-  ok((await api("GET", "/consumo-interno?mes=" + MES)).corpo.lancamentos === 1, "sobrou 1 lançamento");
+console.log("\n=== 6) correção à mão: só funcionário ===");
+{
+  const dono = await api("PATCH", "/consumo-interno/" + regRafael._id, { valor: 5 });
+  ok(dono.status === 400, `valor do dono não se edita (HTTP ${dono.status})`);
+  const pt = await api("PATCH", "/consumo-interno/" + regJoao._id, { valor: "20,00" });
+  ok(pt.status === 200 && pt.corpo.valor === 20 && pt.corpo.valorEfetivo === 20, "João corrigido para R$ 20,00");
+  let r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  const joao = r.porPessoa.find(p => p.pessoa === "João");
+  ok(joao.total === 20 && joao.editados === 1 && r.funcionarios.total === 20, "total do João e dos funcionários seguem a correção");
+  const linha = r.lista.find(c => c._id === regJoao._id);
+  ok(linha.valorRegra === 26 && linha.valor === 20 && linha.valorEfetivo === 20, "a lista guarda o valor da regra e o corrigido");
+  const volta = await api("PATCH", "/consumo-interno/" + regJoao._id, { valor: null });
+  ok(volta.status === 200 && volta.corpo.valorEfetivo === 26, "\"voltar à regra\" devolve R$ 26,00");
+}
+
+console.log("\n=== 7) mudar a regra vale para os próximos ===");
+{
+  const cfg = await api("PUT", "/config/equipe", { donos: ["Daiane", "Rafael", "Amanda", "Leonardo", "João"], descontoEspeto: "3,00" });
+  ok(cfg.status === 200 && cfg.corpo.donos.includes("João") && cfg.corpo.descontoEspeto === 3, "João entrou como dono; desconto R$ 3,00");
+  const r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  ok(r.porPessoa.find(p => p.pessoa === "João").tipo === "funcionario", "o lançamento antigo do João continua como funcionário");
+  const novo = await api("POST", "/consumo-interno", { mesa: 901, pessoa: "João", itens: [alcatra(1)] });
+  ok(novo.corpo.tipo === "dono" && novo.corpo.valorRegra === 3.8, "o novo já sai como dono (custo R$ 3,80)");
+  await api("PUT", "/config/equipe", { donos: ["Daiane", "Rafael", "Amanda", "Leonardo"], descontoEspeto: 2 });
+}
+
+console.log("\n=== 8) desfazer devolve o estoque ===");
+{
+  const antes = await qtdDe(est._id);
+  const del = await api("DELETE", "/consumo-interno/" + regRafael._id);
+  ok(del.status === 200 && (await qtdDe(est._id)) === antes + 3, `devolveu os 3 do Rafael (${antes} -> ${antes + 3})`);
 }
 
 await api("DELETE", "/estoque/" + est._id);
