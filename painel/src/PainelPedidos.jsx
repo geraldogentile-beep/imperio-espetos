@@ -4810,6 +4810,18 @@ function RelatorioMensal({ mes, setMes }) {
     } catch { setEquipe(null); }
   }
   useEffect(() => { carregarEquipe(); }, [mes, anual]);
+  const [valoresEquipe, setValoresEquipe] = useState({});   // _id -> texto com máscara
+  async function salvarValorEquipe(c) {
+    const txt = valoresEquipe[c._id];
+    if (txt === undefined) return;
+    const valor = txt.trim() === "" ? null : parseMoedaGlobal(txt);
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ valor }) });
+      if (!r.ok) { alert("Não foi possível salvar o valor."); return; }
+      setValoresEquipe(v => { const n = { ...v }; delete n[c._id]; return n; });
+      carregarEquipe();
+    } catch { alert("Sem conexão."); }
+  }
   async function desfazerEquipe(c) {
     if (!window.confirm(`Desfazer o consumo de ${c.pessoa || "sem nome"} (${c.itens.map(i => i.qty + "x " + i.nome).join(", ")})? Os itens voltam para o estoque.`)) return;
     try {
@@ -4889,7 +4901,7 @@ function RelatorioMensal({ mes, setMes }) {
             <Metrica icon="📤" label="Gastos" valor={fmtBR(g.total)} sub={`${g.qtd} lançamentos`} cor="#ef4444" />
             <Metrica icon={rel.resultado >= 0 ? "✅" : "⚠️"} label="Resultado" valor={fmtBR(rel.resultado)} sub={rel.resultado >= 0 ? "sobrou" : "faltou"} cor={rel.resultado >= 0 ? "#10b981" : "#ef4444"} />
             <Metrica icon="🗑️" label="Perdas" valor={fmtBR(perdasRel.custo)} sub={`${perdasRel.lancamentos} lançamento(s) · informativo`} cor="#f97316" />
-            {equipe?.lancamentos > 0 && <Metrica icon="👥" label="Consumo da equipe" valor={fmtBR(equipe.valorTotal)} sub="preço de cardápio · fora do caixa" cor="#0891b2" />}
+            {equipe?.lancamentos > 0 && <Metrica icon="👥" label="Consumo da equipe" valor={`${equipe.itensTotal} ${equipe.itensTotal === 1 ? "item" : "itens"}`} sub={equipe.aCobrarTotal > 0 ? `a cobrar ${fmtBR(equipe.aCobrarTotal)} · fora do caixa` : "fora do caixa"} cor="#0891b2" />}
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -4937,11 +4949,17 @@ function RelatorioMensal({ mes, setMes }) {
                 <span style={{ fontSize: 11, color: "#888", fontWeight: 500 }}>saiu do estoque · não entra no caixa</span>
               </div>
               {equipe.porPessoa.map(pp => (
-                <div key={pp.pessoa} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #f3f3f3", fontSize: 13 }}>
-                  <span style={{ color: "#333", fontWeight: 600 }}>{pp.pessoa} <span style={{ color: "#aaa", fontWeight: 400 }}>· {pp.itens} itens em {pp.vezes} {pp.vezes === 1 ? "vez" : "vezes"}</span></span>
-                  <span style={{ color: "#0e7490", fontWeight: 700 }}>{fmtBR(pp.valor)}</span>
+                <div key={pp.pessoa} style={{ padding: "7px 0", borderBottom: "1px solid #f3f3f3", fontSize: 13 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ color: "#333", fontWeight: 700 }}>{pp.pessoa} <span style={{ color: "#aaa", fontWeight: 400 }}>· {pp.itens} {pp.itens === 1 ? "item" : "itens"} em {pp.vezes} {pp.vezes === 1 ? "vez" : "vezes"}</span></span>
+                    <span style={{ whiteSpace: "nowrap", fontWeight: 700, color: pp.aCobrar > 0 ? "#0e7490" : "#aaa", fontSize: 12.5 }}>
+                      {pp.aCobrar > 0 ? `a cobrar ${fmtBR(pp.aCobrar)}` : "sem valor"}{pp.aCobrar > 0 && pp.semValor > 0 ? ` (+${pp.semValor} sem valor)` : ""}
+                    </span>
+                  </div>
+                  <div style={{ color: "#666", fontSize: 12, marginTop: 2 }}>{pp.produtos.map(x => `${x.qtd}x ${x.nome}`).join(", ")}</div>
                 </div>
               ))}
+              <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>O valor a cobrar é definido por você em cada lançamento (abra a lista abaixo). Sem valor, aparecem só as quantidades.</div>
               <button onClick={() => setVerEquipe(v => !v)} style={{ marginTop: 8, background: "none", border: "none", color: "#0e7490", fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0 }}>{verEquipe ? "▴ Esconder lançamentos" : `▾ Ver os ${equipe.lancamentos} lançamentos`}</button>
               {verEquipe && equipe.lista.map(c => (
                 <div key={c._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px solid #f5f5f5", fontSize: 12.5 }}>
@@ -4949,7 +4967,13 @@ function RelatorioMensal({ mes, setMes }) {
                     <div style={{ fontWeight: 600, color: "#333" }}>{c.pessoa || "Sem nome"} <span style={{ color: "#888", fontWeight: 400 }}>· {new Date(c.data).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span></div>
                     <div style={{ color: "#666", fontSize: 11.5 }}>{c.itens.map(i => `${i.qty}x ${i.nome}`).join(", ")}</div>
                   </div>
-                  <span style={{ color: "#0e7490", fontWeight: 700, whiteSpace: "nowrap" }}>{fmtBR(c.valor)}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                    <InputDinheiro value={valoresEquipe[c._id] !== undefined ? valoresEquipe[c._id] : (c.valor != null ? moedaDeNumero(c.valor) : "")}
+                      onChange={(t) => setValoresEquipe(v => ({ ...v, [c._id]: t }))}
+                      onKeyDown={(e) => { if (e.key === "Enter") salvarValorEquipe(c); }}
+                      placeholder="a cobrar" style={{ width: 96, padding: "6px 8px", border: `1.5px solid ${valoresEquipe[c._id] !== undefined ? "#0891b2" : "#e0e0e0"}`, borderRadius: 8, fontSize: 12.5, textAlign: "right", boxSizing: "border-box" }} />
+                    {valoresEquipe[c._id] !== undefined && <button onClick={() => salvarValorEquipe(c)} title="Salvar valor" style={{ background: "#0891b2", color: "#fff", border: "none", borderRadius: 7, padding: "6px 8px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>OK</button>}
+                  </div>
                   <button onClick={() => desfazerEquipe(c)} title="Desfazer (devolve ao estoque)" style={{ background: "#fee2e2", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>↩️</button>
                 </div>
               ))}

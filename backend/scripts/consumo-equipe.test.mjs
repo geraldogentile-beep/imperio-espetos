@@ -45,7 +45,7 @@ let reg;
   ok(put.status === 200 || put.status === 201, `mesa da equipe gravada (HTTP ${put.status})`);
   const r = await api("POST", "/consumo-interno", { mesa: 901, subComanda: "Comanda 1", pessoa: "Rafael", itens: [{ id: 1, nome: "Alcatra", qty: 3, preco: 9 }],
     liberarMesa: { mesaId: 901, modo: "comanda", scIds: [1] } });
-  ok(r.status === 201 && r.corpo.valor === 27 && r.corpo.pessoa === "Rafael", `registrado: Rafael, R$ ${r.corpo.valor} pelo cardápio`);
+  ok(r.status === 201 && r.corpo.valor === null && r.corpo.pessoa === "Rafael", `registrado: Rafael, sem valor a cobrar (o preço da equipe não é o do cardápio) — valor=${r.corpo.valor}`);
   reg = r.corpo;
   ok((await qtdDe(est._id)) === 17, "estoque baixou 3 (20 -> 17)");
   const movs = (await api("GET", `/estoque/${est._id}/movimentacoes`)).corpo;
@@ -63,16 +63,29 @@ console.log("\n=== 3) NÃO entra no caixa nem no faturamento ===");
   ok(fecha.status === 400, `fechar caixa: "nenhum movimento" (o consumo não é venda) (HTTP ${fecha.status})`);
   const mensal = (await api("GET", "/relatorio/mensal?mes=" + MES)).corpo;
   ok(mensal.entradas.total === 0 && mensal.resultado === 0, "relatório do mês: entradas 0");
-  ok(mensal.consumoEquipe?.valor === 27 && mensal.consumoEquipe?.lancamentos === 1, "mas mostra o consumo da equipe à parte (R$ 27, 1 lançamento)");
+  ok(mensal.consumoEquipe?.itens === 3 && mensal.consumoEquipe?.lancamentos === 1 && mensal.consumoEquipe?.aCobrar === 0, "mas mostra o consumo da equipe à parte (3 itens, 1 lançamento, nada a cobrar ainda)");
 }
 
 console.log("\n=== 4) relatório por pessoa e desfazer ===");
 {
   await api("POST", "/consumo-interno", { mesa: 901, pessoa: "Ana", itens: [{ id: 1, nome: "Alcatra", qty: 1, preco: 9 }, { id: 99, nome: "Coca lata", qty: 2, preco: 6 }] });
-  const r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
-  ok(r.lancamentos === 2 && r.valorTotal === 48, `2 lançamentos, R$ ${r.valorTotal}`);
-  ok(r.porPessoa.map(p => `${p.pessoa}:${p.valor}`).join("|") === "Rafael:27|Ana:21", `por pessoa: ${JSON.stringify(r.porPessoa.map(p => [p.pessoa, p.valor, p.itens]))}`);
+  let r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  ok(r.lancamentos === 2 && r.itensTotal === 6 && r.aCobrarTotal === 0 && r.semValor === 2, `2 lançamentos, 6 itens, nada a cobrar ainda`);
+  const ana = r.porPessoa.find(p => p.pessoa === "Ana"), rafa = r.porPessoa.find(p => p.pessoa === "Rafael");
+  ok(rafa?.itens === 3 && ana?.itens === 3 && JSON.stringify(ana.produtos) === JSON.stringify([{ nome: "Coca lata", qtd: 2 }, { nome: "Alcatra", qtd: 1 }]), `por pessoa, com o que cada um consumiu: ${JSON.stringify(r.porPessoa.map(p => [p.pessoa, p.itens, p.produtos]))}`);
   ok(r.porItem[0].nome === "Alcatra" && r.porItem[0].qtd === 4, "por item: 4 Alcatra");
+  ok(r.lista.every(c => !("preco" in c.itens[0])), "o preço do cardápio não aparece na lista");
+
+  // A dona define depois quanto cobrar de cada lançamento
+  const idAna = r.lista.find(c => c.pessoa === "Ana")._id;
+  ok((await api("PATCH", "/consumo-interno/" + idAna, { valor: -1 })).status === 400, "valor negativo recusado");
+  const pt = await api("PATCH", "/consumo-interno/" + idAna, { valor: "12,50" });
+  ok(pt.status === 200 && pt.corpo.valor === 12.5, `valor a cobrar da Ana: R$ ${pt.corpo.valor} (digitado "12,50")`);
+  r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  ok(r.aCobrarTotal === 12.5 && r.semValor === 1 && r.porPessoa.find(p => p.pessoa === "Ana").aCobrar === 12.5 && r.porPessoa.find(p => p.pessoa === "Rafael").aCobrar === 0, "total a cobrar soma só o que foi definido");
+  ok((await api("GET", "/relatorio/mensal?mes=" + MES)).corpo.consumoEquipe.aCobrar === 12.5, "relatório do mês mostra o total a cobrar");
+  const limpa = await api("PATCH", "/consumo-interno/" + idAna, { valor: "" });
+  ok(limpa.status === 200 && limpa.corpo.valor === null, "apagar o valor volta a \"sem valor\"");
   ok((await api("GET", "/consumo-interno?ano=" + MES.slice(0, 4))).corpo.lancamentos === 2, "também por ano");
   const del = await api("DELETE", "/consumo-interno/" + reg._id);
   ok(del.status === 200 && (await qtdDe(est._id)) === 19, "desfazer devolve os 3 ao estoque (16 -> 19)");

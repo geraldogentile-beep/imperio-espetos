@@ -254,7 +254,10 @@ const ConsumoInternoSchema = new mongoose.Schema({
   subComanda: { type: String, default: "" },
   pessoa:     { type: String, default: "", trim: true, maxlength: 60 },   // quem consumiu (nome da comanda)
   itens:      { type: Array, required: true },
-  valor:      { type: Number, default: 0 },   // pelo preço do cardápio, só informativo
+  // O preço da equipe não é o do cardápio e a casa ainda não decidiu a regra:
+  // o valor a cobrar nasce vazio e a dona preenche depois, lançamento a lançamento.
+  valor:         { type: Number, default: null },
+  valorCardapio: { type: Number, default: 0 },   // só referência, não aparece como cobrança
   data:       { type: Date, default: Date.now },
   criadoPor:  { type: String, default: "" },
 }, { timestamps: true });
@@ -2870,11 +2873,11 @@ app.post("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
   }
   const quem = req.user?.nome || req.user?.role || "";
   try {
-    const valor = arred(itens.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.preco) || 0), 0));
+    const valorCardapio = arred(itens.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.preco) || 0), 0));
     const reg = await ConsumoInternoDB.create({
       mesa, subComanda: String(req.body.subComanda || "").slice(0, 40),
       pessoa: String(req.body.pessoa || "").trim().slice(0, 60),
-      itens, valor, criadoPor: quem,
+      itens, valor: null, valorCardapio, criadoPor: quem,
     });
     await baixarEstoqueVenda(itens, "interno:" + reg._id, "consumo da equipe");
     const resposta = reg.toObject();
@@ -2900,28 +2903,57 @@ app.get("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
   if (!per) return res.status(400).json({ erro: "Informe semana, mes, ano ou de/ate" });
   try {
     const lista = await ConsumoInternoDB.find({ data: { $gte: per.inicio, $lt: per.fim } }).sort({ data: -1 }).lean();
+    const definido = (v) => v !== null && v !== undefined && Number.isFinite(Number(v));
     const porPessoa = {}, porItem = {};
     for (const c of lista) {
       const p = c.pessoa || "Sem nome";
-      if (!porPessoa[p]) porPessoa[p] = { pessoa: p, valor: 0, vezes: 0, itens: 0 };
-      porPessoa[p].valor += c.valor || 0; porPessoa[p].vezes++;
+      if (!porPessoa[p]) porPessoa[p] = { pessoa: p, vezes: 0, itens: 0, aCobrar: 0, semValor: 0, produtos: {} };
+      const pp = porPessoa[p];
+      pp.vezes++;
+      if (definido(c.valor)) pp.aCobrar += Number(c.valor); else pp.semValor++;
       for (const it of c.itens || []) {
         const q = Number(it.qty) || 1;
-        porPessoa[p].itens += q;
-        const k = it.nome;
-        if (!porItem[k]) porItem[k] = { nome: k, qtd: 0, valor: 0 };
-        porItem[k].qtd += q; porItem[k].valor += q * (Number(it.preco) || 0);
+        pp.itens += q;
+        pp.produtos[it.nome] = (pp.produtos[it.nome] || 0) + q;
+        if (!porItem[it.nome]) porItem[it.nome] = { nome: it.nome, qtd: 0 };
+        porItem[it.nome].qtd += q;
       }
     }
     res.json({
-      valorTotal: arred(lista.reduce((s, c) => s + (c.valor || 0), 0)), lancamentos: lista.length,
-      porPessoa: Object.values(porPessoa).map(p => ({ ...p, valor: arred(p.valor) })).sort((a, b) => b.valor - a.valor),
-      porItem: Object.values(porItem).map(i => ({ ...i, valor: arred(i.valor) })).sort((a, b) => b.qtd - a.qtd),
-      lista: lista.map(c => ({ _id: c._id, pessoa: c.pessoa, subComanda: c.subComanda, data: c.data, valor: c.valor, itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1, preco: Number(it.preco) || 0 })) })),
+      lancamentos: lista.length,
+      itensTotal: lista.reduce((s, c) => s + (c.itens || []).reduce((q, it) => q + (Number(it.qty) || 1), 0), 0),
+      aCobrarTotal: arred(lista.reduce((s, c) => s + (definido(c.valor) ? Number(c.valor) : 0), 0)),
+      semValor: lista.filter(c => !definido(c.valor)).length,
+      porPessoa: Object.values(porPessoa)
+        .map(pp => ({ ...pp, aCobrar: arred(pp.aCobrar), produtos: Object.entries(pp.produtos).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd) }))
+        .sort((a, b) => b.itens - a.itens),
+      porItem: Object.values(porItem).sort((a, b) => b.qtd - a.qtd),
+      lista: lista.map(c => ({ _id: c._id, pessoa: c.pessoa, subComanda: c.subComanda, data: c.data, valor: definido(c.valor) ? Number(c.valor) : null, itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1 })) })),
     });
   } catch (e) {
     console.error("Erro ao listar consumo da equipe:", e.message);
     res.status(500).json({ erro: "Erro ao listar o consumo da equipe" });
+  }
+});
+
+// PATCH /consumo-interno/:id { valor } — quanto cobrar da pessoa por este
+// lançamento. Vazio/null volta a "sem valor".
+app.patch("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
+  const v = req.body?.valor;
+  let valor = null;
+  if (v !== null && v !== undefined && v !== "") {
+    valor = typeof v === "string" ? parseFloat(v.replace(/[R$\s]/g, "").replace(/\./g, "").replace(",", ".")) : Number(v);
+    if (!Number.isFinite(valor) || valor < 0 || valor > 100000) return res.status(400).json({ erro: "Valor inválido" });
+    valor = arred(valor);
+  }
+  try {
+    const c = await ConsumoInternoDB.findByIdAndUpdate(req.params.id, { $set: { valor } }, { new: true }).lean();
+    if (!c) return res.status(404).json({ erro: "Lançamento não encontrado" });
+    res.json({ ok: true, valor: c.valor });
+  } catch (e) {
+    console.error("Erro ao definir valor do consumo:", e.message);
+    res.status(500).json({ erro: "Erro ao salvar o valor" });
   }
 });
 
@@ -2958,7 +2990,7 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
       ] }).lean(),
       DespesaDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).sort({ data: 1, createdAt: 1 }).lean(),
       MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).select("quantidade custoUnitario horario").lean(),
-      ConsumoInternoDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).select("valor pessoa").lean(),
+      ConsumoInternoDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).select("valor pessoa itens").lean(),
     ]);
 
     const porDia = {};
@@ -3020,10 +3052,12 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
         custo: arred(perdasMes.reduce((s, m) => s + (m.quantidade || 0) * (m.custoUnitario || 0), 0)),
         lancamentos: perdasMes.length,
       },
-      // Informativo: consumo da equipe pelo preço do cardápio. Não é venda.
+      // Informativo: consumo da equipe (não é venda). Valor = o que a dona
+      // definiu para cobrar; sem valor definido, conta só itens.
       consumoEquipe: {
-        valor: arred(consumoEquipe.reduce((s, c) => s + (c.valor || 0), 0)),
         lancamentos: consumoEquipe.length,
+        itens: consumoEquipe.reduce((s, c) => s + (c.itens || []).reduce((q, it) => q + (Number(it.qty) || 1), 0), 0),
+        aCobrar: arred(consumoEquipe.reduce((s, c) => s + (c.valor !== null && c.valor !== undefined ? Number(c.valor) || 0 : 0), 0)),
       },
       resultado: arred(entradas - gastos),
       ...(anual ? { porMes: periodos.map(({ dia: mes, ...r }) => ({ mes, ...r })) } : { porDia: periodos }),
