@@ -245,6 +245,20 @@ const DespesaSchema = new mongoose.Schema({
   criadoPor: { type: String, default: "" },
 }, { timestamps: true });
 
+// ── CONSUMO DA EQUIPE ─────────────────────────────────────────
+// O que os funcionários (e a família) consomem na mesa "Funcionários": sai
+// do estoque, mas NÃO é venda — fica fora do faturamento, do caixa, da gaveta
+// e da nota. Coleção própria de propósito: nenhum relatório de venda soma isto.
+const ConsumoInternoSchema = new mongoose.Schema({
+  mesa:       { type: Number, default: 901 },
+  subComanda: { type: String, default: "" },
+  pessoa:     { type: String, default: "", trim: true, maxlength: 60 },   // quem consumiu (nome da comanda)
+  itens:      { type: Array, required: true },
+  valor:      { type: Number, default: 0 },   // pelo preço do cardápio, só informativo
+  data:       { type: Date, default: Date.now },
+  criadoPor:  { type: String, default: "" },
+}, { timestamps: true });
+
 // ── MOVIMENTOS DO CAIXA ────────────────────────────────────────
 // Abertura (fundo de troco), retirada (levar ao banco) e reforço de troco.
 // Cada um vale para o período de caixa em que foi lançado (do último
@@ -466,6 +480,7 @@ const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
 const DespesaDB    = mongoose.model("Despesa",        DespesaSchema);
 const CaixaMovimentoDB = mongoose.model("CaixaMovimento", CaixaMovimentoSchema);
+const ConsumoInternoDB = mongoose.model("ConsumoInterno", ConsumoInternoSchema);
 const NotaFiscalDB = mongoose.model("NotaFiscal",     NotaFiscalSchema);
 
 // ── MESAS DO SALÃO ────────────────────────────────────────────
@@ -2407,7 +2422,7 @@ app.get("/vendas-salao/historico", authMiddleware(["dono"]), async (req, res) =>
 });
 
 // ── ESTOQUE — BAIXA AUTOMÁTICA ────────────────────────────────
-async function baixarEstoqueVenda(itens, vendaId) {
+async function baixarEstoqueVenda(itens, vendaId, motivo = "venda") {
   if (!itens?.length) return;
   try {
     const estoques = await EstoqueDB.find({ ativo: true }).lean();
@@ -2441,7 +2456,7 @@ async function baixarEstoqueVenda(itens, vendaId) {
         // Registra o que saiu de fato: com o estoque zerado, estornar a venda
         // devolvia mais do que tinha saído.
         tipo: "saida", quantidade: Math.min(desconto, atual),
-        motivo: "venda", vendaId,
+        motivo, vendaId,
       });
       // O mesmo estoque pode aparecer duas vezes na mesma venda (dois itens
       // ligados a ele): a segunda baixa parte do valor já descontado.
@@ -2832,6 +2847,98 @@ app.delete("/despesas/:id", authMiddleware(["dono"]), async (req, res) => {
   }
 });
 
+// ── CONSUMO DA EQUIPE: lançar, listar e desfazer ─────────────
+// POST /consumo-interno { mesa, subComanda, pessoa, itens, liberarMesa }
+// Baixa o estoque (motivo "consumo da equipe") e tira os itens da mesa, como
+// um fechamento — mas sem venda, sem pagamento e sem entrar no caixa.
+app.post("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
+  const itens = Array.isArray(req.body.itens) ? req.body.itens : [];
+  if (!itens.length) return res.status(400).json({ erro: "Nenhum item para registrar" });
+  for (const it of itens) {
+    const q = Number(it?.qty ?? 1);
+    if (!it || typeof it.nome !== "string" || !it.nome.trim() || !Number.isFinite(q) || q <= 0) return res.status(400).json({ erro: "Item inválido na lista" });
+  }
+  const mesa = Number(req.body.mesa) || 901;
+  const lib = req.body.liberarMesa;
+  let liberar = null;
+  if (lib && typeof lib === "object") {
+    if (Number(lib.mesaId) !== mesa) return res.status(400).json({ erro: "Mesa não confere" });
+    if (!["mesa", "comanda"].includes(lib.modo)) return res.status(400).json({ erro: "Modo inválido" });
+    const scIds = Array.isArray(lib.scIds) ? lib.scIds.map(Number).filter(Number.isFinite) : [];
+    if (lib.modo === "comanda" && !scIds.length) return res.status(400).json({ erro: "Informe a comanda" });
+    liberar = { mesaId: mesa, modo: lib.modo, scIds };
+  }
+  const quem = req.user?.nome || req.user?.role || "";
+  try {
+    const valor = arred(itens.reduce((s, it) => s + (Number(it.qty) || 1) * (Number(it.preco) || 0), 0));
+    const reg = await ConsumoInternoDB.create({
+      mesa, subComanda: String(req.body.subComanda || "").slice(0, 40),
+      pessoa: String(req.body.pessoa || "").trim().slice(0, 60),
+      itens, valor, criadoPor: quem,
+    });
+    await baixarEstoqueVenda(itens, "interno:" + reg._id, "consumo da equipe");
+    const resposta = reg.toObject();
+    if (liberar) {
+      try {
+        const m = await liberarMesaAposVenda(liberar, itens, quem);
+        if (m) resposta.mesaAtualizada = m;
+      } catch (e) {
+        console.error("Consumo gravado, mas a mesa não foi liberada:", e.message);
+        resposta.mesaErro = e.message;
+      }
+    }
+    res.status(201).json(resposta);
+  } catch (e) {
+    console.error("Erro ao registrar consumo da equipe:", e.message);
+    res.status(500).json({ erro: "Erro ao registrar o consumo" });
+  }
+});
+
+// GET /consumo-interno?semana=|mes=|ano=|de=&ate= — por pessoa e por item
+app.get("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
+  const per = periodoDaConsulta(req.query);
+  if (!per) return res.status(400).json({ erro: "Informe semana, mes, ano ou de/ate" });
+  try {
+    const lista = await ConsumoInternoDB.find({ data: { $gte: per.inicio, $lt: per.fim } }).sort({ data: -1 }).lean();
+    const porPessoa = {}, porItem = {};
+    for (const c of lista) {
+      const p = c.pessoa || "Sem nome";
+      if (!porPessoa[p]) porPessoa[p] = { pessoa: p, valor: 0, vezes: 0, itens: 0 };
+      porPessoa[p].valor += c.valor || 0; porPessoa[p].vezes++;
+      for (const it of c.itens || []) {
+        const q = Number(it.qty) || 1;
+        porPessoa[p].itens += q;
+        const k = it.nome;
+        if (!porItem[k]) porItem[k] = { nome: k, qtd: 0, valor: 0 };
+        porItem[k].qtd += q; porItem[k].valor += q * (Number(it.preco) || 0);
+      }
+    }
+    res.json({
+      valorTotal: arred(lista.reduce((s, c) => s + (c.valor || 0), 0)), lancamentos: lista.length,
+      porPessoa: Object.values(porPessoa).map(p => ({ ...p, valor: arred(p.valor) })).sort((a, b) => b.valor - a.valor),
+      porItem: Object.values(porItem).map(i => ({ ...i, valor: arred(i.valor) })).sort((a, b) => b.qtd - a.qtd),
+      lista: lista.map(c => ({ _id: c._id, pessoa: c.pessoa, subComanda: c.subComanda, data: c.data, valor: c.valor, itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1, preco: Number(it.preco) || 0 })) })),
+    });
+  } catch (e) {
+    console.error("Erro ao listar consumo da equipe:", e.message);
+    res.status(500).json({ erro: "Erro ao listar o consumo da equipe" });
+  }
+});
+
+// DELETE /consumo-interno/:id — lançamento errado: devolve o estoque
+app.delete("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
+  try {
+    const c = await ConsumoInternoDB.findByIdAndDelete(req.params.id).lean();
+    if (!c) return res.status(404).json({ erro: "Lançamento não encontrado" });
+    const devolvido = await estornarEstoqueDaVenda("interno:" + req.params.id);
+    res.json({ ok: true, estoqueDevolvido: devolvido });
+  } catch (e) {
+    console.error("Erro ao desfazer consumo da equipe:", e.message);
+    res.status(500).json({ erro: "Erro ao desfazer" });
+  }
+});
+
 // GET /relatorio/mensal?mes=YYYY-MM (ou ?ano=YYYY) — tudo que entrou e tudo
 // que saiu no mês ou no ano. Entradas = vendas do salão (pelo fechamento) +
 // delivery entregue (pelo momento da entrega). Gorjeta não é receita: vai à
@@ -2843,7 +2950,7 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
   if (!lim) return res.status(400).json({ erro: anual ? "Informe ano=AAAA" : "Informe mes=AAAA-MM" });
   const chavePeriodo = (d) => (anual ? diaBrasilia(d).slice(0, 7) : diaBrasilia(d));
   try {
-    const [vendas, pedidos, despesas, perdasMes] = await Promise.all([
+    const [vendas, pedidos, despesas, perdasMes, consumoEquipe] = await Promise.all([
       VendaSalaoDB.find({ fechamento: { $gte: lim.inicio, $lt: lim.fim } }).lean(),
       PedidoDB.find({ status: "entregue", $or: [
         { entregueEm: { $gte: lim.inicio, $lt: lim.fim } },
@@ -2851,6 +2958,7 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
       ] }).lean(),
       DespesaDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).sort({ data: 1, createdAt: 1 }).lean(),
       MovEstoqueDB.find({ tipo: "perda", horario: { $gte: lim.inicio, $lt: lim.fim } }).select("quantidade custoUnitario horario").lean(),
+      ConsumoInternoDB.find({ data: { $gte: lim.inicio, $lt: lim.fim } }).select("valor pessoa").lean(),
     ]);
 
     const porDia = {};
@@ -2911,6 +3019,11 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
       perdas: {
         custo: arred(perdasMes.reduce((s, m) => s + (m.quantidade || 0) * (m.custoUnitario || 0), 0)),
         lancamentos: perdasMes.length,
+      },
+      // Informativo: consumo da equipe pelo preço do cardápio. Não é venda.
+      consumoEquipe: {
+        valor: arred(consumoEquipe.reduce((s, c) => s + (c.valor || 0), 0)),
+        lancamentos: consumoEquipe.length,
       },
       resultado: arred(entradas - gastos),
       ...(anual ? { porMes: periodos.map(({ dia: mes, ...r }) => ({ mes, ...r })) } : { porDia: periodos }),

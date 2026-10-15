@@ -4077,7 +4077,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   const hoje = periodo?.inicio ? new Date(periodo.inicio) : inicioDoExpediente();
   const pedidosHoje = pedidos.filter(p=>p.status==="entregue"&&momentoEntrega(p)>=hoje);
   const totalDelivery = pedidosHoje.reduce((s,p)=>s+(p.total||0),0);
-  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
+  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaVenda(m),0);
   const totalGeral = totalDelivery + totalSalaoHoje;
 
   // Por garçom do dia
@@ -4800,6 +4800,23 @@ function RelatorioMensal({ mes, setMes }) {
     return () => { vivo = false; };
   }, [mes, anual]);
   // Linhas do detalhe: dia a dia no mês, mês a mês no ano (com as perdas)
+  // Consumo da equipe no mesmo período (fora do caixa), por pessoa
+  const [equipe, setEquipe] = useState(null);
+  const [verEquipe, setVerEquipe] = useState(false);
+  async function carregarEquipe() {
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno?" + (anual ? "ano=" + ano : "mes=" + mes));
+      setEquipe(r.ok ? await r.json() : null);
+    } catch { setEquipe(null); }
+  }
+  useEffect(() => { carregarEquipe(); }, [mes, anual]);
+  async function desfazerEquipe(c) {
+    if (!window.confirm(`Desfazer o consumo de ${c.pessoa || "sem nome"} (${c.itens.map(i => i.qty + "x " + i.nome).join(", ")})? Os itens voltam para o estoque.`)) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id, { method: "DELETE" });
+      if (r.ok) carregarEquipe(); else alert("Não foi possível desfazer.");
+    } catch { alert("Sem conexão."); }
+  }
   const periodos = rel ? (rel.porMes || rel.porDia || []).map(x => ({ chave: x.mes || x.dia, rotulo: x.mes ? (MESES_NOME[Number(x.mes.slice(5, 7)) - 1] || x.mes) : fmtDataBR(x.dia), entradas: x.entradas, gastos: x.gastos, perdas: x.perdas || 0 })) : [];
   const perdasRel = rel?.perdas || { custo: 0, lancamentos: 0 };
 
@@ -4872,6 +4889,7 @@ function RelatorioMensal({ mes, setMes }) {
             <Metrica icon="📤" label="Gastos" valor={fmtBR(g.total)} sub={`${g.qtd} lançamentos`} cor="#ef4444" />
             <Metrica icon={rel.resultado >= 0 ? "✅" : "⚠️"} label="Resultado" valor={fmtBR(rel.resultado)} sub={rel.resultado >= 0 ? "sobrou" : "faltou"} cor={rel.resultado >= 0 ? "#10b981" : "#ef4444"} />
             <Metrica icon="🗑️" label="Perdas" valor={fmtBR(perdasRel.custo)} sub={`${perdasRel.lancamentos} lançamento(s) · informativo`} cor="#f97316" />
+            {equipe?.lancamentos > 0 && <Metrica icon="👥" label="Consumo da equipe" valor={fmtBR(equipe.valorTotal)} sub="preço de cardápio · fora do caixa" cor="#0891b2" />}
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -4911,6 +4929,32 @@ function RelatorioMensal({ mes, setMes }) {
               </div>
             )}
           </div>
+
+          {equipe?.lancamentos > 0 && (
+            <div style={card}>
+              <div style={{ ...titulo, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <span>👥 Consumo da equipe</span>
+                <span style={{ fontSize: 11, color: "#888", fontWeight: 500 }}>saiu do estoque · não entra no caixa</span>
+              </div>
+              {equipe.porPessoa.map(pp => (
+                <div key={pp.pessoa} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #f3f3f3", fontSize: 13 }}>
+                  <span style={{ color: "#333", fontWeight: 600 }}>{pp.pessoa} <span style={{ color: "#aaa", fontWeight: 400 }}>· {pp.itens} itens em {pp.vezes} {pp.vezes === 1 ? "vez" : "vezes"}</span></span>
+                  <span style={{ color: "#0e7490", fontWeight: 700 }}>{fmtBR(pp.valor)}</span>
+                </div>
+              ))}
+              <button onClick={() => setVerEquipe(v => !v)} style={{ marginTop: 8, background: "none", border: "none", color: "#0e7490", fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0 }}>{verEquipe ? "▴ Esconder lançamentos" : `▾ Ver os ${equipe.lancamentos} lançamentos`}</button>
+              {verEquipe && equipe.lista.map(c => (
+                <div key={c._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px solid #f5f5f5", fontSize: 12.5 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, color: "#333" }}>{c.pessoa || "Sem nome"} <span style={{ color: "#888", fontWeight: 400 }}>· {new Date(c.data).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span></div>
+                    <div style={{ color: "#666", fontSize: 11.5 }}>{c.itens.map(i => `${i.qty}x ${i.nome}`).join(", ")}</div>
+                  </div>
+                  <span style={{ color: "#0e7490", fontWeight: 700, whiteSpace: "nowrap" }}>{fmtBR(c.valor)}</span>
+                  <button onClick={() => desfazerEquipe(c)} title="Desfazer (devolve ao estoque)" style={{ background: "#fee2e2", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>↩️</button>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={card}>
             <div style={titulo}>📅 {anual ? "Mês a mês" : "Dia a dia"}</div>
@@ -5048,7 +5092,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
 
   // Faturamento do salão — mesas abertas + já fechadas
-  const totalSalaoAberto = mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
+  const totalSalaoAberto = mesasSalao.reduce((s, m) => s + totMesaVenda(m), 0);
   const totalSalao = faturadoSalao + totalSalaoAberto;
   const totalGeral = totalDelivery + totalSalao;
 
@@ -5150,7 +5194,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           {/* Resumo */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Metrica icon="🧾" label="Vendas do caixa" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "desde o ultimo fechamento"} cor="#7b1a0a" />
-            <Metrica icon="💰" label="Total salão" valor={fmtBR(faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0))} cor="#10b981" />
+            <Metrica icon="💰" label="Total salão" valor={fmtBR(faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaVenda(m),0))} cor="#10b981" />
             <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(historicoSalao.map(v=>v.garcom).filter(g=>g!=="—"))].length || "—"} cor="#3b82f6" />
           </div>
 
@@ -5973,6 +6017,10 @@ function migrarMesa(m) {
   return {...m, subComandas:[{id:1, label:"Comanda 1", cliente:m.cliente||"", itens:m.itens||[], rodadas:m.rodadas||[]}]};
 }
 function fmtR(v) { return fmtBR(v); }
+// Mesa "Funcionários": o que está nela é consumo da equipe, não venda.
+// Fica fora de todo total de faturamento, aberto ou fechado.
+const ehMesaEquipe = (m) => m?.tipo === "funcionarios";
+const totMesaVenda = (m) => (ehMesaEquipe(m) ? 0 : totMesaCompleta(migrarMesa(m)));
 // "Comanda 2 · Ana": com o nome da pessoa, quando tiver
 function rotuloComanda(sc) {
   const nome = String(sc?.cliente || "").trim();
@@ -7038,6 +7086,42 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     await imprimirCozinha({ ...rodada, semCozinha: false }, mesa.id, sc.label);
   }
 
+  // Mesa "Funcionários": em vez de venda, registra como consumo da equipe.
+  // Sai do estoque e some da mesa, mas não entra no caixa nem no faturamento.
+  // Uma comanda = uma pessoa (o nome da comanda vai no registro).
+  async function registrarConsumoEquipe(indices) {
+    if (fechandoRef.current) return;
+    const alvos = indices.map(i => ({ i, sc: mesa.subComandas[i] })).filter(a => a.sc && ((a.sc.itens || []).length || (a.sc.rodadas || []).length));
+    if (!alvos.length) return;
+    const juntar = (sc) => [...(sc.rodadas||[]).flatMap(r=>r.itens), ...(sc.itens||[])].reduce((acc,it)=>{
+      const ex=acc.find(x=>chaveItem(x)===chaveItem(it)); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
+    }, []);
+    const resumo = alvos.map(a => `${a.sc.cliente || a.sc.label}: ${juntar(a.sc).reduce((q,it)=>q+(it.qty||1),0)} itens`).join("\n");
+    if (!window.confirm(`Registrar como consumo da equipe?\n\n${resumo}\n\nSai do estoque e NÃO entra no caixa nem no faturamento.`)) return;
+    fechandoRef.current = true;
+    let mesaAtual = mesa, mesaServidor = null, feitos = 0;
+    for (const { sc } of alvos) {
+      try {
+        const res = await authFetch(BACKEND_URL + "/consumo-interno", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mesa: mesa.id, subComanda: sc.label, pessoa: sc.cliente || "", itens: juntar(sc),
+            liberarMesa: { mesaId: mesa.id, modo: "comanda", scIds: [sc.id] } }) });
+        if (!res.ok) { const err = await res.json().catch(()=>({})); msgSalao(`❌ Não foi possível registrar ${sc.cliente || sc.label}: ${err.erro || res.status}`, "#ef4444"); break; }
+        const salvo = await res.json();
+        mesaServidor = salvo.mesaAtualizada || mesaServidor;
+        mesaAtual = { ...mesaAtual, subComandas: mesaAtual.subComandas.filter(x => x.id !== sc.id) };
+        feitos++;
+      } catch { msgSalao("❌ Sem conexão com o servidor. Nada mais foi registrado.", "#ef4444"); break; }
+    }
+    if (feitos) {
+      const previa = mesaAtual.subComandas.length ? { ...mesaAtual, solicitadoPor: null, solicitadoEm: null } : mesaZerada(mesa);
+      const final = aplicarMesaPaga(mesaServidor, previa);
+      if (!temItens(final)) { setSel(null); setTelaSalao("mapa"); }
+      else { setSelSC(0); setTelaSalao("comanda"); }
+      msgSalao(`👥 Consumo da equipe registrado (${feitos} ${feitos === 1 ? "comanda" : "comandas"}). Saiu do estoque, fora do caixa.`, "#0e7490");
+    }
+    fechandoRef.current = false;
+  }
+
   async function fecharComanda(idxSC, pagamentos, descInfo, gorjInfo){
     // Duplo clique no botao criava DUAS vendas no banco
     if (fechandoRef.current) return;
@@ -7242,7 +7326,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const totalAcumulado = totMesaCompleta(mesa||{subComandas:[]});
   const totalSCAtual = sc ? totMesa(sc.itens)+(sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0) : 0;
 
-  const fat = faturado + mesas.reduce((s,m)=>s+totMesaCompleta(migrarMesa(m)),0);
+  const fat = faturado + mesas.reduce((s,m)=>s+totMesaVenda(m),0);
   const ocup = mesas.filter(m=>m.status!=="livre").length;
   const alertas = mesas.filter(m=>m.status==="chamando"||m.status==="conta");
   const cats = ordenarCategorias(cardapio.map(i=>i.cat||i.categoria));
@@ -8009,6 +8093,11 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             }} onReimprimir={podeLancar ? (rodada) => imprimirCozinha(rodada, mesa.id, sc.label, { reimpressao: true }) : null}
               onMandarCozinha={podeLancar ? (rodada, ri) => mandarRodadaCozinha(rodada, ri) : null} />
           )}
+          {ehMesaEquipe(mesa)&&(
+            <div style={{background:"#ecfeff",border:"1.5px solid #a5f3fc",borderRadius:12,padding:"10px 12px",fontSize:12.5,color:"#155e75",lineHeight:1.5,marginBottom:10}}>
+              👥 <strong>Mesa da equipe.</strong> O que for lançado aqui sai do estoque, mas <strong>não entra no caixa</strong> nem no faturamento. Escreva o nome da pessoa na comanda.
+            </div>
+          )}
           <ResumoMesa mesa={mesa} />
           <div style={{...card2}}>
             <textarea value={mesa.obs||""} onChange={e=>upd({...mesa,obs:e.target.value})} placeholder="⚠️ Observação geral da mesa (ex.: alergia). Para um item só, use o 📝 no item." rows={2} style={{width:"100%",border:"none",outline:"none",fontSize:13,color:"#555",resize:"none",fontFamily:"inherit",background:"transparent",boxSizing:"border-box"}}/>
@@ -8123,9 +8212,20 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
                   🖨️ Imprimir conta (caixa)
                 </button>
               )}
+              {ehMesaEquipe(mesa) ? (<>
+                <button onClick={()=>registrarConsumoEquipe([scIdx])} disabled={totalSCAtual===0} style={BP2(totalSCAtual>0?"linear-gradient(135deg,#0e7490,#0891b2)":"#ccc")}>
+                  👥 Registrar consumo{sc.cliente?` de ${sc.cliente}`:mesa.subComandas.length>1?` — ${rotuloComanda(sc)}`:""}
+                </button>
+                {mesa.subComandas.filter(s=>(s.itens||[]).length||(s.rodadas||[]).length).length>1&&(
+                  <button onClick={()=>registrarConsumoEquipe(mesa.subComandas.map((_,i)=>i))} style={{background:"#fff",color:"#0e7490",border:"1.5px solid #67e8f9",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer",width:"100%"}}>
+                    👥 Registrar todas as comandas da equipe
+                  </button>
+                )}
+              </>) : (
               <button onClick={()=>setTelaSalao("fechar")} style={BP2(totalAcumulado>0?mesa.status==="conta"?"linear-gradient(135deg,#8b5cf6,#7c3aed)":"linear-gradient(135deg,#065f46,#10b981)":"#ccc")} disabled={totalAcumulado===0}>
                 {mesa.status==="conta"?"💳 Receber pagamento":mesa.subComandas.length>1?`✅ Fechar ${rotuloComanda(sc)}`:  "✅ Fechar comanda"}{totalSCAtual>0?` — ${fmtR(totalSCAtual)}`:""}
               </button>
+              )}
               {mesa.status==="conta"&&mesa.solicitadoPor&&(
                 <div style={{background:"#ede9fe",borderRadius:10,padding:"8px 12px",fontSize:12,color:"#7c3aed",fontWeight:600,textAlign:"center"}}>
                   📨 Solicitado por {mesa.solicitadoPor} às {new Date(mesa.solicitadoEm).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
@@ -9149,7 +9249,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const counts = Object.keys(STATUS_CONFIG).reduce((a, s) => { a[s] = pedidosAtivos.filter(p => p.status === s).length; return a; }, {});
   // Mesmo corte da tela de Fechamento: o que foi entregue neste caixa
   const totalDeliveryHoje = pedidosAtivos.filter(p => p.status === "entregue").reduce((s, p) => s + totalPedido(p, taxaEntregaOk), 0);
-  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => s + totMesaCompleta(migrarMesa(m)), 0);
+  const totalSalaoHoje = faturadoSalao + mesasSalao.reduce((s, m) => s + totMesaVenda(m), 0);
   const totalHoje = totalDeliveryHoje + totalSalaoHoje;
   const novos = counts["novo"] || 0;
   const basePedidos = verFechados ? pedidos : pedidosAtivos;
