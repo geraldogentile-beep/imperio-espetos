@@ -8816,7 +8816,9 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const [cupons, setCupons] = useState(MOCK_CUPONS);
   const [avaliacoes, setAvaliacoes] = useState(MOCK_AVALIACOES);
   const [garcons, setGarcons] = useState([]);
-  const [aba, setAba] = useState(abrirSalao ? "salao" : "pedidos");
+  // Todos abrem no Salão (pedido da dona, 15/10/2026). Pedido novo do delivery
+  // continua tocando o som e aparece no número do botão "Pedidos".
+  const [aba, setAba] = useState("salao");
   const [verFaturamento, setVerFaturamento] = useState(false);   // olhinho do cabecalho
   const [maisAberto, setMaisAberto] = useState(false);
   const [expanded, setExpanded] = useState(null);
