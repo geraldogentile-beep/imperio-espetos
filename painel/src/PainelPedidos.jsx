@@ -2804,6 +2804,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [modoPerdas, setModoPerdas] = useState("mes");
   const [refPerdas, setRefPerdas] = useState(hojeISO);
   const [relPerdas, setRelPerdas] = useState(null);
+  // Produção: matéria-prima vira produto pronto (3 kg de frango -> 40 espetos).
+  // prodForm = { origem, produtoId, qtd, insumos: [{ estoqueId, qtd, auto }], obs, ultima }
+  // auto = a quantidade segue a proporção da última produção até alguém digitar
+  const [prodForm, setProdForm] = useState(null);
+  const [modoProd, setModoProd] = useState("mes");
+  const [refProd, setRefProd] = useState(hojeISO);
+  const [relProd, setRelProd] = useState(null);
   const salvarPrecoTimer = useRef(null);
   // Limpa o timer de debounce ao desmontar
   useEffect(() => () => { if (salvarPrecoTimer.current) clearTimeout(salvarPrecoTimer.current); }, []);
@@ -2848,6 +2855,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
     } catch {}
   }
   useEffect(() => { if (subAba === "perdas") carregarPerdas(modoPerdas, refPerdas); }, [subAba, modoPerdas, refPerdas]);
+  async function carregarProducao(modo = modoProd, ref = refProd) {
+    try {
+      const r = await authFetch(backendUrl + "/estoque/producao?" + consultaPeriodo(modo, ref));
+      if (r.ok) setRelProd(await r.json());
+    } catch {}
+  }
+  useEffect(() => { if (subAba === "producao") carregarProducao(modoProd, refProd); }, [subAba, modoProd, refProd]);
   useEffect(() => { if(selItem) carregarMovs(selItem._id); }, [selItem]);
 
   const inp = { width:"100%", padding:"8px 10px", border:"1.5px solid #e0e0e0", borderRadius:8, fontSize:13, color:"#333", outline:"none", boxSizing:"border-box" };
@@ -2949,6 +2963,96 @@ function Estoque({ backendUrl, cardapio = [] }) {
     setSaving(false);
   }
 
+  // ── Produção ──
+  const unidDe = (it) => (it?.tipo === "chopp" ? "L" : (it?.unidade || "un"));
+  const fmtQ = (n) => String(Math.round((Number(n) || 0) * 1000) / 1000).replace(".", ",");
+  // Recalcula as quantidades "auto" pela proporção da última produção
+  function recalcularProd(f) {
+    const ult = f.ultima, q = lerDecimal(f.qtd);
+    if (!ult || !(ult.produto?.quantidade > 0)) return f;
+    return { ...f, insumos: f.insumos.map(l => {
+      if (!l.auto) return l;
+      const ui = (ult.insumos || []).find(i => String(i.estoqueId) === l.estoqueId);
+      if (!ui) return l;
+      return { ...l, qtd: q > 0 ? fmtQ(ui.quantidade / ult.produto.quantidade * q) : "" };
+    }) };
+  }
+  // Aberta de um item: se ele está no cardápio é o produto; se não, é a matéria-prima
+  function abrirProducao(base) {
+    const comoProduto = !!base && (base.cardapioNomes || []).length > 0;
+    setProdForm({
+      origem: base?._id || null,
+      produtoId: comoProduto ? base._id : "",
+      qtd: "",
+      insumos: [{ estoqueId: base && !comoProduto ? base._id : "", qtd: "", auto: false }],
+      obs: "", ultima: null,
+    });
+    if (comoProduto) carregarUltimaProducao(base._id);
+  }
+  async function carregarUltimaProducao(produtoId) {
+    let ult = null;
+    try {
+      const r = await authFetch(backendUrl + "/estoque/producao/ultima/" + produtoId);
+      if (r.ok) ult = (await r.json()).ultima || null;
+    } catch {}
+    setProdForm(p => {
+      if (!p || p.produtoId !== produtoId) return p;
+      if (!ult) return { ...p, ultima: null };
+      const existentes = (ult.insumos || []).filter(i => itens.some(x => x._id === String(i.estoqueId)));
+      const vazio = p.insumos.every(l => !l.estoqueId);
+      // Sem ingrediente escolhido: repete os da última vez. Com ingrediente já
+      // escolhido (aberta pela matéria-prima), só passa a sugerir a quantidade.
+      const insumos = vazio && existentes.length
+        ? existentes.map(i => ({ estoqueId: String(i.estoqueId), qtd: "", auto: true }))
+        : p.insumos.map(l => (l.qtd === "" ? { ...l, auto: true } : l));
+      return recalcularProd({ ...p, ultima: ult, insumos });
+    });
+  }
+  function escolherProdutoProd(id) {
+    setProdForm(p => ({ ...p, produtoId: id, ultima: null }));
+    if (id) carregarUltimaProducao(id);
+  }
+  async function lancarProducao() {
+    const f = prodForm;
+    const produto = itens.find(i => i._id === f?.produtoId);
+    if (!produto) return showMsg("Escolha o que foi produzido.", "erro");
+    const q = lerDecimal(f.qtd);
+    if (!(q > 0)) return showMsg("Informe quantos foram produzidos.", "erro");
+    const linhas = f.insumos.filter(l => l.estoqueId || String(l.qtd).trim());
+    if (linhas.length === 0) return showMsg("Informe o que foi usado (ex.: frango).", "erro");
+    if (linhas.some(l => !l.estoqueId)) return showMsg("Escolha cada ingrediente usado.", "erro");
+    if (linhas.some(l => !(lerDecimal(l.qtd) > 0))) return showMsg("Informe quanto foi usado de cada ingrediente.", "erro");
+    setSaving(true);
+    try {
+      const r = await authFetch(backendUrl + "/estoque/producao", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        produtoId: produto._id, quantidade: q, observacao: f.obs || "",
+        insumos: linhas.map(l => ({ estoqueId: l.estoqueId, quantidade: lerDecimal(l.qtd) })),
+      }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { showMsg(d.erro || "Não foi possível lançar a produção.", "erro"); setSaving(false); return; }
+      const u = unidDe(produto);
+      const custo = d.produto?.custoUnitario != null ? ` Custo: ${fmtBR(d.produto.custoUnitario)} cada.` : "";
+      const faltou = (d.faltou || []).map(x => `${x.nome} tinha só ${fmtQ(x.tinha)} ${x.unidade}`).join("; ");
+      showMsg(`🔪 Produção lançada: +${fmtQ(q)} ${u} de ${produto.nome}.${custo}${faltou ? ` Atenção: ${faltou} e ficou em 0 — confira as entradas.` : ""}`);
+      setProdForm(null); carregar();
+      if (selItem) carregarMovs(selItem._id);
+      if (subAba === "producao") carregarProducao();
+    } catch { showMsg("Erro de conexão.", "erro"); }
+    setSaving(false);
+  }
+  async function desfazerProducao(pr) {
+    if (!window.confirm(`Desfazer a produção de ${fmtQ(pr.produto.quantidade)} ${pr.produto.unidade} de ${pr.produto.nome}? Os ingredientes voltam para o estoque e o produto sai.`)) return;
+    try {
+      const r = await authFetch(backendUrl + "/estoque/producao/" + pr._id, { method: "DELETE" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return showMsg(d.erro || "Não foi possível desfazer.", "erro");
+      showMsg(d.semSaldo > 0
+        ? `Produção desfeita. ${fmtQ(d.semSaldo)} ${pr.produto.unidade} de ${pr.produto.nome} já tinham saído (vendidos): o produto ficou em 0.`
+        : "Produção desfeita: ingredientes devolvidos.");
+      carregar(); carregarProducao();
+    } catch { showMsg("Erro de conexão.", "erro"); }
+  }
+
   async function deletarItem(id) {
     if(!window.confirm("Remover este item do estoque?")) return;
     try {
@@ -3048,6 +3152,93 @@ function Estoque({ backendUrl, cardapio = [] }) {
         <div style={{display:"flex",gap:8}}>
           <button onClick={lancarPerda} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"🗑️ Confirmar perda"}</button>
           <button onClick={()=>setPerdaForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
+        </div>
+      </div>
+    );
+  };
+  const opcoesEstoque = (excluir = []) => catsEstoque.filter(c=>c!=="todos").map(c=>{
+    const lista = itens.filter(i=>categoriaDe(i)===c&&!excluir.includes(i._id)).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),"pt-BR",{sensitivity:"base"}));
+    return lista.length===0?null:(
+      <optgroup key={c} label={c}>
+        {lista.map(i=><option key={i._id} value={i._id}>{i.nome} ({fmtQ(qtdNum(i.quantidade))} {unidDe(i)})</option>)}
+      </optgroup>
+    );
+  });
+  const formProducao = () => {
+    const f = prodForm; if (!f) return null;
+    const produto = itens.find(i=>i._id===f.produtoId);
+    const qtdProd = lerDecimal(f.qtd) || 0;
+    const linhas = f.insumos.map(l=>({ ...l, est: itens.find(i=>i._id===l.estoqueId), q: lerDecimal(l.qtd) || 0 }));
+    const escolhidas = linhas.filter(l=>l.est);
+    const custoTotal = escolhidas.reduce((s,l)=>s + l.q*(Number(l.est.custoPorUnidade)||0), 0);
+    const semCusto = escolhidas.filter(l=>!(Number(l.est.custoPorUnidade)>0)).map(l=>l.est.nome);
+    const custoUn = escolhidas.length>0 && semCusto.length===0 && qtdProd>0 ? custoTotal/qtdProd : null;
+    const ult = f.ultima;
+    const setLinha = (idx, mud) => setProdForm(p=>recalcularProd({ ...p, insumos: p.insumos.map((l,i)=>i===idx?{...l,...mud}:l) }));
+    return (
+      <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #8b5cf6",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
+        <div style={{fontWeight:700,fontSize:14,marginBottom:2}}>🔪 Produção</div>
+        <div style={{fontSize:11.5,color:"#888",marginBottom:10}}>Matéria-prima vira produto pronto: os ingredientes saem do estoque e o produto entra. Frango que vira espeto e medalhão: uma produção para cada.</div>
+
+        <div style={{marginBottom:8}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>O que foi feito</div>
+          <select value={f.produtoId} onChange={e=>escolherProdutoProd(e.target.value)} style={inp}>
+            <option value="">— escolher o produto —</option>
+            {opcoesEstoque(f.insumos.map(l=>l.estoqueId).filter(Boolean))}
+          </select>
+        </div>
+        <div style={{marginBottom:6}}>
+          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantos foram feitos{produto?` (${unidDe(produto)})`:""}</div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={()=>setProdForm(p=>recalcularProd({...p,qtd:fmtQ(Math.max(0,(lerDecimal(p.qtd)||0)-1))}))} style={{width:44,height:44,borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:20,fontWeight:800,cursor:"pointer",color:"#5b21b6"}}>−</button>
+            <input value={f.qtd} onChange={e=>{const v=e.target.value.replace(/[^\d.,]/g,""); setProdForm(p=>recalcularProd({...p,qtd:v}));}} inputMode="decimal" placeholder="ex.: 40" style={{...inp,textAlign:"center",fontSize:18,fontWeight:800,flex:1}}/>
+            <button onClick={()=>setProdForm(p=>recalcularProd({...p,qtd:fmtQ((lerDecimal(p.qtd)||0)+1)}))} style={{width:44,height:44,borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:20,fontWeight:800,cursor:"pointer",color:"#5b21b6"}}>+</button>
+          </div>
+        </div>
+        {ult&&(
+          <div style={{fontSize:11.5,color:"#5b21b6",background:"#f5f3ff",borderRadius:8,padding:"6px 10px",marginBottom:8}}>
+            Da última vez: {fmtQ(ult.produto.quantidade)} {ult.produto.unidade} com {(ult.insumos||[]).map(i=>`${fmtQ(i.quantidade)} ${i.unidade} de ${i.nome}`).join(" + ")}. As quantidades abaixo seguem essa proporção; é só corrigir se mudou.
+          </div>
+        )}
+
+        <div style={{fontSize:11,color:"#888",margin:"6px 0 4px"}}>O que foi usado</div>
+        {f.insumos.map((l,idx)=>{
+          const est = itens.find(i=>i._id===l.estoqueId);
+          return (
+            <div key={idx} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+              <select value={l.estoqueId} onChange={e=>{const id=e.target.value; const temNaUltima=!!(f.ultima?.insumos||[]).some(i=>String(i.estoqueId)===id); setLinha(idx,{estoqueId:id,auto:temNaUltima&&!String(l.qtd).trim()?true:l.auto&&temNaUltima});}} style={{...inp,flex:1,minWidth:0}}>
+                <option value="">— ingrediente —</option>
+                {opcoesEstoque([f.produtoId, ...f.insumos.filter((_,j)=>j!==idx).map(x=>x.estoqueId)].filter(Boolean))}
+              </select>
+              <input value={l.qtd} onChange={e=>setLinha(idx,{qtd:e.target.value.replace(/[^\d.,]/g,""),auto:false})} inputMode="decimal" placeholder="qtd" style={{...inp,width:74,textAlign:"right",fontWeight:700,color:l.auto?"#5b21b6":"#333"}}/>
+              <span style={{fontSize:12,color:"#888",width:22}}>{est?unidDe(est):""}</span>
+              {f.insumos.length>1&&<button onClick={()=>setProdForm(p=>({...p,insumos:p.insumos.filter((_,j)=>j!==idx)}))} title="Tirar" style={{background:"#f3f4f6",border:"none",borderRadius:7,width:28,height:28,cursor:"pointer",color:"#888",flexShrink:0}}>×</button>}
+            </div>
+          );
+        })}
+        {f.insumos.length<10&&(
+          <button onClick={()=>setProdForm(p=>({...p,insumos:[...p.insumos,{estoqueId:"",qtd:"",auto:false}]}))} style={{background:"none",border:"1.5px dashed #c4b5fd",color:"#5b21b6",borderRadius:9,padding:"7px 0",width:"100%",fontWeight:700,fontSize:12.5,cursor:"pointer",marginBottom:10}}>+ Outro ingrediente (ex.: queijo)</button>
+        )}
+
+        <div style={{marginBottom:10}}>
+          <input value={f.obs||""} onChange={e=>setProdForm(p=>({...p,obs:e.target.value}))} maxLength={200} placeholder="Observação (opcional)" style={inp}/>
+        </div>
+
+        {(produto||escolhidas.length>0)&&(
+          <div style={{marginBottom:10,padding:"8px 10px",borderRadius:9,fontSize:12.5,background:"#f8f7f5",color:"#555",display:"flex",flexDirection:"column",gap:3}}>
+            {escolhidas.map(l=>{
+              const antes = qtdNum(l.est.quantidade), falta = l.q > antes;
+              return <div key={l.estoqueId} style={{color:falta?"#92400e":"#555"}}>{l.est.nome}: <strong>{fmtQ(antes)} → {fmtQ(Math.max(0,antes-l.q))} {unidDe(l.est)}</strong>{falta&&" — o estoque tem menos: vai ficar em 0"}</div>;
+            })}
+            {produto&&<div>{produto.nome}: <strong>{fmtQ(qtdNum(produto.quantidade))} → {fmtQ(qtdNum(produto.quantidade)+qtdProd)} {unidDe(produto)}</strong></div>}
+            {custoUn!=null&&<div style={{color:"#065f46"}}>Custo: <strong>{fmtBR(custoTotal)}</strong> → <strong>{fmtBR(custoUn)} cada</strong> (vai para o Formador de Preço)</div>}
+            {semCusto.length>0&&<div style={{color:"#92400e"}}>⚠️ Sem custo cadastrado: {semCusto.join(", ")}. O custo do produto não será calculado; cadastre no Formador de Preço do ingrediente.</div>}
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={lancarProducao} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#5b21b6,#8b5cf6)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"🔪 Confirmar produção"}</button>
+          <button onClick={()=>setProdForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
         </div>
       </div>
     );
@@ -3183,11 +3374,13 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(qtdNum(it.quantidade)));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
               <button onClick={()=>setPerdaForm({item:it,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🗑️ Perda</button>
             </div>
+            <button onClick={()=>abrirProducao(it)} style={{marginTop:8,width:"100%",background:"#fff",color:"#5b21b6",border:"1.5px solid #c4b5fd",borderRadius:10,padding:"9px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔪 {(it.cardapioNomes||[]).length>0?"Produzir (de que foi feito)":"Usar em produção (virou o quê)"}</button>
           </div>
         )}
 
         {/* Modais de entrada, ajuste e perda */}
         {perdaForm?.item?._id===it._id&&formPerda(false)}
+        {prodForm?.origem===it._id&&formProducao()}
         {entradaForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>📥 Entrada — {entradaForm.nome}</div>
@@ -3218,10 +3411,12 @@ function Estoque({ backendUrl, cardapio = [] }) {
           {movs.length===0?(
             <div style={{textAlign:"center",padding:"20px 0",color:"#ccc",fontSize:13}}>Nenhuma movimentação ainda</div>
           ):movs.map((m,i)=>{
-            const cor = m.tipo==="entrada"?"#10b981":m.tipo==="ajuste"?"#3b82f6":m.tipo==="perda"?"#f97316":"#ef4444";
-            const icon = m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":m.tipo==="perda"?"🗑️":"📤";
+            const ehProd = !!m.producaoId;
+            const cor = ehProd?"#7c3aed":m.tipo==="entrada"?"#10b981":m.tipo==="ajuste"?"#3b82f6":m.tipo==="perda"?"#f97316":"#ef4444";
+            const icon = ehProd?"🔪":m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":m.tipo==="perda"?"🗑️":"📤";
             const sinal = m.tipo==="entrada"?"+":m.tipo==="ajuste"?(m.quantidade>=0?"+":""):"−";
-            const podeExcluir = m.tipo !== "saida"; // não exclui baixas automáticas de venda
+            // não exclui baixas automáticas de venda; produção se desfaz inteira na aba Produção
+            const podeExcluir = m.tipo !== "saida" && !ehProd;
             return(
               <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px dashed #f0f0f0"}}>
                 <div style={{width:32,height:32,borderRadius:"50%",background:cor+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{icon}</div>
@@ -3255,8 +3450,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
       <datalist id="sugestoes-cat-estoque">{sugestoesCat.map(c=><option key={c} value={c}/>)}</datalist>
       {/* Sub-abas */}
       <div style={{display:"flex",gap:6}}>
-        {[["painel","📦 Estoque"],["perdas","🗑️ Perdas"],["consumo","📊 Consumo"]].map(([k,l])=>(
-          <button key={k} onClick={()=>setSubAba(k)} style={{flex:1,padding:"9px 0",borderRadius:10,border:"none",background:subAba===k?"#7b1a0a":"#f0f0f0",color:subAba===k?"#fff":"#666",fontWeight:subAba===k?700:500,fontSize:13,cursor:"pointer"}}>{l}</button>
+        {[["painel","📦 Estoque"],["producao","🔪 Produção"],["perdas","🗑️ Perdas"],["consumo","📊 Consumo"]].map(([k,l])=>(
+          <button key={k} onClick={()=>setSubAba(k)} style={{flex:1,minWidth:0,padding:"9px 2px",borderRadius:10,border:"none",background:subAba===k?"#7b1a0a":"#f0f0f0",color:subAba===k?"#fff":"#666",fontWeight:subAba===k?700:500,fontSize:12,cursor:"pointer",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{l}</button>
         ))}
       </div>
 
@@ -3286,6 +3481,10 @@ function Estoque({ backendUrl, cardapio = [] }) {
           <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{background:"#fff",color:"#c2410c",border:"1.5px solid #fdba74",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda (caiu, queimou, estragou)</button>
         )}
         {perdaForm&&formPerda(true)}
+        {itens.length>1&&!prodForm&&(
+          <button onClick={()=>abrirProducao(null)} style={{background:"#fff",color:"#5b21b6",border:"1.5px solid #c4b5fd",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🔪 Lançar produção (frango → espetos)</button>
+        )}
+        {prodForm&&!prodForm.origem&&formProducao()}
 
         {novoForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #7b1a0a",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
@@ -3456,6 +3655,68 @@ function Estoque({ backendUrl, cardapio = [] }) {
           </div>
         ))}
       </>}
+
+      {/* PRODUÇÃO */}
+      {subAba==="producao"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{display:"flex",gap:6,background:"#fff",borderRadius:12,padding:5,boxShadow:"0 2px 8px rgba(0,0,0,0.07)"}}>
+            {[["semana","Semana"],["mes","Mês"],["ano","Ano"]].map(([k,l])=>(
+              <button key={k} onClick={()=>setModoProd(k)} style={{flex:1,padding:"8px 0",borderRadius:8,border:"none",background:modoProd===k?"#7b1a0a":"transparent",color:modoProd===k?"#fff":"#888",fontWeight:700,fontSize:13,cursor:"pointer"}}>{l}</button>
+            ))}
+          </div>
+          <NavPeriodo modo={modoProd} ref_={refProd} setRef={setRefProd} />
+          {!prodForm&&itens.length>1&&(
+            <button onClick={()=>abrirProducao(null)} style={{background:"linear-gradient(135deg,#5b21b6,#8b5cf6)",color:"#fff",border:"none",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🔪 Lançar produção</button>
+          )}
+          {prodForm&&!prodForm.origem&&formProducao()}
+          {!relProd?<div style={{color:"#888",fontSize:13,textAlign:"center"}}>Carregando...</div>:(
+            <>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                <Metrica icon="🔪" label="Produções" valor={relProd.lancamentos} cor="#7c3aed"/>
+                <Metrica icon="💰" label="Custo dos ingredientes" valor={fmtBR(relProd.custoTotal)} cor="#065f46"/>
+              </div>
+              {relProd.lancamentos===0?(
+                <div style={{textAlign:"center",padding:"30px 0",color:"#aaa",fontSize:13}}>Nenhuma produção lançada {modoProd==="semana"?"nesta semana":modoProd==="ano"?"neste ano":"neste mês"}.</div>
+              ):(
+                <>
+                  <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:4}}>Por produto e rendimento</div>
+                    <div style={{fontSize:11,color:"#888",marginBottom:8}}>Quanto rendeu cada ingrediente. Se um dia render menos, pode ser espeto maior, desperdício ou sumiço.</div>
+                    {relProd.porProduto.map(pp=>(
+                      <div key={pp.estoqueId} style={{padding:"8px 0",borderBottom:"1px solid #f3f3f3"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",gap:8,fontSize:13}}>
+                          <span style={{fontWeight:700,color:"#333"}}>{pp.nome} <span style={{color:"#aaa",fontWeight:400}}>· {pp.vezes}x</span></span>
+                          <span style={{whiteSpace:"nowrap"}}><strong style={{color:"#5b21b6"}}>+{fmtQ(pp.quantidade)} {pp.unidade}</strong>{pp.custoMedio!=null&&<span style={{color:"#888",marginLeft:8}}>{fmtBR(pp.custoMedio)} cada</span>}</span>
+                        </div>
+                        {pp.insumos.map(ii=>(
+                          <div key={ii.estoqueId} style={{fontSize:11.5,color:"#666",marginTop:2}}>
+                            {ii.nome}: {fmtQ(ii.usado)} {ii.unidade} usados{ii.rendimento!=null&&<> · <strong style={{color:"#333"}}>{String(ii.rendimento).replace(".",",")} {pp.unidade} por {ii.unidade}</strong></>}{ii.porUnidade!=null&&ii.unidade==="kg"&&<> ({Math.round(ii.porUnidade*1000)} g cada)</>}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{background:"#fff",borderRadius:14,padding:16,boxShadow:"0 2px 10px rgba(0,0,0,0.07)"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#333",marginBottom:10}}>Todas as produções</div>
+                    {relProd.lista.map(pr=>(
+                      <div key={pr._id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #f5f5f5",fontSize:12.5}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:600,color:"#333"}}>{pr.produto.nome} <span style={{color:"#5b21b6"}}>+{fmtQ(pr.produto.quantidade)} {pr.produto.unidade}</span></div>
+                          <div style={{color:"#555",fontSize:11.5}}>com {(pr.insumos||[]).map(i=>`${fmtQ(i.quantidade)} ${i.unidade} de ${i.nome}`).join(" + ")}</div>
+                          <div style={{color:"#888",fontSize:11}}>{new Date(pr.data).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}{pr.custoTotal>0?` · ${fmtBR(pr.custoTotal)}`:""}{pr.produto.custoUnitario!=null?` (${fmtBR(pr.produto.custoUnitario)} cada)`:""}</div>
+                          {pr.semCusto?.length>0&&<div style={{color:"#92400e",fontSize:11}}>⚠️ sem custo: {pr.semCusto.join(", ")}</div>}
+                          {pr.observacao&&<div style={{color:"#555",fontSize:11.5,fontStyle:"italic",marginTop:1}}>“{pr.observacao}”</div>}
+                        </div>
+                        <button onClick={()=>desfazerProducao(pr)} title="Desfazer" style={{background:"#ede9fe",border:"none",borderRadius:7,padding:"5px 8px",cursor:"pointer",fontSize:13,flexShrink:0}}>↩️</button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* PERDAS DO MÊS */}
       {subAba==="perdas"&&(

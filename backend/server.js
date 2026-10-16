@@ -13,6 +13,7 @@ import { aplicarPagamentoNaMesa, mesaZeradaServidor } from "./salao/fechamento.j
 import { transferirMesa } from "./salao/transferencia.js";
 import { ehMontado, opcoesMontado, lerItemMontado, textoMontado } from "./cardapio/montado.js";
 import { EQUIPE_PADRAO, calcularConsumo, valorEfetivo } from "./salao/equipe.js";
+import { validarProducao, custoDaProducao, resumoProducoes, unidadeDe } from "./estoque/producao.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -474,7 +475,38 @@ const MovEstoqueSchema = new mongoose.Schema({
   baixado:       Number,
   custoUnitario: Number,
   descricao:     String,   // perda: o que aconteceu, nas palavras de quem lançou
+  // Produção: as saídas dos ingredientes e a entrada do produto apontam para
+  // ela; só se desfazem juntas (DELETE /estoque/producao/:id)
+  producaoId:    { type: mongoose.Schema.Types.ObjectId, default: undefined },
 });
+
+// Produção: ingredientes do estoque viram um produto pronto (3 kg de frango
+// -> 40 espetos). Contas em estoque/producao.js.
+const ProducaoSchema = new mongoose.Schema({
+  produto: {
+    estoqueId:     { type: mongoose.Schema.Types.ObjectId, ref: "Estoque" },
+    nome:          String,
+    unidade:       String,
+    quantidade:    Number,
+    custoUnitario: { type: Number, default: null },   // null = algum ingrediente sem custo
+    custoAnterior: { type: Number, default: 0 },      // para desfazer
+  },
+  insumos: [{
+    _id: false,
+    estoqueId:     { type: mongoose.Schema.Types.ObjectId, ref: "Estoque" },
+    nome:          String,
+    unidade:       String,
+    quantidade:    Number,   // o que foi usado (vale para o rendimento)
+    baixado:       Number,   // o que saiu do saldo (o estoque não fica negativo)
+    antes:         Number,
+    custoUnitario: Number,
+  }],
+  custoTotal: { type: Number, default: 0 },
+  semCusto:   { type: [String], default: [] },   // ingredientes sem custo cadastrado
+  observacao: { type: String, default: "" },
+  data:       { type: Date, default: Date.now },
+  criadoPor:  { type: String, default: "" },
+}, { timestamps: true });
 
 const PedidoDB    = mongoose.model("Pedido",    PedidoSchema);
 const CupomDB     = mongoose.model("Cupom",     CupomSchema);
@@ -486,6 +518,7 @@ const VendaSalaoDB = mongoose.model("VendaSalao", VendaSalaoSchema);
 const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
 const EstoqueDB    = mongoose.model("Estoque",        EstoqueSchema);
 const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
+const ProducaoDB   = mongoose.model("Producao",       ProducaoSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
 const DespesaDB    = mongoose.model("Despesa",        DespesaSchema);
 const CaixaMovimentoDB = mongoose.model("CaixaMovimento", CaixaMovimentoSchema);
@@ -2534,6 +2567,7 @@ app.delete("/estoque/movimentacoes/:movId", authMiddleware(["dono"]), async (req
   try {
     const mov = await MovEstoqueDB.findById(req.params.movId).lean();
     if (!mov) return res.status(404).json({ erro: "Movimentação não encontrada" });
+    if (mov.producaoId) return res.status(400).json({ erro: "Esta movimentação é de uma produção: desfaça a produção inteira em Estoque → Produção" });
     const estorno = mov.tipo === "entrada" ? -mov.quantidade
                   : mov.tipo === "saida"   ?  Math.abs(mov.quantidade)
                   : mov.tipo === "perda"   ?  Math.abs(mov.baixado ?? mov.quantidade)
@@ -2626,6 +2660,116 @@ app.post("/estoque/:id/entrada", authMiddleware(["dono"]), async (req, res) => {
     });
     res.json({ quantidade: novaQtd });
   } catch (e) { res.status(500).json({ erro: e.message }); }
+});
+
+// ── PRODUÇÃO ─────────────────────────────────────────────────
+// Matéria-prima vira produto pronto: os ingredientes saem do estoque, o
+// produto entra e passa a ter o custo desta produção. Só o adm (9999).
+app.post("/estoque/producao", authMiddleware(["dono"]), async (req, res) => {
+  const v = validarProducao(req.body, lerQtd, (id) => mongoose.Types.ObjectId.isValid(id));
+  if (v.erro) return res.status(400).json({ erro: v.erro });
+  try {
+    const ids = [v.produtoId, ...v.insumos.map(i => i.estoqueId)];
+    const docs = await EstoqueDB.find({ _id: { $in: ids }, ativo: { $ne: false } }).lean();
+    const porId = Object.fromEntries(docs.map(d => [String(d._id), d]));
+    const produto = porId[v.produtoId];
+    if (!produto) return res.status(404).json({ erro: "Produto não encontrado no estoque" });
+    if (v.insumos.some(i => !porId[i.estoqueId])) return res.status(404).json({ erro: "Ingrediente não encontrado no estoque" });
+    const custo = custoDaProducao(v.insumos, porId, v.quantidade);
+    // O estoque não fica negativo: guarda o que saiu de fato, para desfazer certo
+    const insumos = custo.linhas.map(l => {
+      const est = porId[l.estoqueId];
+      const antes = Number.isFinite(est.quantidade) ? est.quantidade : 0;
+      return { estoqueId: est._id, nome: est.nome, unidade: unidadeDe(est), quantidade: l.quantidade, baixado: Math.min(l.quantidade, antes), antes, custoUnitario: l.custoUnitario };
+    });
+    const reg = await ProducaoDB.create({
+      produto: { estoqueId: produto._id, nome: produto.nome, unidade: unidadeDe(produto), quantidade: v.quantidade, custoUnitario: custo.custoUnitario, custoAnterior: Number(produto.custoPorUnidade) || 0 },
+      insumos, custoTotal: custo.custoTotal, semCusto: custo.semCusto, observacao: v.observacao,
+      criadoPor: req.user?.nome || req.user?.role || "",
+    });
+    for (const i of insumos) {
+      const nova = Math.max(0, i.antes - i.quantidade);
+      await EstoqueDB.findByIdAndUpdate(i.estoqueId, { quantidade: nova });
+      if (i.baixado > 0) await MovEstoqueDB.create({ estoqueId: i.estoqueId, estoqueNome: i.nome, tipo: "saida", quantidade: i.baixado, motivo: `produção: ${produto.nome}`, producaoId: reg._id });
+      await alertaEstoqueMinimo(porId[String(i.estoqueId)], nova);
+    }
+    const novaQtd = (Number.isFinite(produto.quantidade) ? produto.quantidade : 0) + v.quantidade;
+    const upd = { quantidade: novaQtd };
+    if (custo.custoUnitario != null) upd.custoPorUnidade = custo.custoUnitario;
+    await EstoqueDB.findByIdAndUpdate(produto._id, upd);
+    await MovEstoqueDB.create({ estoqueId: produto._id, estoqueNome: produto.nome, tipo: "entrada", quantidade: v.quantidade, motivo: "produção", producaoId: reg._id });
+    await alertaEstoqueMinimo(produto, novaQtd);
+    res.status(201).json({
+      ...reg.toObject(),
+      produtoQuantidade: novaQtd,
+      faltou: insumos.filter(i => i.baixado < i.quantidade).map(i => ({ nome: i.nome, unidade: i.unidade, tinha: i.antes, usado: i.quantidade })),
+    });
+  } catch (e) {
+    console.error("Erro ao lançar produção:", e.message);
+    res.status(500).json({ erro: "Erro ao lançar a produção" });
+  }
+});
+
+// GET /estoque/producao?semana=|mes=|ano=|de=&ate= — produções do período,
+// por produto, com custo médio e rendimento de cada ingrediente
+app.get("/estoque/producao", authMiddleware(["dono"]), async (req, res) => {
+  const per = periodoDaConsulta(req.query);
+  if (!per) return res.status(400).json({ erro: "Informe semana=AAAA-MM-DD, mes=AAAA-MM, ano=AAAA ou de/ate" });
+  try {
+    const lista = await ProducaoDB.find({ data: { $gte: per.inicio, $lt: per.fim } }).sort({ data: -1 }).lean();
+    res.json({ ...resumoProducoes(lista), agrupar: per.agrupar, inicio: per.inicio, fim: per.fim, lista });
+  } catch (e) {
+    console.error("Erro ao listar produções:", e.message);
+    res.status(500).json({ erro: "Erro ao listar as produções" });
+  }
+});
+
+// A última produção de um produto: o painel repete os ingredientes e
+// sugere as quantidades pela proporção da última vez
+app.get("/estoque/producao/ultima/:produtoId", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.produtoId)) return res.status(400).json({ erro: "Produto inválido" });
+  try {
+    const ult = await ProducaoDB.findOne({ "produto.estoqueId": req.params.produtoId }).sort({ data: -1 }).lean();
+    res.json({ ultima: ult || null });
+  } catch (e) { res.status(500).json({ erro: "Erro ao buscar a última produção" }); }
+});
+
+// Desfazer: os ingredientes voltam e o produto sai (o que já foi vendido
+// não volta: o produto fica em 0 e a resposta diz quanto faltou). O custo
+// anterior do produto volta se esta era a produção mais recente dele.
+app.delete("/estoque/producao/:id", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Produção inválida" });
+  try {
+    const reg = await ProducaoDB.findById(req.params.id).lean();
+    if (!reg) return res.status(404).json({ erro: "Produção não encontrada" });
+    for (const i of reg.insumos || []) {
+      if (!(i.baixado > 0)) continue;
+      const est = await EstoqueDB.findById(i.estoqueId).lean();
+      if (!est) continue;
+      const nova = (Number.isFinite(est.quantidade) ? est.quantidade : 0) + i.baixado;
+      await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: nova });
+      await alertaEstoqueMinimo(est, nova);
+    }
+    let semSaldo = 0;
+    const prod = await EstoqueDB.findById(reg.produto.estoqueId).lean();
+    if (prod) {
+      const atual = Number.isFinite(prod.quantidade) ? prod.quantidade : 0;
+      const retirar = Math.min(atual, reg.produto.quantidade);
+      semSaldo = Math.round((reg.produto.quantidade - retirar) * 10000) / 10000;
+      const upd = { quantidade: atual - retirar };
+      const maisNova = await ProducaoDB.exists({ "produto.estoqueId": reg.produto.estoqueId, data: { $gt: reg.data } });
+      if (reg.produto.custoUnitario != null && !maisNova && Number(prod.custoPorUnidade) === reg.produto.custoUnitario) upd.custoPorUnidade = reg.produto.custoAnterior || 0;
+      await EstoqueDB.findByIdAndUpdate(prod._id, upd);
+      await alertaEstoqueMinimo(prod, upd.quantidade);
+    }
+    await MovEstoqueDB.deleteMany({ producaoId: reg._id });
+    await ProducaoDB.findByIdAndDelete(reg._id);
+    console.log(`Produção desfeita por ${req.user?.nome || req.user?.role}: ${reg.produto.quantidade} ${reg.produto.unidade} de ${reg.produto.nome}`);
+    res.json({ ok: true, semSaldo });
+  } catch (e) {
+    console.error("Erro ao desfazer produção:", e.message);
+    res.status(500).json({ erro: "Erro ao desfazer a produção" });
+  }
 });
 
 // ── PERDAS ────────────────────────────────────────────────────
