@@ -14,6 +14,7 @@ import { transferirMesa } from "./salao/transferencia.js";
 import { ehMontado, opcoesMontado, lerItemMontado, textoMontado } from "./cardapio/montado.js";
 import { EQUIPE_PADRAO, calcularConsumo, valorEfetivo } from "./salao/equipe.js";
 import { validarProducao, custoDaProducao, resumoProducoes, unidadeDe } from "./estoque/producao.js";
+import { mapaDaBaixa, rodadasComId, diferencaMapas, itensSemBaixa } from "./estoque/baixa.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -524,6 +525,16 @@ const VendaSalaoDB = mongoose.model("VendaSalao", VendaSalaoSchema);
 const GarcomDB     = mongoose.model("Garcom",    GarcomSchema);
 const EstoqueDB    = mongoose.model("Estoque",        EstoqueSchema);
 const MovEstoqueDB = mongoose.model("MovEstoque",     MovEstoqueSchema);
+// Baixa na hora da cozinha: uma linha por rodada (id gerado no painel). A
+// chave única garante uma baixa só, mesmo com dois aparelhos gravando a mesa.
+const BaixaRodadaSchema = new mongoose.Schema({
+  chave:     { type: String, required: true, unique: true },   // id da rodada
+  mesa:      Number,
+  pedido:    { type: mongoose.Schema.Types.Mixed, default: {} },   // estoqueId -> o que a rodada pede
+  baixado:   { type: mongoose.Schema.Types.Mixed, default: {} },   // estoqueId -> o que saiu de fato
+  editadoEm: { type: String, default: null },
+}, { timestamps: true, minimize: false });
+const BaixaRodadaDB = mongoose.model("BaixaRodada", BaixaRodadaSchema);
 const ProducaoDB   = mongoose.model("Producao",       ProducaoSchema);
 const FechamentoDB = mongoose.model("FechamentoDia",  FechamentoDiaSchema);
 const DespesaDB    = mongoose.model("Despesa",        DespesaSchema);
@@ -1681,19 +1692,20 @@ app.patch("/pedidos/:id/status", authMiddleware(["dono"]), async (req, res) => {
   if (status === "entregue") {
     try { await checarFidelidade(pedido); } catch (e) { console.error("Falha na fidelidade:", e.message); }
     try { agendarAvaliacao(pedido); } catch (e) { console.error("Falha ao agendar avaliacao:", e.message); }
-    // Delivery entregue também consome estoque (só o salão baixava). Uma vez
-    // só por pedido, mesmo que o status vá e volte.
-    if (!pedido.estoqueBaixado) {
-      try {
-        await baixarEstoqueVenda(pedido.itens, "pedido:" + id);
-        await PedidoDB.updateOne({ id }, { estoqueBaixado: true });
-        pedido.estoqueBaixado = true;
-      } catch (e) { console.error("Falha na baixa de estoque do delivery:", e.message); }
-    }
+  }
+  // Delivery: sai do estoque quando vai para a cozinha ("preparando"); se
+  // pular direto para entrega/entregue, sai ali. Uma vez só por pedido,
+  // mesmo que o status vá e volte.
+  if (["preparando", "entrega", "entregue"].includes(status) && !pedido.estoqueBaixado) {
+    try {
+      await baixarEstoqueVenda(pedido.itens, "pedido:" + id);
+      await PedidoDB.updateOne({ id }, { estoqueBaixado: true });
+      pedido.estoqueBaixado = true;
+    } catch (e) { console.error("Falha na baixa de estoque do delivery:", e.message); }
   }
   if (status === "cancelado") {
     if (timersAvaliacao.has(id)) { clearTimeout(timersAvaliacao.get(id)); timersAvaliacao.delete(id); }
-    // Entregue e depois cancelado: devolve o que tinha baixado
+    // Cancelado depois de ir para a cozinha: devolve o que tinha baixado
     if (pedido.estoqueBaixado) {
       try {
         await estornarEstoqueDaVenda("pedido:" + id);
@@ -2304,20 +2316,21 @@ app.post("/vendas-salao", authMiddleware(["dono"]), async (req, res) => {
       pagamento: pag.pagamento, pagamentos: pag.pagamentos,
       recebidoDinheiro: trc.recebidoDinheiro, troco: trc.troco,
     });
-    // Baixa automática no estoque
-    await baixarEstoqueVenda(req.body.itens, String(venda._id));
-
     const resposta = venda.toObject();
+    let antes = null;
     if (liberar) {
       // A venda ja esta gravada; se a mesa falhar, o painel cai no caminho antigo
       try {
         const m = await liberarMesaAposVenda(liberar, venda.itens, req.user?.nome || req.user?.role || "");
-        if (m) resposta.mesaAtualizada = m;
+        if (m) { resposta.mesaAtualizada = { versao: m.versao, dados: m.dados }; antes = m.antes; }
       } catch (e) {
         console.error("Venda gravada, mas a mesa nao foi liberada:", e.message);
         resposta.mesaErro = e.message;
+        antes = (await MesaSalaoDB.findOne({ dataStr: diaOperacional(), mesaId: liberar.mesaId }).lean().catch(() => null))?.dados || null;
       }
     }
+    // Estoque: o que foi para a cozinha já saiu; aqui sai só o resto
+    await baixarNoFechamento(req.body.itens, antes, liberar, String(venda._id), "venda");
     res.status(201).json(resposta);
   }
   catch (e) { res.status(500).json({ erro: e.message }); }
@@ -2336,7 +2349,10 @@ async function liberarMesaAposVenda({ mesaId, modo, scIds }, pagos, quem) {
       { $set: { dados, porQuem: quem }, $inc: { versao: 1 } },
       { new: true }
     ).lean();
-    if (novo) return { versao: novo.versao, dados: novo.dados };
+    if (novo) {
+      if (modo === "parcial") await acertarRodadasRestantes(novo.dados);
+      return { versao: novo.versao, dados: novo.dados, antes: atual.dados };
+    }
   }
   throw new Error("A mesa foi alterada varias vezes seguidas; tente de novo");
 }
@@ -2470,49 +2486,116 @@ app.get("/vendas-salao/historico", authMiddleware(["dono"]), async (req, res) =>
 });
 
 // ── ESTOQUE — BAIXA AUTOMÁTICA ────────────────────────────────
+// Itens -> { estoqueId: quantidade } em estoque/baixa.js (lanche baixa o pão
+// e cada espeto; vínculo pelo nome base do cardápio).
 async function baixarEstoqueVenda(itens, vendaId, motivo = "venda") {
   if (!itens?.length) return;
   try {
     const estoques = await EstoqueDB.find({ ativo: true }).lean();
-    // Um item pode consumir dois estoques: o lanche (pao) e o espeto escolhido
-    const alvos = itens.flatMap(item => {
-      // Lanche com mais de um espeto baixa cada um deles (espetos[]); o
-      // formato antigo trazia so "espeto".
-      const espetos = Array.isArray(item.espetos) && item.espetos.length
-        ? item.espetos
-        : (item.espeto ? [item.espeto] : []);
-      return [item.nomeBase || item.nome, ...espetos]
-        .filter(Boolean)
-        .map(nome => ({ nome, qty: item.qty || 1 }));
-    });
-    for (const item of alvos) {
-      const qty = item.qty || 1;
-      // Encontra estoque vinculado a este item do cardápio.
-      // Item com variação vira "Lanche Imperial (Picanha)" no nome, então o
-      // vínculo tem que ser pelo nome base — senão a baixa nunca acontece.
-      const nomeCard = String(item.nome || "").toLowerCase();
-      const est = estoques.find(e =>
-        e.cardapioNomes.some(n => n.toLowerCase() === nomeCard)
-      );
-      if (!est) continue;
-      const desconto = qty * (est.consumoPorVenda || 1);
-      const atual = Number.isFinite(est.quantidade) ? est.quantidade : 0;
-      const novaQtd = Math.max(0, atual - desconto);
-      await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: novaQtd });
-      await MovEstoqueDB.create({
-        estoqueId: est._id, estoqueNome: est.nome,
-        // Registra o que saiu de fato: com o estoque zerado, estornar a venda
-        // devolvia mais do que tinha saído.
-        tipo: "saida", quantidade: Math.min(desconto, atual),
-        motivo, vendaId,
-      });
-      // O mesmo estoque pode aparecer duas vezes na mesma venda (dois itens
-      // ligados a ele): a segunda baixa parte do valor já descontado.
-      est.quantidade = novaQtd;
-      await alertaEstoqueMinimo(est, novaQtd);
-      est.alertaEnviado = novaQtd <= est.minimo ? true : false;
-    }
+    await baixarMapa(mapaDaBaixa(itens, estoques), vendaId, motivo);
   } catch (e) { console.error("Erro na baixa de estoque:", e.message); }
+}
+
+// Tira { estoqueId: quantidade } do estoque. Não fica negativo: registra e
+// devolve o que saiu de fato (estornar não devolve mais do que saiu).
+async function baixarMapa(mapa, vendaId, motivo) {
+  const saiu = {};
+  for (const [id, desconto] of Object.entries(mapa || {})) {
+    if (!(desconto > 0)) continue;
+    const est = await EstoqueDB.findById(id).lean();
+    if (!est) continue;
+    const atual = Number.isFinite(est.quantidade) ? est.quantidade : 0;
+    const novaQtd = Math.max(0, atual - desconto);
+    await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: novaQtd });
+    saiu[id] = Math.min(desconto, atual);
+    await MovEstoqueDB.create({ estoqueId: est._id, estoqueNome: est.nome, tipo: "saida", quantidade: saiu[id], motivo, vendaId });
+    await alertaEstoqueMinimo(est, novaQtd);
+  }
+  return saiu;
+}
+
+// Devolve { estoqueId: quantidade } (item tirado de uma rodada já baixada)
+async function devolverMapa(mapa, vendaId, motivo) {
+  for (const [id, q] of Object.entries(mapa || {})) {
+    if (!(q > 0)) continue;
+    const est = await EstoqueDB.findById(id).lean();
+    if (!est) continue;
+    const nova = (Number.isFinite(est.quantidade) ? est.quantidade : 0) + q;
+    await EstoqueDB.findByIdAndUpdate(est._id, { quantidade: nova });
+    await MovEstoqueDB.create({ estoqueId: est._id, estoqueNome: est.nome, tipo: "entrada", quantidade: q, motivo, vendaId });
+    await alertaEstoqueMinimo(est, nova);
+  }
+}
+
+// ── BAIXA NA HORA DA COZINHA ─────────────────────────────────
+// Pedido da dona (17/10/2026): o item sai do estoque quando vai para a
+// cozinha (ou é lançado na conta), não no fechamento. Roda a cada mesa
+// gravada: rodada nova baixa; rodada que o dono editou acerta a diferença.
+const motivoRodada = (mesaId, dados) => (dados?.tipo === "funcionarios" ? "consumo da equipe · cozinha" : `cozinha · mesa ${mesaId}`);
+async function baixarRodadas(mesaId, dados) {
+  const rodadas = rodadasComId(dados);
+  if (!rodadas.length) return;
+  try {
+    const feitas = await BaixaRodadaDB.find({ chave: { $in: rodadas.map(r => r.id) } }).lean();
+    const porChave = new Map(feitas.map(f => [f.chave, f]));
+    const precisa = rodadas.filter(r => !porChave.has(r.id) || (r.editadoEm || null) !== (porChave.get(r.id).editadoEm || null));
+    if (!precisa.length) return;
+    const estoques = await EstoqueDB.find({ ativo: true }).lean();
+    for (const r of precisa) {
+      const pedido = mapaDaBaixa(r.itens, estoques);
+      const vendaId = "rodada:" + r.id;
+      const ja = porChave.get(r.id);
+      if (!ja) {
+        // Reserva a rodada antes de baixar: se outro aparelho chegou junto, só um passa
+        try { await BaixaRodadaDB.create({ chave: r.id, mesa: mesaId, pedido, baixado: {}, editadoEm: r.editadoEm || null }); }
+        catch (e) { if (e.code === 11000) continue; throw e; }
+        const saiu = await baixarMapa(pedido, vendaId, motivoRodada(mesaId, dados));
+        await BaixaRodadaDB.updateOne({ chave: r.id }, { baixado: saiu });
+        continue;
+      }
+      // Rodada editada pelo dono: o que entrou sai, o que saiu da comanda volta
+      const trava = await BaixaRodadaDB.findOneAndUpdate({ chave: r.id, editadoEm: ja.editadoEm ?? null }, { editadoEm: r.editadoEm || null, pedido }, { new: true }).lean();
+      if (!trava) continue;
+      const dif = diferencaMapas(pedido, ja.pedido);
+      const baixado = { ...(ja.baixado || {}) };
+      const sai = {}, volta = {};
+      for (const [k, d] of Object.entries(dif)) {
+        if (d > 0) sai[k] = d;
+        else { const q = Math.min(-d, baixado[k] || 0); if (q > 0) volta[k] = q; }
+      }
+      const saiu = await baixarMapa(sai, vendaId, motivoRodada(mesaId, dados) + " (acréscimo)");
+      await devolverMapa(volta, vendaId, `devolvido: tirado da comanda · mesa ${mesaId}`);
+      for (const [k, q] of Object.entries(saiu)) baixado[k] = (baixado[k] || 0) + q;
+      for (const [k, q] of Object.entries(volta)) baixado[k] = Math.max(0, (baixado[k] || 0) - q);
+      await BaixaRodadaDB.updateOne({ chave: r.id }, { baixado });
+    }
+  } catch (e) { console.error("Erro na baixa de estoque da cozinha:", e.message); }
+}
+
+// Pagamento parcial tira itens de uma rodada já baixada: o que ficou nela
+// passa a ser a referência, para uma edição depois não devolver o que foi pago.
+async function acertarRodadasRestantes(dados) {
+  const rodadas = rodadasComId(dados);
+  if (!rodadas.length) return;
+  try {
+    const estoques = await EstoqueDB.find({ ativo: true }).lean();
+    await Promise.all(rodadas.map(r => BaixaRodadaDB.updateOne({ chave: r.id }, { pedido: mapaDaBaixa(r.itens, estoques) })));
+  } catch (e) { console.error("Erro ao acertar rodadas:", e.message); }
+}
+
+// Fechamento (venda ou consumo da equipe): baixa só o que ainda não saiu.
+// `antes` = a mesa como estava no servidor quando o pagamento foi aplicado;
+// sem ela (painel antigo, mesa fora do servidor), baixa tudo, como antes.
+async function baixarNoFechamento(itens, antes, liberar, vendaId, motivo) {
+  let pendentes = itens;
+  if (antes && liberar) {
+    try {
+      const ids = rodadasComId(antes).map(r => r.id);
+      const feitas = ids.length ? new Set((await BaixaRodadaDB.find({ chave: { $in: ids } }).select("chave").lean()).map(f => f.chave)) : new Set();
+      pendentes = itensSemBaixa(antes, liberar, itens, (id) => feitas.has(id));
+    } catch (e) { console.error("Erro ao separar o que já baixou:", e.message); }
+  }
+  await baixarEstoqueVenda(pendentes, vendaId, motivo);
 }
 
 // Avisa no WhatsApp quando o item chega ao mínimo (uma vez) e rearma o aviso
@@ -2574,6 +2657,7 @@ app.delete("/estoque/movimentacoes/:movId", authMiddleware(["dono"]), async (req
     const mov = await MovEstoqueDB.findById(req.params.movId).lean();
     if (!mov) return res.status(404).json({ erro: "Movimentação não encontrada" });
     if (mov.producaoId) return res.status(400).json({ erro: "Esta movimentação é de uma produção: desfaça a produção inteira em Estoque → Produção" });
+    if (String(mov.vendaId || "").startsWith("rodada:")) return res.status(400).json({ erro: "Esta movimentação é de um pedido da mesa: para devolver, tire o item da comanda (ou use Ajustar)" });
     const estorno = mov.tipo === "entrada" ? -mov.quantidade
                   : mov.tipo === "saida"   ?  Math.abs(mov.quantidade)
                   : mov.tipo === "perda"   ?  Math.abs(mov.baixado ?? mov.quantidade)
@@ -3124,17 +3208,19 @@ app.post("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
       mesa, subComanda: String(req.body.subComanda || "").slice(0, 40),
       pessoa, itens, ...regra, valor: null, valorCardapio, criadoPor: quem,
     });
-    await baixarEstoqueVenda(itens, "interno:" + reg._id, "consumo da equipe");
     const resposta = reg.toObject();
+    let antes = null;
     if (liberar) {
       try {
         const m = await liberarMesaAposVenda(liberar, itens, quem);
-        if (m) resposta.mesaAtualizada = m;
+        if (m) { resposta.mesaAtualizada = { versao: m.versao, dados: m.dados }; antes = m.antes; }
       } catch (e) {
         console.error("Consumo gravado, mas a mesa não foi liberada:", e.message);
         resposta.mesaErro = e.message;
+        antes = (await MesaSalaoDB.findOne({ dataStr: diaOperacional(), mesaId: liberar.mesaId }).lean().catch(() => null))?.dados || null;
       }
     }
+    await baixarNoFechamento(itens, antes, liberar, "interno:" + reg._id, "consumo da equipe");
     res.status(201).json(resposta);
   } catch (e) {
     console.error("Erro ao registrar consumo da equipe:", e.message);
@@ -5096,6 +5182,7 @@ app.put("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) =
     // Primeira gravação do dia para esta mesa
     if (!atual) {
       const criada = await MesaSalaoDB.create({ mesaId, dataStr, dados, versao: 1, porQuem: quem });
+      await baixarRodadas(mesaId, dados);
       return res.status(201).json({ ok: true, versao: criada.versao });
     }
 
@@ -5122,6 +5209,7 @@ app.put("/mesas/:mesaId", authMiddleware(["dono", "garcom"]), async (req, res) =
       const agora = await MesaSalaoDB.findOne({ dataStr, mesaId }).lean();
       return res.status(409).json({ erro: "Essa mesa foi alterada em outro aparelho", versao: agora?.versao, dados: agora?.dados });
     }
+    await baixarRodadas(mesaId, dados);
     res.json({ ok: true, versao: novo.versao });
   } catch (e) {
     // Indice unico: dois aparelhos criaram a mesma mesa ao mesmo tempo

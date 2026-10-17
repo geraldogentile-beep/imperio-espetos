@@ -3431,7 +3431,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             const icon = ehProd?"🔪":m.tipo==="entrada"?"📥":m.tipo==="ajuste"?"🔧":m.tipo==="perda"?"🗑️":"📤";
             const sinal = m.tipo==="entrada"?"+":m.tipo==="ajuste"?(m.quantidade>=0?"+":""):"−";
             // não exclui baixas automáticas de venda; produção se desfaz inteira na aba Produção
-            const podeExcluir = m.tipo !== "saida" && !ehProd;
+            const podeExcluir = m.tipo !== "saida" && !ehProd && !String(m.vendaId || "").startsWith("rodada:");
             return(
               <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px dashed #f0f0f0"}}>
                 <div style={{width:32,height:32,borderRadius:"50%",background:cor+"20",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{icon}</div>
@@ -6463,6 +6463,9 @@ function totMesaCompleta(mesa) {
     total + totMesa(sc.itens) + (sc.rodadas||[]).reduce((s,r)=>s+totMesa(r.itens),0)
   , 0);
 }
+// Cada rodada tem um id: o servidor baixa o estoque dela uma vez só, na hora
+// em que vai para a cozinha (ou é lançada na conta).
+const novoIdRodada = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 function initSubComanda(id=1) { return {id, label:`Comanda ${id}`, cliente:"", itens:[], rodadas:[]}; }
 function initMesa(i) {
   return {id:i+1, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
@@ -8592,7 +8595,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
             {podeLancar&&<button onClick={()=>setTelaSalao("adicionar")} style={{...BP2("linear-gradient(135deg,#7b1a0a,#c0392b)",true)}}>🍢 Adicionar</button>}
             {podeLancar&&sc.itens.length>0&&(
               <button onClick={()=>{
-                const rodada={hora:new Date().toISOString(),itens:[...sc.itens]};
+                const rodada={id:novoIdRodada(),hora:new Date().toISOString(),itens:[...sc.itens]};
                 const novasRodadas=[...(sc.rodadas||[]),rodada];
                 upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens:[],rodadas:novasRodadas}:s)});
                 msgSalao(`🔥 ${sc.label} enviada à cozinha!`);
@@ -8605,7 +8608,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               tirar o item da lista de pendentes era imprimir. */}
           {podeLancar&&sc.itens.length>0&&(
             <button onClick={()=>{
-              const rodada={hora:new Date().toISOString(),itens:[...sc.itens],semCozinha:true};
+              const rodada={id:novoIdRodada(),hora:new Date().toISOString(),itens:[...sc.itens],semCozinha:true};
               upd({...mesa, subComandas:mesa.subComandas.map((s,i)=>i===scIdx?{...s,itens:[],rodadas:[...(s.rodadas||[]),rodada]}:s)});
               msgSalao(`📝 Lançado na conta de ${sc.cliente || sc.label} — sem imprimir`, "#0e7490");
             }} style={{background:"#fff",color:"#0e7490",border:"1.5px solid #a5f3fc",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer",width:"100%"}}>
@@ -8619,7 +8622,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               msgSalao(`🔥 Todas as comandas enviadas à cozinha!`);
               mesa.subComandas.forEach((s,i)=>{
                 if(s.itens.length===0) return;
-                const rodada={hora:new Date().toISOString(),itens:[...s.itens]};
+                const rodada={id:novoIdRodada(),hora:new Date().toISOString(),itens:[...s.itens]};
                 novasSCs[i]={...novasSCs[i],itens:[],rodadas:[...(novasSCs[i].rodadas||[]),rodada]};
                 imprimirCozinha(rodada, mesa.id, s.label);
               });
