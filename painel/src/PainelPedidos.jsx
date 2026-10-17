@@ -2979,7 +2979,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
   }
   // Aberta de um item: se ele está no cardápio é o produto; se não, é a matéria-prima
   function abrirProducao(base) {
-    const comoProduto = !!base && (base.cardapioNomes || []).length > 0;
+    const comoProduto = !!base && ehEspetoEst(base);
     setProdForm({
       origem: base?._id || null,
       produtoId: comoProduto ? base._id : "",
@@ -3156,8 +3156,11 @@ function Estoque({ backendUrl, cardapio = [] }) {
       </div>
     );
   };
-  const opcoesEstoque = (excluir = []) => catsEstoque.filter(c=>c!=="todos").map(c=>{
-    const lista = itens.filter(i=>categoriaDe(i)===c&&!excluir.includes(i._id)).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),"pt-BR",{sensitivity:"base"}));
+  // Só espeto vira produto de uma produção (pedido da dona, 17/10/2026): item
+  // de categoria de espeto (dele ou do cardápio ligado) ou com "espeto" no nome
+  const ehEspetoEst = (it) => [String(it?.categoria || "").trim(), categoriaDoCardapio(it || {})].some(c => CATEGORIAS_ESPETO.includes(c)) || /espet/i.test(it?.nome || "");
+  const opcoesEstoque = (excluir = [], filtro = null) => catsEstoque.filter(c=>c!=="todos").map(c=>{
+    const lista = itens.filter(i=>categoriaDe(i)===c&&!excluir.includes(i._id)&&(!filtro||filtro(i))).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),"pt-BR",{sensitivity:"base"}));
     return lista.length===0?null:(
       <optgroup key={c} label={c}>
         {lista.map(i=><option key={i._id} value={i._id}>{i.nome} ({fmtQ(qtdNum(i.quantidade))} {unidDe(i)})</option>)}
@@ -3183,9 +3186,10 @@ function Estoque({ backendUrl, cardapio = [] }) {
         <div style={{marginBottom:8}}>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>O que foi feito</div>
           <select value={f.produtoId} onChange={e=>escolherProdutoProd(e.target.value)} style={inp}>
-            <option value="">— escolher o produto —</option>
-            {opcoesEstoque(f.insumos.map(l=>l.estoqueId).filter(Boolean))}
+            <option value="">— escolher o espeto —</option>
+            {opcoesEstoque(f.insumos.map(l=>l.estoqueId).filter(Boolean), ehEspetoEst)}
           </select>
+          {!itens.some(ehEspetoEst)&&<div style={{fontSize:11.5,color:"#92400e",marginTop:4}}>Nenhum espeto no estoque. Cadastre o espeto em "+ Cadastrar item no estoque", ligado ao item do cardápio.</div>}
         </div>
         <div style={{marginBottom:6}}>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantos foram feitos{produto?` (${unidDe(produto)})`:""}</div>
@@ -3374,7 +3378,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(qtdNum(it.quantidade)));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
               <button onClick={()=>setPerdaForm({item:it,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🗑️ Perda</button>
             </div>
-            <button onClick={()=>abrirProducao(it)} style={{marginTop:8,width:"100%",background:"#fff",color:"#5b21b6",border:"1.5px solid #c4b5fd",borderRadius:10,padding:"9px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔪 {(it.cardapioNomes||[]).length>0?"Produzir (de que foi feito)":"Usar em produção (virou o quê)"}</button>
+            <button onClick={()=>abrirProducao(it)} style={{marginTop:8,width:"100%",background:"#fff",color:"#5b21b6",border:"1.5px solid #c4b5fd",borderRadius:10,padding:"9px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔪 {ehEspetoEst(it)?"Produzir (de que foi feito)":"Usar em produção (virou o quê)"}</button>
           </div>
         )}
 
