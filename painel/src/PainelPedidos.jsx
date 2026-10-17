@@ -2618,6 +2618,17 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
         </div>
       )}
 
+      {/* Custo acima do preço: quase sempre custo digitado errado (5,68 que virou 568) */}
+      {(() => {
+        const nomes = Array.isArray(cardapioNomes) ? cardapioNomes : String(cardapioNomes || "").split(",").map(x => x.trim()).filter(Boolean);
+        const precoRef = pv > 0 ? pv : (cardapio.find(i => nomes.includes(i.nome))?.preco || 0);
+        return c > 0 && precoRef > 0 && custoVenda >= precoRef ? (
+          <div style={{background:"#fee2e2",border:"1.5px solid #fca5a5",borderRadius:8,padding:"8px 12px",fontSize:11.5,color:"#991b1b",lineHeight:1.5}}>
+            🚨 O custo por venda (<strong>{fmtBR(custoVenda)}</strong>) está maior que o preço de venda (<strong>{fmtBR(precoRef)}</strong>). Confira se o custo foi digitado certo: ele também entra no consumo dos donos.
+          </div>
+        ) : null;
+      })()}
+
       {/* Resultados calculados */}
       {c > 0 && (
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -5093,6 +5104,19 @@ function RelatorioEquipe() {
       carregar();
     } catch { alert("Sem conexão."); }
   }
+  // Auditoria: lançamento de dono gravado com custo errado ou faltando no dia
+  async function atualizarPeloCustoDeHoje() {
+    const alvos = rel.lista.filter(c => rel.divergentes.includes(String(c._id)));
+    if (!alvos.length) return;
+    const resumo = alvos.map(c => `${c.pessoa || "Sem nome"} (${new Date(c.data).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}): ${fmtBR(c.custo)} → ${fmtBR(c.custoHoje)}`).join("\n");
+    if (!window.confirm(`Atualizar ${alvos.length === 1 ? "1 lançamento" : alvos.length + " lançamentos"} de dono pelo custo cadastrado hoje no estoque?\n\n${resumo}\n\nO valor de antes fica guardado.`)) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/recalcular", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: alvos.map(c => c._id) }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.erro || "Não foi possível atualizar."); return; }
+      carregar();
+    } catch { alert("Sem conexão."); }
+  }
   async function desfazer(c) {
     if (!window.confirm(`Desfazer o consumo de ${c.pessoa || "sem nome"} (${c.itens.map(i => i.qty + "x " + i.nome).join(", ")})? Os itens voltam para o estoque.`)) return;
     try {
@@ -5153,9 +5177,20 @@ function RelatorioEquipe() {
             <Metrica icon="👥" label="Funcionários (a cobrar)" valor={fmtBR(rel.funcionarios.total)} sub={`${rel.funcionarios.pessoas} ${rel.funcionarios.pessoas === 1 ? "pessoa" : "pessoas"}`} cor="#0891b2" />
             <Metrica icon="🍢" label="Itens" valor={rel.itensTotal} sub={`${rel.lancamentos} lançamento(s) · fora do caixa`} cor="#7b1a0a" />
           </div>
-          {rel.semCusto > 0 && (
+          {rel.divergentes?.length > 0 && (() => {
+            const alvos = rel.lista.filter(c => rel.divergentes.includes(String(c._id)));
+            const n = alvos.length;
+            return (
+              <div style={{ background: "#fee2e2", border: "1.5px solid #fca5a5", borderRadius: 10, padding: "10px 12px", fontSize: 12.5, color: "#991b1b", lineHeight: 1.5 }}>
+                🔎 <strong>{n === 1 ? "1 lançamento de dono foi gravado" : `${n} lançamentos de dono foram gravados`}</strong> com um custo diferente do que está no estoque hoje (custo errado ou faltando no dia).
+                Gravado: <strong>{fmtBR(alvos.reduce((s, c) => s + c.custo, 0))}</strong> · pelo custo de hoje: <strong>{fmtBR(alvos.reduce((s, c) => s + c.custoHoje, 0))}</strong>.
+                <button onClick={atualizarPeloCustoDeHoje} style={{ display: "block", marginTop: 8, width: "100%", background: "#991b1b", color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>↻ Atualizar pelo custo de hoje</button>
+              </div>
+            );
+          })()}
+          {rel.itensSemCusto?.length > 0 && (
             <div style={{ background: "#fef3c7", border: "1.5px solid #fcd34d", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, color: "#92400e", lineHeight: 1.5 }}>
-              ⚠️ {rel.semCusto === 1 ? "1 lançamento de dono tem" : `${rel.semCusto} lançamentos de dono têm`} itens <strong>sem custo cadastrado</strong>: o valor de custo está incompleto. Cadastre o custo no Estoque (Formador de Preço) do item.
+              ⚠️ <strong>Sem custo cadastrado</strong> (contam R$ 0,00 para os donos): {rel.itensSemCusto.join(", ")}. Cadastre o custo em Estoque → item → Formador de Preço; depois use "Atualizar pelo custo de hoje".
             </div>
           )}
           {rel.lancamentos > 0 && (
@@ -5183,9 +5218,13 @@ function RelatorioEquipe() {
                       <div style={{ color: "#888", fontSize: 11 }}>{new Date(c.data).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
                       <div style={{ color: "#444" }}>{c.itens.map(i => `${i.qty}x ${i.nome}`).join(", ")}</div>
                       {c.tipo === "funcionario" && c.valor !== null && <div style={{ color: "#888", fontSize: 11 }}>pela regra seria {fmtBR(c.valorRegra)}</div>}
+                      {c.tipo === "dono" && c.custoHoje != null && Math.abs(c.custoHoje - c.custo) >= 0.01 && <div style={{ color: "#991b1b", fontSize: 11.5, fontWeight: 700 }}>gravado {fmtBR(c.custo)} · pelo custo de hoje {fmtBR(c.custoHoje)}</div>}
+                      {c.tipo === "dono" && c.custoSuspeito > 0 && <div style={{ color: "#991b1b", fontSize: 11 }}>🚨 custo acima do preço do cardápio: confira o custo no Estoque</div>}
+                      {c.tipo === "dono" && c.semCustoItens?.length > 0 && <div style={{ color: "#92400e", fontSize: 11 }}>sem custo: {c.semCustoItens.join(", ")}</div>}
+                      {c.custoOriginal != null && <div style={{ color: "#888", fontSize: 11 }}>atualizado{c.recalculadoEm ? ` em ${new Date(c.recalculadoEm).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}` : ""} (era {fmtBR(c.custoOriginal)})</div>}
                     </div>
                     {c.tipo === "dono" ? (
-                      <span style={{ fontWeight: 700, color: "#b45309", whiteSpace: "nowrap" }}>{fmtBR(c.valorEfetivo)}{c.semCusto > 0 && <span title="itens sem custo cadastrado"> ⚠️</span>}</span>
+                      <span style={{ fontWeight: 700, color: "#b45309", whiteSpace: "nowrap" }}>{fmtBR(c.valorEfetivo)}{c.semCustoItens?.length > 0 && <span title="itens sem custo cadastrado"> ⚠️</span>}</span>
                     ) : (
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                         <InputDinheiro value={valores[c._id] !== undefined ? valores[c._id] : moedaDeNumero(c.valorEfetivo)}

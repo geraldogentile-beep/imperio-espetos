@@ -51,18 +51,22 @@ export function precoFuncionario(it, cardapio, desconto = EQUIPE_PADRAO.desconto
 
 // Custo de UMA linha (qty unidades), pelo estoque ligado a ela. O lanche custa
 // o pão (estoque do lanche) mais cada espeto escolhido. Sem custo cadastrado,
-// conta em semCusto para o relatório avisar.
+// conta em semCusto e o nome vai em `faltando`, para o relatório dizer qual
+// cadastrar. `suspeito`: o custo de uma unidade passa do preço do cardápio
+// (foi o caso do R$ 5,68 gravado como 568 antes da correção de 14/10).
 export function custoDaLinha(it, estoques) {
   const qty = Number(it?.qty) || 1;
   const espetos = Array.isArray(it?.espetos) && it.espetos.length ? it.espetos : (it?.espeto ? [it.espeto] : []);
   const partes = [it?.nomeBase || it?.nome, ...espetos].filter(Boolean);
-  let custo = 0, semCusto = 0;
+  let unitario = 0, semCusto = 0;
+  const faltando = [];
   for (const nome of partes) {
     const est = (estoques || []).find(e => (e.cardapioNomes || []).some(n => normalizarNome(n) === normalizarNome(nome)));
     const unit = est ? (Number(est.custoPorUnidade) || 0) * (Number(est.consumoPorVenda) || 1) : 0;
-    if (unit > 0) custo += unit * qty; else semCusto++;
+    if (unit > 0) unitario += unit; else { semCusto++; faltando.push(String(nome)); }
   }
-  return { custo: arred(custo), semCusto };
+  const preco = Number(it?.preco) || 0;
+  return { custo: arred(unitario * qty), semCusto, faltando, suspeito: preco > 0 && unitario > preco };
 }
 
 // Tudo o que o registro precisa guardar no momento do consumo
@@ -70,14 +74,17 @@ export function calcularConsumo({ pessoa, itens, cardapio, estoques, config = EQ
   const donos = config?.donos || EQUIPE_PADRAO.donos;
   const desconto = config?.descontoEspeto ?? EQUIPE_PADRAO.descontoEspeto;
   const tipo = ehDono(pessoa, donos) ? "dono" : "funcionario";
-  let custo = 0, semCusto = 0, precoFunc = 0;
+  let custo = 0, semCusto = 0, precoFunc = 0, custoSuspeito = 0;
+  const semCustoItens = [];
   for (const it of itens || []) {
     const c = custoDaLinha(it, estoques);
     custo += c.custo; semCusto += c.semCusto;
+    if (c.suspeito) custoSuspeito++;
+    for (const n of c.faltando) if (!semCustoItens.includes(n)) semCustoItens.push(n);
     precoFunc += precoFuncionario(it, cardapio, desconto) * (Number(it.qty) || 1);
   }
   custo = arred(custo);
-  return { tipo, custo, semCusto, valorRegra: tipo === "dono" ? custo : arred(precoFunc) };
+  return { tipo, custo, semCusto, semCustoItens, custoSuspeito, valorRegra: tipo === "dono" ? custo : arred(precoFunc) };
 }
 
 // Valor que vale para o registro: dono = custo; funcionário = o que a dona

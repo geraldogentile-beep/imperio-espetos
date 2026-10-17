@@ -127,6 +127,32 @@ console.log("\n=== 8) desfazer devolve o estoque ===");
   ok(del.status === 200 && (await qtdDe(est._id)) === antes + 3, `devolveu os 3 do Rafael (${antes} -> ${antes + 3})`);
 }
 
+console.log("\n=== 9) auditoria: custo errado no dia (5,68 gravado como 568) ===");
+{
+  let r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  ok(r.itensSemCusto?.includes("Heineken Long Neck"), `lista o que falta cadastrar: ${r.itensSemCusto?.join(", ")}`);
+  const regAmanda = r.lista.find(c => c.pessoa === "amanda");
+  const cerv = (await api("POST", "/estoque", { nome: "Heineken equipe", unidade: "un", quantidade: 10, cardapioNomes: ["Heineken Long Neck"], custoPorUnidade: 568 })).corpo;
+  const daiane = (await api("POST", "/consumo-interno", { mesa: 901, pessoa: "Daiane", itens: [cerveja(1)] })).corpo;
+  ok(daiane.custo === 568 && daiane.custoSuspeito === 1, "com o custo errado no estoque, a Daiane nasce com R$ 568 e o custo é marcado como suspeito (acima do preço)");
+  await api("PUT", "/estoque/" + cerv._id, { custoPorUnidade: 5.68 });
+  r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  const linhaD = r.lista.find(c => c._id === daiane._id);
+  ok(linhaD.custo === 568 && linhaD.custoHoje === 5.68, "o relatório mostra: gravado R$ 568, pelo custo de hoje R$ 5,68");
+  ok(r.divergentes.length === 2 && r.divergentes.includes(daiane._id) && r.divergentes.includes(regAmanda._id), "aponta os 2 lançamentos de dono que mudam (Daiane e a cerveja sem custo da amanda)");
+  const rec = await api("POST", "/consumo-interno/recalcular", { ids: [...r.divergentes, regJoao._id] });
+  ok(rec.status === 200 && rec.corpo.alterados.length === 2, `atualizou só os 2 de dono (o do funcionário João fica) — ${rec.corpo.alterados?.map(a => `${a.pessoa} ${a.de} -> ${a.para}`).join("; ")}`);
+  r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  const d2 = r.lista.find(c => c._id === daiane._id);
+  ok(d2.custo === 5.68 && d2.valorEfetivo === 5.68 && d2.custoOriginal === 568 && d2.recalculadoEm, "Daiane agora R$ 5,68; o R$ 568 original fica guardado");
+  ok(r.divergentes.length === 0 && r.itensSemCusto.length === 0, "nada mais diverge nem falta custo");
+  ok(r.lista.find(c => c._id === regJoao._id).valorEfetivo === 26, "o do funcionário João não mudou (R$ 26)");
+  ok((await api("POST", "/consumo-interno/recalcular", { ids: [daiane._id] }, tokenGarcom)).status === 403, "garçom não recalcula");
+  ok((await api("POST", "/consumo-interno/recalcular", { ids: [] })).status === 400, "sem ids: 400");
+  await api("DELETE", "/consumo-interno/" + daiane._id);
+  await api("DELETE", "/estoque/" + cerv._id);
+}
+
 await api("DELETE", "/estoque/" + est._id);
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);
 process.exit(falhas === 0 ? 0 : 1);

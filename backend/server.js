@@ -262,6 +262,12 @@ const ConsumoInternoSchema = new mongoose.Schema({
   tipo:          { type: String, default: null },   // "dono" | "funcionario"
   custo:         { type: Number, default: 0 },
   semCusto:      { type: Number, default: 0 },      // partes sem custo cadastrado no estoque
+  semCustoItens: { type: [String], default: [] },   // quais (para o relatório dizer o que cadastrar)
+  custoSuspeito: { type: Number, default: 0 },      // linhas com custo acima do preço do cardápio
+  // "Atualizar pelo custo de hoje" (auditoria de 17/10/2026): guarda o custo
+  // com que o lançamento nasceu, para nada se perder
+  custoOriginal: { type: Number, default: null },
+  recalculadoEm: { type: Date, default: null },
   valorRegra:    { type: Number, default: null },   // o que a regra manda cobrar
   valor:         { type: Number, default: null },   // correção à mão (só funcionário)
   valorCardapio: { type: Number, default: 0 },      // só referência
@@ -3041,6 +3047,11 @@ async function completarRegistrosEquipe(lista) {
 // funcionário = regra ou valor corrigido)
 async function relatorioEquipe(listaBruta) {
   const lista = await completarRegistrosEquipe(listaBruta);
+  // Auditoria: o custo do dono fica gravado com o custo do dia. Se o estoque
+  // tinha um custo errado (5,68 gravado como 568) ou faltando, o relatório
+  // mostra quanto daria hoje e quais itens ainda estão sem custo.
+  const [config, estoques] = await Promise.all([configEquipe(), EstoqueDB.find({ ativo: true }).lean()]);
+  const hojeDe = new Map(lista.filter(c => c.tipo === "dono").map(c => [String(c._id), calcularConsumo({ pessoa: c.pessoa, itens: c.itens, cardapio: CARDAPIO, estoques, config })]));
   const porPessoa = {};
   for (const c of lista) {
     const nome = (c.pessoa || "").trim() || "Sem nome";
@@ -3065,13 +3076,20 @@ async function relatorioEquipe(listaBruta) {
     itensTotal: pessoas.reduce((s, p) => s + p.itens, 0),
     donos: { total: soma("dono"), pessoas: pessoas.filter(p => p.tipo === "dono").length },
     funcionarios: { total: soma("funcionario"), pessoas: pessoas.filter(p => p.tipo === "funcionario").length },
-    semCusto: lista.filter(c => c.tipo === "dono" && c.semCusto > 0).length,
+    semCusto: [...hojeDe.values()].filter(h => h.semCusto > 0).length,
+    itensSemCusto: [...new Set([...hojeDe.values()].flatMap(h => h.semCustoItens))].sort((a, b) => a.localeCompare(b, "pt-BR")),
+    divergentes: lista.filter(c => c.tipo === "dono" && Math.abs((hojeDe.get(String(c._id))?.custo ?? c.custo) - (Number(c.custo) || 0)) >= 0.01).map(c => String(c._id)),
     porPessoa: pessoas,
-    lista: lista.map(c => ({
-      _id: c._id, pessoa: c.pessoa, tipo: c.tipo, subComanda: c.subComanda, data: c.data,
-      custo: arred(c.custo), semCusto: c.semCusto || 0, valorRegra: arred(c.valorRegra), valor: c.valor ?? null, valorEfetivo: valorEfetivo(c),
-      itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1 })),
-    })),
+    lista: lista.map(c => {
+      const hoje = hojeDe.get(String(c._id));
+      return {
+        _id: c._id, pessoa: c.pessoa, tipo: c.tipo, subComanda: c.subComanda, data: c.data,
+        custo: arred(c.custo), semCusto: c.semCusto || 0, valorRegra: arred(c.valorRegra), valor: c.valor ?? null, valorEfetivo: valorEfetivo(c),
+        custoHoje: hoje ? hoje.custo : null, semCustoItens: hoje ? hoje.semCustoItens : [], custoSuspeito: hoje ? hoje.custoSuspeito : 0,
+        custoOriginal: c.custoOriginal ?? null, recalculadoEm: c.recalculadoEm || null,
+        itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1 })),
+      };
+    }),
   };
 }
 
@@ -3139,6 +3157,37 @@ app.get("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
 
 // PATCH /consumo-interno/:id { valor } — quanto cobrar da pessoa por este
 // lançamento. Vazio/null volta a "sem valor".
+// POST /consumo-interno/recalcular { ids } — refaz o custo dos lançamentos de
+// DONO com o custo cadastrado hoje no estoque. Serve para quando o custo
+// estava errado ou faltando no dia. O valor de antes fica em custoOriginal.
+// Funcionário não muda (o valor dele é cardápio − desconto, ou o corrigido).
+app.post("/consumo-interno/recalcular", authMiddleware(["dono"]), async (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).filter(id => mongoose.Types.ObjectId.isValid(id));
+  if (!ids.length) return res.status(400).json({ erro: "Nenhum lançamento informado" });
+  if (ids.length > 500) return res.status(400).json({ erro: "Lançamentos demais de uma vez" });
+  try {
+    const [config, estoques, regs] = await Promise.all([configEquipe(), EstoqueDB.find({ ativo: true }).lean(), ConsumoInternoDB.find({ _id: { $in: ids } }).lean()]);
+    const alterados = [];
+    for (const c of regs) {
+      const hoje = calcularConsumo({ pessoa: c.pessoa, itens: c.itens, cardapio: CARDAPIO, estoques, config });
+      const tipo = c.tipo || hoje.tipo;
+      if (tipo !== "dono") continue;
+      const de = Number(c.custo) || 0;
+      if (c.tipo && Math.abs(hoje.custo - de) < 0.01 && hoje.semCusto === (c.semCusto || 0)) continue;
+      await ConsumoInternoDB.updateOne({ _id: c._id }, {
+        tipo, custo: hoje.custo, valorRegra: hoje.custo, semCusto: hoje.semCusto, semCustoItens: hoje.semCustoItens, custoSuspeito: hoje.custoSuspeito,
+        custoOriginal: c.custoOriginal ?? (c.tipo ? de : null), recalculadoEm: new Date(),
+      });
+      alterados.push({ _id: c._id, pessoa: c.pessoa, de: c.tipo ? de : null, para: hoje.custo });
+    }
+    console.log(`Consumo da equipe: ${alterados.length} lançamento(s) de dono recalculado(s) por ${req.user?.nome || req.user?.role}: ${alterados.map(a => `${a.pessoa} ${a.de} -> ${a.para}`).join("; ")}`);
+    res.json({ ok: true, alterados });
+  } catch (e) {
+    console.error("Erro ao recalcular consumo da equipe:", e.message);
+    res.status(500).json({ erro: "Erro ao recalcular" });
+  }
+});
+
 app.patch("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
   const v = req.body?.valor;
