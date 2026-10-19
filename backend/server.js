@@ -4230,6 +4230,11 @@ app.put("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
 
   const strFields = ["ambiente", "provedor", "cscId", "cnpj", "ie", "razaoSocial", "nomeFantasia", "crt"];
   for (const k of strFields) if (typeof b[k] === "string") novo[k] = b[k].trim();
+  // O ID do CSC tem até 6 dígitos (padrão do QR Code). O 1º teste real foi
+  // recusado (SEFAZ 225) porque o campo recebeu 46672345, o começo do CNPJ.
+  if (typeof b.cscId === "string" && novo.cscId && !/^\d{1,6}$/.test(novo.cscId)) {
+    return res.status(400).json({ erro: `ID do CSC inválido (${novo.cscId}): ele tem até 6 dígitos (ex.: 1 ou 000001) e fica na mesma linha do CSC no portal da Receita/PR. Não é o CNPJ.` });
+  }
 
   if (["03", "04"].includes(b.cartaoCodigo)) novo.cartaoCodigo = b.cartaoCodigo;
   if (["17", "20"].includes(b.pixCodigo)) novo.pixCodigo = b.pixCodigo;
@@ -4299,6 +4304,7 @@ async function pendenciasFiscais(cfg) {
   if (cfg.provedor !== "focusnfe") {
     if (!cfg.csc) faltando.push("CSC");
     if (!cfg.cscId) faltando.push("ID do CSC");
+    else if (!/^\d{1,6}$/.test(String(cfg.cscId).trim())) faltando.push(`ID do CSC válido (até 6 dígitos; está ${cfg.cscId})`);
     if (!cfg.ie) faltando.push("Inscricao Estadual");
     if (!cfg.razaoSocial) faltando.push("razao social");
     if (!cfg.endereco?.codigoMunicipio) faltando.push("codigo IBGE do municipio");

@@ -1515,7 +1515,9 @@ function FiscalConfig() {
           </div>
           <div style={{ flex: 1, minWidth: 90 }}>
             <div style={lbl}>ID do CSC</div>
-            <input value={cfg.cscId || ""} onChange={e => set("cscId", e.target.value)} placeholder="000001" style={inp} />
+            <input value={cfg.cscId || ""} onChange={e => set("cscId", e.target.value)} placeholder="000001" inputMode="numeric" style={{ ...inp, ...(cfg.cscId && !/^\d{1,6}$/.test(String(cfg.cscId).trim()) ? { borderColor: "#ef4444" } : {}) }} />
+            {/* A SEFA-PR só aceita até 6 dígitos; o 1º teste foi com 46672345 (o começo do CNPJ) */}
+            {cfg.cscId && !/^\d{1,6}$/.test(String(cfg.cscId).trim()) && <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 3 }}>O ID tem até 6 dígitos (ex.: 1 ou 000001), na mesma linha do CSC no portal. Não é o CNPJ.</div>}
           </div>
           <div style={{ flex: 1, minWidth: 70 }}>
             <div style={lbl}>Serie</div>
