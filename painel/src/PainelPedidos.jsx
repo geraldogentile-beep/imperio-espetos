@@ -1550,6 +1550,17 @@ function FiscalConfig() {
                 <input value={cfg.respTec?.fone || ""} onChange={e => setResp("fone", e.target.value)} placeholder="43999990000" inputMode="tel" maxLength={20} style={inp} />
               </div>
             </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+              <div style={{ flex: 1, minWidth: 90 }}>
+                <div style={lbl}>ID do CSRT</div>
+                <input value={cfg.respTec?.idCSRT || ""} onChange={e => setResp("idCSRT", e.target.value)} placeholder="01" inputMode="numeric" maxLength={2} style={inp} />
+              </div>
+              <div style={{ flex: 3, minWidth: 200 }}>
+                <div style={lbl}>CSRT {cfg.csrtPreenchido && <span style={{ color: "#10b981" }}>✓ salvo</span>}</div>
+                <input type="password" value={cfg.respTec?.csrt || ""} onChange={e => setResp("csrt", e.target.value)} placeholder="código gerado no UPD (Receita/PR)" style={inp} />
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>O CSRT é gerado no UPD depois do cadastro da empresa como fornecedor de sistema (uso próprio). Até lá, deixe em branco.</div>
           </div>
         )}
         {cfg.provedor === "sefapr" && (

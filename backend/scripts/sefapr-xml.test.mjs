@@ -84,6 +84,20 @@ let notaPix;
   ok(inf.includes("<transp><modFrete>9</modFrete></transp>") && !inf.includes("infRespTec"), "sem frete; responsável técnico só quando houver e-mail e telefone");
 }
 
+console.log("\n=== 2a) responsável técnico (exigido pela SEFA-PR) com CSRT ===");
+{
+  const comRt = (respTec) => montarNfce({ cfg: { ...cfg, respTec }, itens: [item("Alcatra", 1, 9)], valorNota: 9, pagamentos: [{ tipo: "pix", valor: 9 }], numero: ++numero, serie: 1, cert, csc: CSC, cscId: CSC_ID });
+  const sem = comRt({ contato: "Amanda", email: "contato@exemplo.com", fone: "(43) 99999-0000" });
+  const rt1 = bloco(sem.xml, "infRespTec");
+  ok(tag(rt1, "CNPJ") === "46672345000192" && tag(rt1, "xContato") === "Amanda" && tag(rt1, "email") === "contato@exemplo.com" && tag(rt1, "fone") === "43999990000" && !rt1.includes("idCSRT"), "uso próprio: CNPJ da empresa, contato, e-mail e telefone; sem CSRT ainda");
+  const CSRT = "CSRT-DE-TESTE-ABCDEF1234567890";
+  const com = comRt({ contato: "Amanda", email: "contato@exemplo.com", fone: "43999990000", idCSRT: "1", csrt: CSRT });
+  const rt2 = bloco(com.xml, "infRespTec");
+  const esperado = crypto.createHash("sha1").update(CSRT + com.chave).digest("base64");
+  ok(tag(rt2, "idCSRT") === "01" && tag(rt2, "hashCSRT") === esperado && rt2.indexOf("<fone>") < rt2.indexOf("<idCSRT>"), `com CSRT: idCSRT 01 e hashCSRT = base64(SHA-1(CSRT + chave)) (${tag(rt2, "hashCSRT")})`);
+  ok(!com.xml.includes(CSRT), "o CSRT em si não vai na nota");
+}
+
 console.log("\n=== 2b) desconto, gorjeta, CPF, cartão, bebida com ST, delivery ===");
 {
   const itens = [item("Picanha", 3, 14), item("Frango", 2, 9), item("Refri lata", 1, 7, { cfop: "5405", csosn: "500", cest: "0300700", ncm: "22021000" })];

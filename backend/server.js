@@ -4136,9 +4136,10 @@ const CONFIG_FISCAL_PADRAO = {
   pixCodigo: "20",      // 20 = pix estatico (QR/chave fixa), 17 = dinamico (maquininha)
   pisCst: "49",         // Simples Nacional: PIS/COFINS vao no DAS
   cofinsCst: "49",
-  // Responsável técnico pelo sistema (uso próprio = a própria empresa). Só vai
-  // na nota quando houver e-mail e telefone; o PR ainda não exige para NFC-e.
-  respTec: { contato: "", email: "", fone: "" },
+  // Responsável técnico pelo sistema (uso próprio = a própria empresa). A
+  // SEFA-PR exige o grupo (SEFAZ 972 no 1º teste real). CSRT = SEGREDO,
+  // gerado no UPD depois do cadastro de fornecedor de sistema.
+  respTec: { contato: "", email: "", fone: "", idCSRT: "", csrt: "" },
 };
 
 // ── Numeração da NFC-e (emissão direta) ──────────────────────
@@ -4215,6 +4216,8 @@ function configFiscalSegura(cfg) {
     csc: mascararSegredo(cfg.csc),
     apiTokenPreenchido: !!cfg.apiToken,
     cscPreenchido: !!cfg.csc,
+    respTec: { ...(cfg.respTec || {}), csrt: mascararSegredo(cfg.respTec?.csrt) },
+    csrtPreenchido: !!cfg.respTec?.csrt,
   };
 }
 
@@ -4266,7 +4269,13 @@ app.put("/config/fiscal", authMiddleware(["dono"]), async (req, res) => {
   if (b.respTec && typeof b.respTec === "object") {
     novo.respTec = { ...(atual.respTec || CONFIG_FISCAL_PADRAO.respTec) };
     for (const k of Object.keys(CONFIG_FISCAL_PADRAO.respTec)) {
-      if (typeof b.respTec[k] === "string") novo.respTec[k] = b.respTec[k].trim();
+      if (typeof b.respTec[k] !== "string") continue;
+      // CSRT é segredo: o painel reenvia mascarado; só troca se veio valor novo
+      if (k === "csrt" && (!b.respTec.csrt || b.respTec.csrt.startsWith("****"))) continue;
+      novo.respTec[k] = b.respTec[k].trim();
+    }
+    if (novo.respTec.idCSRT && !/^\d{1,2}$/.test(novo.respTec.idCSRT)) {
+      return res.status(400).json({ erro: `ID do CSRT inválido (${novo.respTec.idCSRT}): tem 1 ou 2 dígitos (ex.: 01).` });
     }
   }
 

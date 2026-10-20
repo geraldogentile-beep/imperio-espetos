@@ -243,9 +243,15 @@ export function montarNfce({ cfg, itens, valorNota, pagamentos, cpf, nome, entre
     (PRECISA_CARD.has(f.forma_pagamento) ? `<card><tpIntegra>2</tpIntegra></card>` : "") + `</detPag>`).join("") + `</pag>`;
 
   // infRespTec: sistema de uso próprio — o responsável é a própria empresa
+  // CSRT (NPF 063/2012 item 2.8): gerado no UPD para o fornecedor do sistema;
+  // vai o id (2 dígitos) e o SHA-1 de CSRT + chave em base64 (NT 2018.005)
   const rt = cfg.respTec || {};
+  const csrt = String(rt.csrt || "").trim(), idCSRT = digitos(rt.idCSRT);
+  const grupoCsrt = csrt && idCSRT
+    ? `<idCSRT>${String(parseInt(idCSRT, 10)).padStart(2, "0")}</idCSRT><hashCSRT>${crypto.createHash("sha1").update(csrt + chave, "utf8").digest("base64")}</hashCSRT>`
+    : "";
   const respTec = rt.email && digitos(rt.fone).length >= 6
-    ? `<infRespTec><CNPJ>${cnpj}</CNPJ><xContato>${esc(rt.contato || cfg.razaoSocial, 60)}</xContato><email>${esc(rt.email, 60)}</email><fone>${digitos(rt.fone).slice(0, 14)}</fone></infRespTec>`
+    ? `<infRespTec><CNPJ>${cnpj}</CNPJ><xContato>${esc(rt.contato || cfg.razaoSocial, 60)}</xContato><email>${esc(rt.email, 60)}</email><fone>${digitos(rt.fone).slice(0, 14)}</fone>${grupoCsrt}</infRespTec>`
     : "";
 
   const id = "NFe" + chave;
