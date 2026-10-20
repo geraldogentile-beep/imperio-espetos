@@ -1328,6 +1328,7 @@ function FiscalConfig() {
 
   const set = (campo, v) => setCfg(p => ({ ...p, [campo]: v }));
   const setEnd = (campo, v) => setCfg(p => ({ ...p, endereco: { ...p.endereco, [campo]: v } }));
+  const setResp = (campo, v) => setCfg(p => ({ ...p, respTec: { ...(p.respTec || {}), [campo]: v } }));
 
   // Confere o token salvo sem emitir nada
   const [testando, setTestando] = useState(false);
@@ -1530,6 +1531,27 @@ function FiscalConfig() {
             </div>
           )}
         </div>
+        {/* A SEFA-PR exige o grupo do responsável técnico (1º teste: SEFAZ 972).
+            Sistema de uso próprio: vai o CNPJ da empresa com um contato dela. */}
+        {cfg.provedor === "sefapr" && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ ...lbl, marginBottom: 2 }}>Responsável técnico do sistema <span style={{ color: "#888", fontWeight: 400 }}>— obrigatório no PR. Como o sistema é da própria empresa, vai o CNPJ dela com este contato.</span></div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ flex: 2, minWidth: 160 }}>
+                <div style={lbl}>Nome do contato</div>
+                <input value={cfg.respTec?.contato || ""} onChange={e => setResp("contato", e.target.value)} placeholder={cfg.razaoSocial || "nome"} maxLength={60} style={inp} />
+              </div>
+              <div style={{ flex: 2, minWidth: 180 }}>
+                <div style={lbl}>E-mail</div>
+                <input type="email" value={cfg.respTec?.email || ""} onChange={e => setResp("email", e.target.value)} placeholder="contato@empresa.com" maxLength={60} style={inp} />
+              </div>
+              <div style={{ flex: 1, minWidth: 130 }}>
+                <div style={lbl}>Telefone (com DDD)</div>
+                <input value={cfg.respTec?.fone || ""} onChange={e => setResp("fone", e.target.value)} placeholder="43999990000" inputMode="tel" maxLength={20} style={inp} />
+              </div>
+            </div>
+          </div>
+        )}
         {cfg.provedor === "sefapr" && (
           <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>
             Se a empresa já emitiu NFC-e por outro sistema nesta série, informe aqui o último número + 1 para continuar a sequência. Senão, deixe 1.

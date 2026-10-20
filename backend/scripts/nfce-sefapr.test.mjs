@@ -61,6 +61,8 @@ console.log("=== 1) configuração: sem certificado não está pronto ===");
     endereco: { logradouro: "Rua Governador Paulo Cruz Pimentel", numero: "279", bairro: "Cidade Alta", municipio: "Ibaiti", codigoMunicipio: "4109708", uf: "PR", cep: "84900-000" },
     padroes: { ncm: "16025000", cfop: "5101", csosn: "102", origem: "0", unidade: "UN" },
     cartaoCodigo: "03", pixCodigo: "20", pisCst: "49", cofinsCst: "49", proximoNumero: 1,
+    // A SEFA-PR exige o responsável técnico (SEFAZ 972 no 1º teste real)
+    respTec: { contato: "Teste", email: "teste@exemplo.com", fone: "43999990000" },
   });
   ok(r.status === 200 && r.corpo.csc?.startsWith("****") && r.corpo.proximoNumero === 1, `salvou; CSC mascarado; próximo número 1 (HTTP ${r.status})`);
   const st = (await api("GET", "/config/fiscal/status")).corpo;

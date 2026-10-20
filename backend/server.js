@@ -4298,6 +4298,9 @@ async function pendenciasFiscais(cfg) {
     let temCert = false;
     try { const doc = await ConfigDB.findOne({ chave: "certificado" }).lean(); temCert = !!doc?.valor?.pfx; } catch {}
     if (!temCert) faltando.push("certificado A1 (envie o .pfx em Certificado)");
+    // A SEFA-PR recusa sem o grupo do responsável técnico (SEFAZ 972)
+    const rt = cfg.respTec || {};
+    if (!rt.email || String(rt.fone || "").replace(/\D/g, "").length < 6) faltando.push("responsável técnico (e-mail e telefone de contato)");
   }
   // Na Focus NFe, certificado, CSC, IE e endereco ficam no cadastro da empresa
   // la no painel deles; aqui nao sao usados.
