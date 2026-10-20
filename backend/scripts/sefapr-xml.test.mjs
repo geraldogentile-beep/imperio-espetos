@@ -98,6 +98,18 @@ console.log("\n=== 2a) responsável técnico (exigido pela SEFA-PR) com CSRT ===
   ok(!com.xml.includes(CSRT), "o CSRT em si não vai na nota");
 }
 
+console.log("\n=== 2a2) grupo do ICMS por CSOSN ===");
+{
+  const grupoDe = (csosn) => { const n = montar([item("Item", 1, 5, { csosn })], 5, [{ tipo: "pix", valor: 5 }]); return bloco(bloco(n.xml, "det"), "ICMS"); };
+  ok(["102", "103", "300", "400"].every(c => grupoDe(c) === `<ICMS><ICMSSN102><orig>0</orig><CSOSN>${c}</CSOSN></ICMSSN102></ICMS>`), "102, 103, 300 e 400 vão no grupo ICMSSN102 (não existe ICMSSN300)");
+  ok(grupoDe("500").includes("<ICMSSN500>") && grupoDe("900").includes("<ICMSSN900>"), "500 e 900 têm grupo próprio");
+  for (const c of ["101", "201", "202", "203"]) {
+    let msg = "";
+    try { grupoDe(c); } catch (e) { msg = e.message; }
+    ok(/não se usa em venda ao consumidor/.test(msg), `CSOSN ${c} recusado com explicação`);
+  }
+}
+
 console.log("\n=== 2b) desconto, gorjeta, CPF, cartão, bebida com ST, delivery ===");
 {
   const itens = [item("Picanha", 3, 14), item("Frango", 2, 9), item("Refri lata", 1, 7, { cfop: "5405", csosn: "500", cest: "0300700", ncm: "22021000" })];

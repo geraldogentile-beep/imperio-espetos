@@ -144,11 +144,16 @@ const TEXTO_HOMOLOG_ITEM = "NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM
 const TEXTO_HOMOLOG_DEST = "NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL";
 const PRECISA_CARD = new Set(["03", "04", "17"]);
 
+// Simples Nacional: o grupo do XML não é "ICMSSN + CSOSN" para todos.
+// 102, 103, 300 e 400 usam o mesmo grupo ICMSSN102; 500 (ICMS já retido por
+// ST: cerveja, refrigerante, água) e 900 têm grupo próprio. 101 (crédito para
+// o comprador) e 201/202/203 (a empresa cobrando ST adiante) pedem campos de
+// crédito/ST que não cabem numa venda ao consumidor; ficam recusados aqui.
+const GRUPO_CSOSN = { "102": "ICMSSN102", "103": "ICMSSN102", "300": "ICMSSN102", "400": "ICMSSN102", "500": "ICMSSN500", "900": "ICMSSN900" };
 function grupoIcms(it) {
   const csosn = digitos(it.csosn);
   const orig = /^[0-8]$/.test(String(it.origem)) ? String(it.origem) : "0";
-  // Simples Nacional: ICMSSN + CSOSN. 500 = ICMS já retido por ST (bebidas).
-  const nome = `ICMSSN${csosn}`;
+  const nome = GRUPO_CSOSN[csosn];
   return `<ICMS><${nome}><orig>${orig}</orig><CSOSN>${csosn}</CSOSN></${nome}></ICMS>`;
 }
 function grupoPisCofins(nome, cst) {
@@ -221,7 +226,8 @@ export function montarNfce({ cfg, itens, valorNota, pagamentos, cpf, nome, entre
     const ncm = digitos(it.ncm), cfop = digitos(it.cfop), cest = digitos(it.cest);
     if (ncm.length !== 8) throw new ErroFiscal(`${it.nome}: NCM deve ter 8 dígitos (${it.ncm || "vazio"})`, { definitivo: true });
     if (cfop.length !== 4) throw new ErroFiscal(`${it.nome}: CFOP deve ter 4 dígitos (${it.cfop || "vazio"})`, { definitivo: true });
-    if (!/^(101|102|103|201|202|203|300|400|500|900)$/.test(digitos(it.csosn))) throw new ErroFiscal(`${it.nome}: CSOSN inválido (${it.csosn || "vazio"})`, { definitivo: true });
+    if (/^(101|201|202|203)$/.test(digitos(it.csosn))) throw new ErroFiscal(`${it.nome}: CSOSN ${digitos(it.csosn)} não se usa em venda ao consumidor (é para crédito ao comprador ou para cobrar ST adiante). Confira com o contador: em geral é 102 ou, para bebida com ST já paga, 500.`, { definitivo: true });
+    if (!GRUPO_CSOSN[digitos(it.csosn)]) throw new ErroFiscal(`${it.nome}: CSOSN inválido (${it.csosn || "vazio"})`, { definitivo: true });
     return `<det nItem="${i + 1}"><prod><cProd>${esc(it.codigo ?? i + 1, 60)}</cProd><cEAN>SEM GTIN</cEAN><xProd>${xProd}</xProd>` +
       `<NCM>${ncm}</NCM>` + el("CEST", cest) + `<CFOP>${cfop}</CFOP><uCom>${un}</uCom><qCom>${q4(qtd)}</qCom><vUnCom>${vUn}</vUnCom>` +
       `<vProd>${vProd}</vProd><cEANTrib>SEM GTIN</cEANTrib><uTrib>${un}</uTrib><qTrib>${q4(qtd)}</qTrib><vUnTrib>${vUn}</vUnTrib>` +
