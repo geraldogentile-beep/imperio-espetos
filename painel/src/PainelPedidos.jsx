@@ -5173,6 +5173,7 @@ function RelatorioEquipe() {
   const regraTxt = (tipo) => tipo === "dono" ? "preço de custo" : `cardápio − ${fmtBR(cfg?.descontoEspeto ?? 2)} por espeto`;
   const lancamentosDe = (pp) => (rel?.lista || []).filter(c => (c.pessoa || "Sem nome").trim().toLowerCase() === pp.pessoa.toLowerCase());
   const dataHora = (d) => new Date(d).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const itensTxt = (c) => c.itens.map(i => `${i.qty}x ${i.nome}${i.nota ? ` (${i.nota})` : ""}`).join(", ");
   // Dias em que a pessoa consumiu, do mais antigo ao mais novo ("15/10, 17/10")
   const diasDe = (pp) => [...new Set(lancamentosDe(pp).slice().sort((a, b) => new Date(a.data) - new Date(b.data)).map(c => new Date(c.data).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })))];
   function imprimir() {
@@ -5182,7 +5183,7 @@ function RelatorioEquipe() {
     // Cada pessoa com o total e, embaixo, cada consumo com a data (pedido da
     // dona, 21/10/2026: a data só aparecia abrindo o cartão ou na planilha)
     const linhas = rel.porPessoa.map(pp => `<tr class="p"><td><b>${pp.pessoa}</b><br><span style="color:#666;font-size:11px">${pp.tipo === "dono" ? "Dono · custo" : "Funcionário · " + regraTxt("funcionario")}</span></td><td>${pp.produtos.map(x => x.qtd + "x " + x.nome).join(", ")}</td><td class="n"><b>${fmtBR(pp.total)}</b></td></tr>` +
-      lancamentosDe(pp).map(c => `<tr class="l"><td>${dataHora(c.data)}</td><td>${c.itens.map(i => i.qty + "x " + i.nome).join(", ")}</td><td class="n">${fmtBR(c.valorEfetivo)}</td></tr>`).join("")).join("");
+      lancamentosDe(pp).map(c => `<tr class="l"><td>${dataHora(c.data)}</td><td>${itensTxt(c)}${c.observacao ? `<br><i>Obs.: ${c.observacao.replace(/</g, "&lt;")}</i>` : ""}</td><td class="n">${fmtBR(c.valorEfetivo)}</td></tr>`).join("")).join("");
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Equipe ${titulo}</title>
       <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{padding:6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}td.n,th.n{text-align:right;white-space:nowrap}tr.p td{border-top:2px solid #999;background:#f6f6f6}tr.l td{color:#555;font-size:12px;border-bottom:1px dotted #e5e5e5}tr.l td:first-child{padding-left:16px;white-space:nowrap}@media print{button{display:none}}</style></head><body>
       <h1>Império dos Espetos — Consumo da equipe</h1><div style="color:#666">${titulo} · fora do caixa · gerado em ${new Date().toLocaleString("pt-BR")}</div>
@@ -5198,7 +5199,7 @@ function RelatorioEquipe() {
       ...rel.porPessoa.map(pp => [pp.pessoa, pp.tipo === "dono" ? "Dono (custo)" : "Funcionário", pp.itens, pp.produtos.map(x => x.qtd + "x " + x.nome).join(", "), num(pp.total)]), [],
       ["Total donos (custo)", "", "", "", num(rel.donos.total)], ["Total funcionários (a cobrar)", "", "", "", num(rel.funcionarios.total)], [],
       ["LANÇAMENTOS", "Data", "Tipo", "Itens", "Valor"],
-      ...rel.lista.map(c => [c.pessoa || "Sem nome", new Date(c.data).toLocaleString("pt-BR"), c.tipo === "dono" ? "Dono" : "Funcionário", c.itens.map(i => i.qty + "x " + i.nome).join(", "), num(c.valorEfetivo)])];
+      ...rel.lista.map(c => [c.pessoa || "Sem nome", new Date(c.data).toLocaleString("pt-BR"), c.tipo === "dono" ? "Dono" : "Funcionário", itensTxt(c) + (c.observacao ? ` | Obs.: ${c.observacao}` : ""), num(c.valorEfetivo)])];
     const csv = "\ufeff" + linhas.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `equipe-${consultaPeriodo(modo, ref).split("=")[1]}.csv`; a.click();
@@ -5268,7 +5269,8 @@ function RelatorioEquipe() {
                   <div key={c._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid #f3f3f3", fontSize: 12.5, flexWrap: "wrap" }}>
                     <div style={{ flex: "1 1 160px", minWidth: 0 }}>
                       <div style={{ color: "#555", fontSize: 11.5, fontWeight: 700 }}>📅 {dataHora(c.data)}</div>
-                      <div style={{ color: "#444" }}>{c.itens.map(i => `${i.qty}x ${i.nome}`).join(", ")}</div>
+                      <div style={{ color: "#444" }}>{itensTxt(c)}</div>
+                      {c.observacao && <div style={{ color: "#7b1a0a", fontSize: 11.5 }}>📝 {c.observacao}</div>}
                       {c.tipo === "funcionario" && c.valor !== null && <div style={{ color: "#888", fontSize: 11 }}>pela regra seria {fmtBR(c.valorRegra)}</div>}
                       {c.tipo === "dono" && c.custoHoje != null && Math.abs(c.custoHoje - c.custo) >= 0.01 && <div style={{ color: "#991b1b", fontSize: 11.5, fontWeight: 700 }}>gravado {fmtBR(c.custo)} · pelo custo de hoje {fmtBR(c.custoHoje)}</div>}
                       {c.tipo === "dono" && c.custoSuspeito > 0 && <div style={{ color: "#991b1b", fontSize: 11 }}>🚨 custo acima do preço do cardápio: confira o custo no Estoque</div>}
@@ -7631,8 +7633,10 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     if (fechandoRef.current) return;
     const alvos = indices.map(i => ({ i, sc: mesa.subComandas[i] })).filter(a => a.sc && ((a.sc.itens || []).length || (a.sc.rodadas || []).length));
     if (!alvos.length) return;
+    // Junta por item E observação (chaveLinha): por chaveItem a nota do item
+    // ("sem cebola") se perdia ao registrar (queixa da dona, 21/10/2026)
     const juntar = (sc) => [...(sc.rodadas||[]).flatMap(r=>r.itens), ...(sc.itens||[])].reduce((acc,it)=>{
-      const ex=acc.find(x=>chaveItem(x)===chaveItem(it)); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
+      const ex=acc.find(x=>chaveLinha(x)===chaveLinha(it)); if(ex) ex.qty+=(it.qty||1); else acc.push({...it,qty:it.qty||1}); return acc;
     }, []);
     const resumo = alvos.map(a => `${a.sc.cliente || a.sc.label}: ${juntar(a.sc).reduce((q,it)=>q+(it.qty||1),0)} itens`).join("\n");
     if (!window.confirm(`Registrar como consumo da equipe?\n\n${resumo}\n\nSai do estoque e NÃO entra no caixa nem no faturamento.`)) return;
@@ -7641,7 +7645,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     for (const { sc } of alvos) {
       try {
         const res = await authFetch(BACKEND_URL + "/consumo-interno", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mesa: mesa.id, subComanda: sc.label, pessoa: sc.cliente || "", itens: juntar(sc),
+          body: JSON.stringify({ mesa: mesa.id, subComanda: sc.label, pessoa: sc.cliente || "", itens: juntar(sc), observacao: (mesa.obs || "").trim(),
             liberarMesa: { mesaId: mesa.id, modo: "comanda", scIds: [sc.id] } }) });
         if (!res.ok) { const err = await res.json().catch(()=>({})); msgSalao(`❌ Não foi possível registrar ${sc.cliente || sc.label}: ${err.erro || res.status}`, "#ef4444"); break; }
         const salvo = await res.json();

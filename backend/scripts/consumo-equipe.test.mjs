@@ -127,6 +127,18 @@ console.log("\n=== 8) desfazer devolve o estoque ===");
   ok(del.status === 200 && (await qtdDe(est._id)) === antes + 3, `devolveu os 3 do Rafael (${antes} -> ${antes + 3})`);
 }
 
+console.log("\n=== 8b) observações: da mesa e de cada item ===");
+{
+  const c = await api("POST", "/consumo-interno", { mesa: 901, pessoa: "Leonardo", observacao: "consumo de sábado 17/10",
+    itens: [{ ...alcatra(1), nota: "sem sal" }, { ...alcatra(1), nota: "bem passado" }] });
+  const r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  const l = r.lista.find(x => x._id === c.corpo._id);
+  ok(c.status === 201 && l.observacao === "consumo de sábado 17/10", "a observação geral fica guardada no lançamento");
+  ok(l.itens.length === 2 && l.itens.map(i => i.nota).join("|") === "sem sal|bem passado", "cada item mantém a sua observação");
+  ok(r.porPessoa.find(p => p.pessoa === "Leonardo").produtos.find(x => x.nome === "Alcatra").qtd === 2, "no resumo por pessoa os dois somam (2x Alcatra)");
+  await api("DELETE", "/consumo-interno/" + c.corpo._id);
+}
+
 console.log("\n=== 9) auditoria: custo errado no dia (5,68 gravado como 568) ===");
 {
   let r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;

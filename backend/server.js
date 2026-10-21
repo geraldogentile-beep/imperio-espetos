@@ -256,7 +256,8 @@ const ConsumoInternoSchema = new mongoose.Schema({
   mesa:       { type: Number, default: 901 },
   subComanda: { type: String, default: "" },
   pessoa:     { type: String, default: "", trim: true, maxlength: 60 },   // quem consumiu (nome da comanda)
-  itens:      { type: Array, required: true },
+  itens:      { type: Array, required: true },                           // cada item leva a sua "nota" (ex.: sem cebola)
+  observacao: { type: String, default: "", maxlength: 300 },              // observação geral da mesa na hora de registrar
   // Regra da casa (salao/equipe.js): dono paga o custo; funcionário paga o
   // cardápio com R$ 2 de desconto por espeto. Tudo calculado no momento do
   // consumo, para mudança de custo ou de regra não reescrever o passado.
@@ -3198,7 +3199,8 @@ async function relatorioEquipe(listaBruta) {
         custo: arred(c.custo), semCusto: c.semCusto || 0, valorRegra: arred(c.valorRegra), valor: c.valor ?? null, valorEfetivo: valorEfetivo(c),
         custoHoje: hoje ? hoje.custo : null, semCustoItens: hoje ? hoje.semCustoItens : [], custoSuspeito: hoje ? hoje.custoSuspeito : 0,
         custoOriginal: c.custoOriginal ?? null, recalculadoEm: c.recalculadoEm || null,
-        itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1 })),
+        itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1, nota: String(it.nota || "").trim() })),
+        observacao: c.observacao || "",
       };
     }),
   };
@@ -3234,6 +3236,7 @@ app.post("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
     const reg = await ConsumoInternoDB.create({
       mesa, subComanda: String(req.body.subComanda || "").slice(0, 40),
       pessoa, itens, ...regra, valor: null, valorCardapio, criadoPor: quem,
+      observacao: String(req.body.observacao || "").trim().slice(0, 300),
     });
     const resposta = reg.toObject();
     let antes = null;
