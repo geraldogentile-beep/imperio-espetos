@@ -684,6 +684,7 @@ async function inicializarDados() {
   // codigo, ele voltava a 48 a cada restart e colidia com itens ja criados —
   // dois itens com o mesmo id fazem editar/excluir pegar o errado.
   nextItemId = CARDAPIO.reduce((max, i) => Math.max(max, Number(i.id) || 0), 0) + 1;
+  await ligarEstoquePorNome();
 
   // Inicializa cupons se vazio
   const totalCupons = await CupomDB.countDocuments();
@@ -1933,6 +1934,7 @@ app.post("/cardapio", authMiddleware(["dono"]), async (req, res) => {
     return res.status(500).json({ erro: "Não foi possível gravar o item no banco. Tente de novo." });
   }
   CARDAPIO.push(item);
+  await ligarEstoquePorNome();
   res.status(201).json(item);
 });
 app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
@@ -2014,7 +2016,7 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   }
   // O estoque se liga ao item pelo NOME. Renomear o item sem avisar o estoque
   // deixava a baixa automática parada em silêncio.
-  if (update.nome && update.nome !== nomeAntigo) await renomearNoEstoque(nomeAntigo, update.nome);
+  if (update.nome && update.nome !== nomeAntigo) { await renomearNoEstoque(nomeAntigo, update.nome); await ligarEstoquePorNome(); }
   res.json(CARDAPIO[idx]);
 });
 app.patch("/cardapio/:id/ativo", authMiddleware(["dono"]), async (req, res) => {
@@ -2036,6 +2038,29 @@ app.delete("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   await renomearNoEstoque(removido.nome, null);
   res.json({ ok: true, removido });
 });
+
+// Item do estoque SEM vínculo e com o MESMO nome de um produto do cardápio
+// fica ligado a ele (pedido do usuário, 21/10/2026: o "Suco de Laranja 200ml"
+// do estoque estava solto, não baixava na venda nem dava custo aos donos).
+// Nunca troca um vínculo escolhido, nem liga a produto que já tem estoque.
+const nomeComparavel = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
+async function ligarEstoquePorNome() {
+  if (!mongoPronto()) return [];
+  try {
+    const todos = await EstoqueDB.find({ ativo: { $ne: false } }).lean();
+    const ocupados = new Set(todos.flatMap(e => (e.cardapioNomes || []).map(nomeComparavel)));
+    const ligados = [];
+    for (const e of todos) {
+      if ((e.cardapioNomes || []).length) continue;
+      const item = CARDAPIO.find(c => nomeComparavel(c.nome) === nomeComparavel(e.nome));
+      if (!item || ocupados.has(nomeComparavel(item.nome))) continue;
+      const r = await EstoqueDB.updateOne({ _id: e._id, $or: [{ cardapioNomes: { $size: 0 } }, { cardapioNomes: { $exists: false } }] }, { $set: { cardapioNomes: [item.nome] } });
+      if (r.modifiedCount) { ocupados.add(nomeComparavel(item.nome)); ligados.push(`${e.nome} -> ${item.nome}`); }
+    }
+    if (ligados.length) console.log("Estoque ligado ao cardápio pelo nome:", ligados.join("; "));
+    return ligados;
+  } catch (e) { console.error("Erro ao ligar estoque pelo nome:", e.message); return []; }
+}
 
 // Atualiza o vínculo estoque->cardápio quando o item muda de nome (ou some)
 async function renomearNoEstoque(nomeAntigo, nomeNovo) {
@@ -2647,6 +2672,7 @@ app.post("/estoque", authMiddleware(["dono"]), async (req, res) => {
       precoVendaAtual: numOr(precoVendaAtual, 0, LIMITES_ESTOQUE.precoVendaAtual),
       ativo: true,
     });
+    if (!item.cardapioNomes.length && (await ligarEstoquePorNome()).length) return res.status(201).json(await EstoqueDB.findById(item._id).lean());
     res.status(201).json(item);
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
@@ -2719,6 +2745,7 @@ app.put("/estoque/:id", authMiddleware(["dono"]), async (req, res) => {
   try {
     const item = await EstoqueDB.findByIdAndUpdate(req.params.id, sanitizarEstoque(req.body), { new: true, runValidators: true }).lean();
     if (!item) return res.status(404).json({ erro: "Item não encontrado" });
+    if (!(item.cardapioNomes || []).length && (await ligarEstoquePorNome()).length) return res.json(await EstoqueDB.findById(item._id).lean());
     res.json(item);
   } catch (e) { res.status(500).json({ erro: e.message }); }
 });
