@@ -604,10 +604,19 @@ function Cardapio({ cardapio, onReload }) {
   async function salvarEdicao(item) {
     // Campo de preço apagado virava NaN e o item saía "R$ NaN" no cardápio
     if (!String(item.nome || "").trim()) return alert("O nome do item não pode ficar em branco.");
-    if (!Number.isFinite(Number(item.preco)) || Number(item.preco) < 0) return alert("Informe um preço válido.");
+    // Os preços vêm da máscara ("R$ 4,50"). Antes o campo numérico lia a cada
+    // tecla e a vírgula sumia: "4,50" virava 4 (queixa do suco de laranja, 21/10).
+    if (String(item.preco ?? "").trim() === "") return alert("Informe o preço.");
+    const preco = parseMoedaGlobal(item.preco);
+    if (!Number.isFinite(preco) || preco < 0) return alert("Informe um preço válido.");
     setSaving(true);
     // Variação em branco é rascunho do formulário, não erro: some no salvamento
-    const limpo = { ...item, tempoPreparo: Number.isFinite(Number(item.tempoPreparo)) ? Number(item.tempoPreparo) : 10, variacoes: (item.variacoes || []).filter(v => String(v.nome || "").trim() !== "") };
+    const limpo = {
+      ...item, preco,
+      precoPromocional: String(item.precoPromocional ?? "").trim() === "" || parseMoedaGlobal(item.precoPromocional) <= 0 ? null : parseMoedaGlobal(item.precoPromocional),
+      tempoPreparo: Number.isFinite(Number(item.tempoPreparo)) ? Number(item.tempoPreparo) : 10,
+      variacoes: (item.variacoes || []).filter(v => String(v.nome || "").trim() !== "").map(v => ({ ...v, preco: parseMoedaGlobal(v.preco) })),
+    };
     try {
       const r = await authFetch(BACKEND_URL + "/cardapio/" + item.id, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(limpo),
@@ -631,7 +640,7 @@ function Cardapio({ cardapio, onReload }) {
     if (!novoItem.categoria.trim() || !novoItem.nome.trim() || !novoItem.preco) return alert("Preencha categoria, nome e preço.");
     setSaving(true);
     try {
-      const r = await authFetch(BACKEND_URL + "/cardapio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novoItem, preco: parseFloat(novoItem.preco), tempoPreparo: parseInt(novoItem.tempoPreparo) }) });
+      const r = await authFetch(BACKEND_URL + "/cardapio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...novoItem, preco: parseMoedaGlobal(novoItem.preco), tempoPreparo: parseInt(novoItem.tempoPreparo) }) });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         alert("Nao foi possivel adicionar: " + (d.erro || ("erro " + r.status)));
@@ -665,7 +674,7 @@ function Cardapio({ cardapio, onReload }) {
             <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Nome *</div><input value={novoItem.nome} onChange={e => setNovoItem(p => ({ ...p, nome: e.target.value }))} placeholder="Ex: Cordeiro" style={inputStyle} /></div>
           </div>
           <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Preço (R$) *</div><input type="number" step="0.50" value={novoItem.preco} onChange={e => setNovoItem(p => ({ ...p, preco: e.target.value }))} style={inputStyle} /></div>
+            <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Preço (R$) *</div><InputDinheiro value={novoItem.preco} onChange={v => setNovoItem(p => ({ ...p, preco: v }))} style={inputStyle} /></div>
             <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>⏱️ Preparo (min)</div><input type="number" value={novoItem.tempoPreparo} onChange={e => setNovoItem(p => ({ ...p, tempoPreparo: e.target.value }))} style={inputStyle} /></div>
             <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Obs.</div><input value={novoItem.obs} onChange={e => setNovoItem(p => ({ ...p, obs: e.target.value }))} style={inputStyle} /></div>
           </div>
@@ -693,14 +702,14 @@ function Cardapio({ cardapio, onReload }) {
                 <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Categoria</div><input value={editando.categoria} onChange={e => setEditando(p => ({ ...p, categoria: e.target.value }))} style={inputStyle} /></div>
               </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Preço (R$)</div><input type="number" step="0.50" value={editando.preco} onChange={e => setEditando(p => ({ ...p, preco: parseFloat(e.target.value) }))} style={inputStyle} /></div>
+                <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Preço (R$)</div><InputDinheiro value={editando.preco} onChange={v => setEditando(p => ({ ...p, preco: v }))} style={inputStyle} /></div>
                 <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>⏱️ Preparo (min)</div><input type="number" value={editando.tempoPreparo} onChange={e => setEditando(p => ({ ...p, tempoPreparo: parseInt(e.target.value) }))} style={inputStyle} /></div>
                 <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Obs.</div><input value={editando.obs || ""} onChange={e => setEditando(p => ({ ...p, obs: e.target.value }))} style={inputStyle} /></div>
               </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>🎉 Preço promocional (modo evento)</div>
-                  <input type="number" step="0.50" value={editando.precoPromocional || ""} onChange={e => setEditando(p => ({ ...p, precoPromocional: e.target.value === "" ? null : parseFloat(e.target.value) }))} placeholder="Deixe vazio para não entrar no evento" style={inputStyle} />
+                  <InputDinheiro value={editando.precoPromocional || ""} onChange={v => setEditando(p => ({ ...p, precoPromocional: v }))} placeholder="Deixe vazio para não entrar no evento" style={inputStyle} />
                 </div>
               </div>
 
@@ -727,15 +736,15 @@ function Cardapio({ cardapio, onReload }) {
                     <input value={v.nome} placeholder="Picanha"
                       onChange={e => setEditando(p => ({ ...p, variacoes: (p.variacoes || []).map((x, i) => i === idx ? { ...x, nome: e.target.value } : x) }))}
                       style={{ ...inputStyle, fontSize: 12, flex: 2 }} />
-                    <input type="number" step="0.50" value={v.preco} placeholder="0.00"
-                      onChange={e => setEditando(p => ({ ...p, variacoes: (p.variacoes || []).map((x, i) => i === idx ? { ...x, preco: e.target.value === "" ? "" : parseFloat(e.target.value) } : x) }))}
+                    <InputDinheiro value={v.preco}
+                      onChange={t => setEditando(p => ({ ...p, variacoes: (p.variacoes || []).map((x, i) => i === idx ? { ...x, preco: t } : x) }))}
                       style={{ ...inputStyle, fontSize: 12, flex: 1 }} />
                     <button onClick={() => setEditando(p => ({ ...p, variacoes: (p.variacoes || []).filter((_, i) => i !== idx) }))}
                       style={{ background: "#fee2e2", color: "#ef4444", border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 12, cursor: "pointer", fontWeight: 700 }}>✕</button>
                   </div>
                 ))}
 
-                <button onClick={() => setEditando(p => ({ ...p, variacoes: [...(p.variacoes || []), { nome: "", preco: p.preco || 0 }] }))}
+                <button onClick={() => setEditando(p => ({ ...p, variacoes: [...(p.variacoes || []), { nome: "", preco: p.preco || "" }] }))}
                   style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 8, padding: "8px 12px", fontSize: 12, cursor: "pointer", fontWeight: 700 }}>
                   + Variação
                 </button>
@@ -788,7 +797,7 @@ function Cardapio({ cardapio, onReload }) {
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   <button onClick={() => toggleAtivo(item)} title={item.ativo ? "Marcar em falta" : "Voltar a vender"} style={{ background: item.ativo ? "#d1fae5" : "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{item.ativo ? "✅" : "❌"}</button>
-                  <button onClick={() => setEditando({ ...item })} title="Editar" style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
+                  <button onClick={() => setEditando({ ...item, preco: moedaDeNumero(item.preco), precoPromocional: item.precoPromocional > 0 ? moedaDeNumero(item.precoPromocional) : "", variacoes: (item.variacoes || []).map(v => ({ ...v, preco: moedaDeNumero(v.preco) })) })} title="Editar" style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
                   <button onClick={() => deletarItem(item.id)} title="Excluir" style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>🗑️</button>
                 </div>
               </div>
