@@ -2529,7 +2529,10 @@ function InputDinheiro({ value, onChange, style, inputRef, ...rest }) {
 }
 const moedaDeNumero = (n) => (n == null || n === "" ? "" : mascaraMoeda(String(Math.round(Number(n) * 100))));
 // Quantidade de estoque segura para mostrar: nunca "null", "NaN" ou "Infinity"
-const qtdNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+// Arredonda em 3 casas: somas de 0,4 L de chopp mostravam "21.200000000000006 L"
+const qtdNum = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 1000) / 1000 : 0);
+// Quantidade para mostrar, no formato brasileiro ("21,2")
+const qtdBR = (v) => String(qtdNum(v)).replace(".", ",");
 // Porcentagem digitada com vírgula ("33,5") ou ponto -> número. parseFloat
 // sozinho parava na vírgula e "33,5" virava 33.
 const parsePct = (s) => { const n = parseFloat(String(s ?? "").replace(",", ".")); return Number.isFinite(n) ? n : 0; };
@@ -3008,8 +3011,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
       const u = f.item.tipo === "chopp" ? "L" : f.item.unidade;
       const antes = qtdNum(f.item.quantidade);
       showMsg(antes < q
-        ? `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. O estoque tinha só ${antes} ${u} e ficou em 0 — confira se as entradas foram lançadas.`
-        : `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. Estoque: ${antes} → ${qtdNum(d.quantidade)} ${u}.`);
+        ? `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. O estoque tinha só ${qtdBR(antes)} ${u} e ficou em 0 — confira se as entradas foram lançadas.`
+        : `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. Estoque: ${qtdBR(antes)} → ${qtdBR(d.quantidade)} ${u}.`);
       const id = f.item._id;
       setPerdaForm(null); carregar();
       if (selItem?._id === id) carregarMovs(id);
@@ -3167,7 +3170,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
               {catsEstoque.filter(c=>c!=="todos").map(c=>(
                 <optgroup key={c} label={c}>
                   {itens.filter(i=>categoriaDe(i)===c).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),"pt-BR",{sensitivity:"base"})).map(i=>(
-                    <option key={i._id} value={i._id}>{i.nome} ({qtdNum(i.quantidade)} {i.tipo==="chopp"?"L":i.unidade})</option>
+                    <option key={i._id} value={i._id}>{i.nome} ({qtdBR(i.quantidade)} {i.tipo==="chopp"?"L":i.unidade})</option>
                   ))}
                 </optgroup>
               ))}
@@ -3367,7 +3370,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
               <div>
                 <div style={{fontWeight:800,fontSize:18,color:"#1a1a1a"}}>{it.nome}</div>
-                <div style={{fontSize:12,color:"#888",marginTop:2}}>{it.tipo==="chopp"?"🍺 Chopp":"📦"} · {it.unidade} · Mín: {qtdNum(it.minimo)} · 🏷️ {categoriaDe(it)}</div>
+                <div style={{fontSize:12,color:"#888",marginTop:2}}>{it.tipo==="chopp"?"🍺 Chopp":"📦"} · {it.unidade} · Mín: {qtdBR(it.minimo)} · 🏷️ {categoriaDe(it)}</div>
               </div>
               <div style={{display:"flex",gap:6}}>
                 <button onClick={()=>setEditando({...it,cardapioNomes:it.cardapioNomes?.join(", ")||""})} style={{background:"#dbeafe",border:"none",borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:14}}>✏️</button>
@@ -3380,7 +3383,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
               <div style={{marginBottom:14}}>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:6}}>
                   <span style={{fontWeight:600}}>🍺 Barril</span>
-                  <span style={{fontWeight:800,color:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981"}}>{qtdNum(it.quantidade).toFixed(1)}L / {it.capacidadeBarril}L</span>
+                  <span style={{fontWeight:800,color:pct<20?"#ef4444":pct<50?"#f59e0b":"#10b981"}}>{qtdNum(it.quantidade).toFixed(1).replace(".", ",")}L / {it.capacidadeBarril}L</span>
                 </div>
                 <div style={{height:20,background:"#f0f0f0",borderRadius:10,overflow:"hidden",position:"relative"}}>
                   <div style={{height:"100%",width:pct+"%",background:pct<20?"linear-gradient(90deg,#ef4444,#dc2626)":pct<50?"linear-gradient(90deg,#f59e0b,#d97706)":"linear-gradient(90deg,#10b981,#059669)",borderRadius:10,transition:"width 0.6s"}}/>
@@ -3392,8 +3395,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
             {/* Quantidade atual */}
             <div style={{display:"flex",gap:10,marginBottom:14}}>
-              <Metrica icon="📦" label="Em estoque" valor={qtdNum(it.quantidade)+(it.tipo==="chopp"?" L":" "+it.unidade)} cor={qtdNum(it.quantidade)<=qtdNum(it.minimo)?"#ef4444":"#10b981"}/>
-              <Metrica icon="⚠️" label="Mínimo" valor={qtdNum(it.minimo)+" "+it.unidade} cor="#f59e0b"/>
+              <Metrica icon="📦" label="Em estoque" valor={qtdBR(it.quantidade)+(it.tipo==="chopp"?" L":" "+it.unidade)} cor={qtdNum(it.quantidade)<=qtdNum(it.minimo)?"#ef4444":"#10b981"}/>
+              <Metrica icon="⚠️" label="Mínimo" valor={qtdBR(it.minimo)+" "+it.unidade} cor="#f59e0b"/>
             </div>
 
             {it.cardapioNomes?.length>0&&(
@@ -3454,7 +3457,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
         {ajusteForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #3b82f6",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>🔧 Ajuste — {ajusteForm.nome}</div>
-            <div style={{fontSize:12,color:"#888",marginBottom:10}}>Estoque atual: <strong>{qtdNum(ajusteForm.quantidade)} {ajusteForm.unidade}</strong>. Informe a quantidade real contada no inventário.</div>
+            <div style={{fontSize:12,color:"#888",marginBottom:10}}>Estoque atual: <strong>{qtdBR(ajusteForm.quantidade)} {ajusteForm.unidade}</strong>. Informe a quantidade real contada no inventário.</div>
             <div style={{marginBottom:8}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade real ({ajusteForm.unidade})</div><input type="number" step="0.1" value={ajusteQtd} onChange={e=>setAjusteQtd(e.target.value)} style={inp}/></div>
             <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Motivo</div><input value={ajusteMotivo} onChange={e=>setAjusteMotivo(e.target.value)} style={inp}/></div>
             <div style={{display:"flex",gap:8}}>
@@ -3522,7 +3525,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
             {criticos.map(i=>(
               <div key={i._id} onClick={()=>setSelItem(i)} style={{fontSize:12,color:"#991b1b",cursor:"pointer",padding:"3px 0",display:"flex",justifyContent:"space-between"}}>
                 <span>⚠️ {i.nome}</span>
-                <span style={{fontWeight:700}}>{qtdNum(i.quantidade)} {i.unidade} (mín: {qtdNum(i.minimo)})</span>
+                <span style={{fontWeight:700}}>{qtdBR(i.quantidade)} {i.unidade} (mín: {qtdBR(i.minimo)})</span>
               </div>
             ))}
           </div>
@@ -3695,8 +3698,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
                   <div style={{fontSize:11,color:"#888",marginTop:1}}>{it.cardapioNomes?.length>0?`🔗 ${it.cardapioNomes.join(", ")}`:"Sem vínculo com cardápio"}</div>
                 </div>
                 <div style={{textAlign:"right"}}>
-                  <div style={{fontWeight:800,fontSize:15,color:critico?"#ef4444":it.tipo==="chopp"?"#d97706":"#10b981"}}>{qtdNum(it.quantidade)}{it.tipo==="chopp"?`L`:` ${it.unidade}`}</div>
-                  <div style={{fontSize:10,color:"#aaa"}}>mín: {qtdNum(it.minimo)}</div>
+                  <div style={{fontWeight:800,fontSize:15,color:critico?"#ef4444":it.tipo==="chopp"?"#d97706":"#10b981"}}>{qtdBR(it.quantidade)}{it.tipo==="chopp"?`L`:` ${it.unidade}`}</div>
+                  <div style={{fontSize:10,color:"#aaa"}}>mín: {qtdBR(it.minimo)}</div>
                   {critico&&<div style={{fontSize:9,fontWeight:700,color:"#ef4444"}}>⚠️ CRÍTICO</div>}
                 </div>
               </div>
