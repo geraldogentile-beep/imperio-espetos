@@ -5143,6 +5143,7 @@ function RelatorioEquipe() {
   const [erro, setErro] = useState("");
   const [aberta, setAberta] = useState(null);            // pessoa com lançamentos abertos
   const [valores, setValores] = useState({});            // _id -> texto (correção à mão)
+  const [obsEdit, setObsEdit] = useState({});            // _id -> observação sendo escrita
   const [cfg, setCfg] = useState(null);
   const [verRegras, setVerRegras] = useState(false);
   const [novoDono, setNovoDono] = useState("");
@@ -5192,6 +5193,16 @@ function RelatorioEquipe() {
       const r = await authFetch(BACKEND_URL + "/consumo-interno/recalcular", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: alvos.map(c => c._id) }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { alert(d.erro || "Não foi possível atualizar."); return; }
+      carregar();
+    } catch { alert("Sem conexão."); }
+  }
+  async function salvarObs(c) {
+    const observacao = String(obsEdit[c._id] ?? "").trim();
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id + "/observacao", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ observacao }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.erro || "Não foi possível salvar a observação."); return; }
+      setObsEdit(o => { const n = { ...o }; delete n[c._id]; return n; });
       carregar();
     } catch { alert("Sem conexão."); }
   }
@@ -5304,7 +5315,21 @@ function RelatorioEquipe() {
                     <div style={{ flex: "1 1 160px", minWidth: 0 }}>
                       <div style={{ color: "#555", fontSize: 11.5, fontWeight: 700 }}>📅 {dataHora(c.data)}</div>
                       <div style={{ color: "#444" }}>{itensTxt(c)}</div>
-                      {c.observacao && <div style={{ color: "#7b1a0a", fontSize: 11.5 }}>📝 {c.observacao}</div>}
+                      {obsEdit[c._id] !== undefined ? (
+                        <div style={{ display: "flex", gap: 4, marginTop: 3 }}>
+                          <input value={obsEdit[c._id]} autoFocus maxLength={300} placeholder="ex.: consumo de sábado 17/10"
+                            onChange={e => setObsEdit(o => ({ ...o, [c._id]: e.target.value }))}
+                            onKeyDown={e => { if (e.key === "Enter") salvarObs(c); if (e.key === "Escape") setObsEdit(o => { const n = { ...o }; delete n[c._id]; return n; }); }}
+                            style={{ flex: 1, minWidth: 0, padding: "5px 8px", border: "1.5px solid #7b1a0a", borderRadius: 7, fontSize: 12 }} />
+                          <button onClick={() => salvarObs(c)} style={{ background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 7, padding: "5px 9px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>OK</button>
+                          <button onClick={() => setObsEdit(o => { const n = { ...o }; delete n[c._id]; return n; })} title="Cancelar" style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 12 }}>×</button>
+                        </div>
+                      ) : (
+                        <div onClick={() => setObsEdit(o => ({ ...o, [c._id]: c.observacao || "" }))} title="Escrever ou corrigir a observação"
+                          style={{ color: c.observacao ? "#7b1a0a" : "#aaa", fontSize: 11.5, cursor: "pointer", marginTop: 2 }}>
+                          📝 {c.observacao || "adicionar observação"} <span style={{ color: "#bbb" }}>✏️</span>
+                        </div>
+                      )}
                       {c.tipo === "funcionario" && c.valor !== null && <div style={{ color: "#888", fontSize: 11 }}>pela regra seria {fmtBR(c.valorRegra)}</div>}
                       {c.tipo === "dono" && c.custoHoje != null && Math.abs(c.custoHoje - c.custo) >= 0.01 && <div style={{ color: "#991b1b", fontSize: 11.5, fontWeight: 700 }}>gravado {fmtBR(c.custo)} · pelo custo de hoje {fmtBR(c.custoHoje)}</div>}
                       {c.tipo === "dono" && c.custoSuspeito > 0 && <div style={{ color: "#991b1b", fontSize: 11 }}>🚨 custo acima do preço do cardápio: confira o custo no Estoque</div>}

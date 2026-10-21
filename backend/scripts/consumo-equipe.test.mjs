@@ -136,6 +136,12 @@ console.log("\n=== 8b) observações: da mesa e de cada item ===");
   ok(c.status === 201 && l.observacao === "consumo de sábado 17/10", "a observação geral fica guardada no lançamento");
   ok(l.itens.length === 2 && l.itens.map(i => i.nota).join("|") === "sem sal|bem passado", "cada item mantém a sua observação");
   ok(r.porPessoa.find(p => p.pessoa === "Leonardo").produtos.find(x => x.nome === "Alcatra").qtd === 2, "no resumo por pessoa os dois somam (2x Alcatra)");
+  // Observação editável depois, inclusive em lançamento de dono (o valor dele não se edita, a observação sim)
+  const ed = await api("PATCH", `/consumo-interno/${c.corpo._id}/observacao`, { observacao: "  foi no domingo 18/10  " });
+  const l2 = (await api("GET", "/consumo-interno?mes=" + MES)).corpo.lista.find(x => x._id === c.corpo._id);
+  ok(ed.status === 200 && l2.observacao === "foi no domingo 18/10" && l2.tipo === "dono", "dono: observação corrigida depois");
+  ok((await api("PATCH", `/consumo-interno/${c.corpo._id}/observacao`, { observacao: "" })).corpo.observacao === "", "apagar a observação");
+  ok((await api("PATCH", `/consumo-interno/${c.corpo._id}/observacao`, {}, tokenGarcom)).status === 403, "garçom não anota");
   await api("DELETE", "/consumo-interno/" + c.corpo._id);
 }
 

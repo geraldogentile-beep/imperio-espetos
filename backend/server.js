@@ -3304,6 +3304,23 @@ app.post("/consumo-interno/recalcular", authMiddleware(["dono"]), async (req, re
   }
 });
 
+// PATCH /consumo-interno/:id/observacao { observacao } — anotação livre em
+// qualquer lançamento (dono ou funcionário), inclusive nos antigos, gravados
+// antes de existir observação (pedido da dona, 21/10/2026). Vazio apaga.
+app.patch("/consumo-interno/:id/observacao", authMiddleware(["dono"]), async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
+  if (typeof req.body?.observacao !== "string") return res.status(400).json({ erro: "Informe a observação" });
+  const observacao = req.body.observacao.trim().slice(0, 300);
+  try {
+    const c = await ConsumoInternoDB.findByIdAndUpdate(req.params.id, { $set: { observacao } }, { new: true }).lean();
+    if (!c) return res.status(404).json({ erro: "Lançamento não encontrado" });
+    res.json({ ok: true, observacao: c.observacao || "" });
+  } catch (e) {
+    console.error("Erro ao salvar observação do consumo:", e.message);
+    res.status(500).json({ erro: "Erro ao salvar a observação" });
+  }
+});
+
 app.patch("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
   const v = req.body?.valor;
