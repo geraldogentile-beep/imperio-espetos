@@ -5171,13 +5171,20 @@ function RelatorioEquipe() {
 
   const titulo = rotuloPeriodo(modo, ref);
   const regraTxt = (tipo) => tipo === "dono" ? "preço de custo" : `cardápio − ${fmtBR(cfg?.descontoEspeto ?? 2)} por espeto`;
+  const lancamentosDe = (pp) => (rel?.lista || []).filter(c => (c.pessoa || "Sem nome").trim().toLowerCase() === pp.pessoa.toLowerCase());
+  const dataHora = (d) => new Date(d).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  // Dias em que a pessoa consumiu, do mais antigo ao mais novo ("15/10, 17/10")
+  const diasDe = (pp) => [...new Set(lancamentosDe(pp).slice().sort((a, b) => new Date(a.data) - new Date(b.data)).map(c => new Date(c.data).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })))];
   function imprimir() {
     if (!rel) return;
     const win = abrirJanelaImpressao("width=800,height=900");
     if (!win) return;
-    const linhas = rel.porPessoa.map(pp => `<tr><td><b>${pp.pessoa}</b><br><span style="color:#666;font-size:11px">${pp.tipo === "dono" ? "Dono · custo" : "Funcionário · " + regraTxt("funcionario")}</span></td><td>${pp.produtos.map(x => x.qtd + "x " + x.nome).join(", ")}</td><td class="n"><b>${fmtBR(pp.total)}</b></td></tr>`).join("");
+    // Cada pessoa com o total e, embaixo, cada consumo com a data (pedido da
+    // dona, 21/10/2026: a data só aparecia abrindo o cartão ou na planilha)
+    const linhas = rel.porPessoa.map(pp => `<tr class="p"><td><b>${pp.pessoa}</b><br><span style="color:#666;font-size:11px">${pp.tipo === "dono" ? "Dono · custo" : "Funcionário · " + regraTxt("funcionario")}</span></td><td>${pp.produtos.map(x => x.qtd + "x " + x.nome).join(", ")}</td><td class="n"><b>${fmtBR(pp.total)}</b></td></tr>` +
+      lancamentosDe(pp).map(c => `<tr class="l"><td>${dataHora(c.data)}</td><td>${c.itens.map(i => i.qty + "x " + i.nome).join(", ")}</td><td class="n">${fmtBR(c.valorEfetivo)}</td></tr>`).join("")).join("");
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Equipe ${titulo}</title>
-      <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{padding:6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}td.n,th.n{text-align:right;white-space:nowrap}@media print{button{display:none}}</style></head><body>
+      <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{padding:6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}td.n,th.n{text-align:right;white-space:nowrap}tr.p td{border-top:2px solid #999;background:#f6f6f6}tr.l td{color:#555;font-size:12px;border-bottom:1px dotted #e5e5e5}tr.l td:first-child{padding-left:16px;white-space:nowrap}@media print{button{display:none}}</style></head><body>
       <h1>Império dos Espetos — Consumo da equipe</h1><div style="color:#666">${titulo} · fora do caixa · gerado em ${new Date().toLocaleString("pt-BR")}</div>
       <p>Donos (preço de custo): <b>${fmtBR(rel.donos.total)}</b> · Funcionários (a cobrar): <b>${fmtBR(rel.funcionarios.total)}</b></p>
       <table><tr><th>Nome</th><th>Consumo</th><th class="n">Valor</th></tr>${linhas}</table>
@@ -5245,7 +5252,7 @@ function RelatorioEquipe() {
           )}
           {rel.lancamentos === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>Nenhum consumo da equipe {modo === "semana" ? "nesta semana" : modo === "ano" ? "neste ano" : "neste mês"}. Lance na mesa "Funcionários" do salão.</div>}
           {rel.porPessoa.map(pp => {
-            const minhas = rel.lista.filter(c => (c.pessoa || "Sem nome").trim().toLowerCase() === pp.pessoa.toLowerCase());
+            const minhas = lancamentosDe(pp);
             const aberto = aberta === pp.pessoa;
             return (
               <div key={pp.pessoa} style={card}>
@@ -5255,11 +5262,12 @@ function RelatorioEquipe() {
                 </div>
                 <div style={{ fontSize: 11.5, color: "#888", marginTop: 2 }}>{pp.itens} {pp.itens === 1 ? "item" : "itens"} em {pp.vezes} {pp.vezes === 1 ? "vez" : "vezes"} · {regraTxt(pp.tipo)}{pp.editados > 0 ? ` · ${pp.editados} com valor corrigido` : ""}{pp.tipo === "dono" && pp.semCusto > 0 ? " · ⚠️ itens sem custo" : ""}</div>
                 <div style={{ fontSize: 12.5, color: "#555", marginTop: 6, lineHeight: 1.5 }}>{pp.produtos.map(x => `${x.qtd}x ${x.nome}`).join(", ")}</div>
+                <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>📅 {diasDe(pp).length === 1 ? "Dia" : "Dias"}: <strong>{diasDe(pp).join(", ")}</strong></div>
                 <button onClick={() => setAberta(aberto ? null : pp.pessoa)} style={{ marginTop: 6, background: "none", border: "none", color: "#7b1a0a", fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0 }}>{aberto ? "▴ Esconder lançamentos" : (minhas.length === 1 ? "▾ Ver o lançamento" : `▾ Ver os ${minhas.length} lançamentos`)}</button>
                 {aberto && minhas.map(c => (
                   <div key={c._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid #f3f3f3", fontSize: 12.5, flexWrap: "wrap" }}>
                     <div style={{ flex: "1 1 160px", minWidth: 0 }}>
-                      <div style={{ color: "#888", fontSize: 11 }}>{new Date(c.data).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
+                      <div style={{ color: "#555", fontSize: 11.5, fontWeight: 700 }}>📅 {dataHora(c.data)}</div>
                       <div style={{ color: "#444" }}>{c.itens.map(i => `${i.qty}x ${i.nome}`).join(", ")}</div>
                       {c.tipo === "funcionario" && c.valor !== null && <div style={{ color: "#888", fontSize: 11 }}>pela regra seria {fmtBR(c.valorRegra)}</div>}
                       {c.tipo === "dono" && c.custoHoje != null && Math.abs(c.custoHoje - c.custo) >= 0.01 && <div style={{ color: "#991b1b", fontSize: 11.5, fontWeight: 700 }}>gravado {fmtBR(c.custo)} · pelo custo de hoje {fmtBR(c.custoHoje)}</div>}
