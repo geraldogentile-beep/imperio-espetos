@@ -5144,6 +5144,8 @@ function RelatorioEquipe() {
   const [aberta, setAberta] = useState(null);            // pessoa com lançamentos abertos
   const [valores, setValores] = useState({});            // _id -> texto (correção à mão)
   const [obsEdit, setObsEdit] = useState({});            // _id -> observação sendo escrita
+  // Baixa de pagamento (pedido da Daiane, 22/10/2026): { chave, ids, rotulo, forma }
+  const [baixa, setBaixa] = useState(null);
   const [cfg, setCfg] = useState(null);
   const [verRegras, setVerRegras] = useState(false);
   const [novoDono, setNovoDono] = useState("");
@@ -5206,7 +5208,24 @@ function RelatorioEquipe() {
       carregar();
     } catch { alert("Sem conexão."); }
   }
+  async function darBaixa() {
+    if (!baixa?.forma) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/baixa", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: baixa.ids, forma: baixa.forma }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.erro || "Não foi possível dar baixa."); return; }
+      setBaixa(null); carregar();
+    } catch { alert("Sem conexão."); }
+  }
+  async function desfazerBaixa(c) {
+    if (!window.confirm(`Desfazer a baixa do consumo de ${c.pessoa || "sem nome"} (${dataHora(c.data)}, ${fmtBR(c.valorEfetivo)})? Ele volta a ficar em aberto.`)) return;
+    try {
+      const r = await authFetch(BACKEND_URL + "/consumo-interno/baixa", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [c._id], pago: false }) });
+      if (r.ok) carregar(); else alert("Não foi possível desfazer a baixa.");
+    } catch { alert("Sem conexão."); }
+  }
   async function desfazer(c) {
+    if (c.pagoEm) return alert("Esse consumo já está pago. Desfaça a baixa antes de desfazer o consumo.");
     if (!window.confirm(`Desfazer o consumo de ${c.pessoa || "sem nome"} (${c.itens.map(i => i.qty + "x " + i.nome).join(", ")})? Os itens voltam para o estoque.`)) return;
     try {
       const r = await authFetch(BACKEND_URL + "/consumo-interno/" + c._id, { method: "DELETE" });
@@ -5219,6 +5238,23 @@ function RelatorioEquipe() {
   const lancamentosDe = (pp) => (rel?.lista || []).filter(c => (c.pessoa || "Sem nome").trim().toLowerCase() === pp.pessoa.toLowerCase());
   const dataHora = (d) => new Date(d).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   const itensTxt = (c) => c.itens.map(i => `${i.qty}x ${i.nome}${i.nota ? ` (${i.nota})` : ""}`).join(", ");
+  const FORMAS_TXT = { dinheiro: "Dinheiro", pix: "Pix", cartao: "Cartão", "desconto no salario": "Desconto no salário", outro: "Outro" };
+  const pagoTxt = (c) => `pago em ${new Date(c.pagoEm).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} · ${FORMAS_TXT[c.formaPagamento] || c.formaPagamento}`;
+  const escolhaBaixa = () => (
+    <div style={{ marginTop: 8, padding: 10, border: "1.5px solid #10b981", borderRadius: 10, background: "#f0fdf4" }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#065f46", marginBottom: 6 }}>✅ Dar baixa: {baixa.rotulo}</div>
+      <div style={{ fontSize: 11.5, color: "#555", marginBottom: 6 }}>Como foi pago?</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {Object.entries(FORMAS_TXT).map(([k, l]) => (
+          <button key={k} onClick={() => setBaixa(b => ({ ...b, forma: k }))} style={{ padding: "7px 11px", borderRadius: 20, border: `2px solid ${baixa.forma === k ? "#10b981" : "#e0e0e0"}`, background: baixa.forma === k ? "#d1fae5" : "#fff", color: baixa.forma === k ? "#065f46" : "#555", fontWeight: baixa.forma === k ? 700 : 500, fontSize: 12.5, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button onClick={darBaixa} disabled={!baixa.forma} style={{ flex: 1, background: baixa.forma ? "#065f46" : "#9ca3af", color: "#fff", border: "none", borderRadius: 8, padding: "9px 0", fontWeight: 700, fontSize: 13, cursor: baixa.forma ? "pointer" : "default" }}>Confirmar baixa</button>
+        <button onClick={() => setBaixa(null)} style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 8, padding: "9px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+      </div>
+    </div>
+  );
   // Dias em que a pessoa consumiu, do mais antigo ao mais novo ("15/10, 17/10")
   const diasDe = (pp) => [...new Set(lancamentosDe(pp).slice().sort((a, b) => new Date(a.data) - new Date(b.data)).map(c => new Date(c.data).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })))];
   function imprimir() {
@@ -5227,12 +5263,12 @@ function RelatorioEquipe() {
     if (!win) return;
     // Cada pessoa com o total e, embaixo, cada consumo com a data (pedido da
     // dona, 21/10/2026: a data só aparecia abrindo o cartão ou na planilha)
-    const linhas = rel.porPessoa.map(pp => `<tr class="p"><td><b>${pp.pessoa}</b><br><span style="color:#666;font-size:11px">${pp.tipo === "dono" ? "Dono · custo" : "Funcionário · " + regraTxt("funcionario")}</span></td><td>${pp.produtos.map(x => x.qtd + "x " + x.nome).join(", ")}</td><td class="n"><b>${fmtBR(pp.total)}</b></td></tr>` +
-      lancamentosDe(pp).map(c => `<tr class="l"><td>${dataHora(c.data)}</td><td>${itensTxt(c)}${c.observacao ? `<br><i>Obs.: ${c.observacao.replace(/</g, "&lt;")}</i>` : ""}</td><td class="n">${fmtBR(c.valorEfetivo)}</td></tr>`).join("")).join("");
+    const linhas = rel.porPessoa.map(pp => `<tr class="p"><td><b>${pp.pessoa}</b><br><span style="color:#666;font-size:11px">${pp.tipo === "dono" ? "Dono · custo" : "Funcionário · " + regraTxt("funcionario")}</span></td><td>${pp.produtos.map(x => x.qtd + "x " + x.nome).join(", ")}</td><td class="n"><b>${fmtBR(pp.total)}</b><br><span style="font-size:11px;color:#555">em aberto ${fmtBR(pp.emAberto || 0)}<br>pago ${fmtBR(pp.pago || 0)}</span></td></tr>` +
+      lancamentosDe(pp).map(c => `<tr class="l"><td>${dataHora(c.data)}</td><td>${itensTxt(c)}${c.observacao ? `<br><i>Obs.: ${c.observacao.replace(/</g, "&lt;")}</i>` : ""}</td><td class="n">${fmtBR(c.valorEfetivo)}<br><span style="font-size:11px">${c.pagoEm ? "✓ " + pagoTxt(c) : "em aberto"}</span></td></tr>`).join("")).join("");
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Equipe ${titulo}</title>
       <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{padding:6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}td.n,th.n{text-align:right;white-space:nowrap}tr.p td{border-top:2px solid #999;background:#f6f6f6}tr.l td{color:#555;font-size:12px;border-bottom:1px dotted #e5e5e5}tr.l td:first-child{padding-left:16px;white-space:nowrap}@media print{button{display:none}}</style></head><body>
       <h1>Império dos Espetos — Consumo da equipe</h1><div style="color:#666">${titulo} · fora do caixa · gerado em ${new Date().toLocaleString("pt-BR")}</div>
-      <p>Donos (preço de custo): <b>${fmtBR(rel.donos.total)}</b> · Funcionários (a cobrar): <b>${fmtBR(rel.funcionarios.total)}</b></p>
+      <p>Donos (preço de custo): <b>${fmtBR(rel.donos.total)}</b> · Funcionários (a cobrar): <b>${fmtBR(rel.funcionarios.total)}</b><br>Em aberto: <b>${fmtBR(rel.emAberto || 0)}</b> · Pago: <b>${fmtBR(rel.pagoTotal || 0)}</b></p>
       <table><tr><th>Nome</th><th>Consumo</th><th class="n">Valor</th></tr>${linhas}</table>
       <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
     win.document.close();
@@ -5240,11 +5276,11 @@ function RelatorioEquipe() {
   function baixarCsv() {
     if (!rel) return;
     const num = (v) => (Number(v) || 0).toFixed(2).replace(".", ",");
-    const linhas = [["Consumo da equipe", titulo], [], ["Nome", "Tipo", "Itens", "Consumo", "Valor"],
-      ...rel.porPessoa.map(pp => [pp.pessoa, pp.tipo === "dono" ? "Dono (custo)" : "Funcionário", pp.itens, pp.produtos.map(x => x.qtd + "x " + x.nome).join(", "), num(pp.total)]), [],
+    const linhas = [["Consumo da equipe", titulo], [], ["Nome", "Tipo", "Itens", "Consumo", "Valor", "Em aberto", "Pago"],
+      ...rel.porPessoa.map(pp => [pp.pessoa, pp.tipo === "dono" ? "Dono (custo)" : "Funcionário", pp.itens, pp.produtos.map(x => x.qtd + "x " + x.nome).join(", "), num(pp.total), num(pp.emAberto), num(pp.pago)]), [],
       ["Total donos (custo)", "", "", "", num(rel.donos.total)], ["Total funcionários (a cobrar)", "", "", "", num(rel.funcionarios.total)], [],
-      ["LANÇAMENTOS", "Data", "Tipo", "Itens", "Valor"],
-      ...rel.lista.map(c => [c.pessoa || "Sem nome", new Date(c.data).toLocaleString("pt-BR"), c.tipo === "dono" ? "Dono" : "Funcionário", itensTxt(c) + (c.observacao ? ` | Obs.: ${c.observacao}` : ""), num(c.valorEfetivo)])];
+      ["LANÇAMENTOS", "Data", "Tipo", "Itens", "Valor", "Pagamento"],
+      ...rel.lista.map(c => [c.pessoa || "Sem nome", new Date(c.data).toLocaleString("pt-BR"), c.tipo === "dono" ? "Dono" : "Funcionário", itensTxt(c) + (c.observacao ? ` | Obs.: ${c.observacao}` : ""), num(c.valorEfetivo), c.pagoEm ? pagoTxt(c) : "Em aberto"])];
     const csv = "\ufeff" + linhas.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `equipe-${consultaPeriodo(modo, ref).split("=")[1]}.csv`; a.click();
@@ -5272,6 +5308,7 @@ function RelatorioEquipe() {
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <Metrica icon="👑" label="Donos (custo)" valor={fmtBR(rel.donos.total)} sub={`${rel.donos.pessoas} ${rel.donos.pessoas === 1 ? "pessoa" : "pessoas"}`} cor="#d97706" />
             <Metrica icon="👥" label="Funcionários (a cobrar)" valor={fmtBR(rel.funcionarios.total)} sub={`${rel.funcionarios.pessoas} ${rel.funcionarios.pessoas === 1 ? "pessoa" : "pessoas"}`} cor="#0891b2" />
+            <Metrica icon="⏳" label="Em aberto" valor={fmtBR(rel.emAberto || 0)} sub={`pago ${fmtBR(rel.pagoTotal || 0)}`} cor="#065f46" />
             <Metrica icon="🍢" label="Itens" valor={rel.itensTotal} sub={`${rel.lancamentos} lançamento(s) · fora do caixa`} cor="#7b1a0a" />
           </div>
           {rel.divergentes?.length > 0 && (() => {
@@ -5309,6 +5346,17 @@ function RelatorioEquipe() {
                 <div style={{ fontSize: 11.5, color: "#888", marginTop: 2 }}>{pp.itens} {pp.itens === 1 ? "item" : "itens"} em {pp.vezes} {pp.vezes === 1 ? "vez" : "vezes"} · {regraTxt(pp.tipo)}{pp.editados > 0 ? ` · ${pp.editados} com valor corrigido` : ""}{pp.tipo === "dono" && pp.semCusto > 0 ? " · ⚠️ itens sem custo" : ""}</div>
                 <div style={{ fontSize: 12.5, color: "#555", marginTop: 6, lineHeight: 1.5 }}>{pp.produtos.map(x => `${x.qtd}x ${x.nome}`).join(", ")}</div>
                 <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>📅 {diasDe(pp).length === 1 ? "Dia" : "Dias"}: <strong>{diasDe(pp).join(", ")}</strong></div>
+                <div style={{ fontSize: 12, marginTop: 4, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <span style={{ color: pp.emAberto > 0 ? "#b45309" : "#888" }}>⏳ Em aberto: <strong>{fmtBR(pp.emAberto || 0)}</strong></span>
+                  {pp.pago > 0 && <span style={{ color: "#065f46" }}>✅ Pago: <strong>{fmtBR(pp.pago)}</strong></span>}
+                </div>
+                {minhas.some(c => !c.pagoEm) && baixa?.chave !== pp.pessoa && (
+                  <button onClick={() => { const ids = minhas.filter(c => !c.pagoEm).map(c => c._id); setBaixa({ chave: pp.pessoa, ids, forma: "", rotulo: `${pp.pessoa} — ${ids.length === 1 ? "1 lançamento" : ids.length + " lançamentos"} em aberto, ${fmtBR(pp.emAberto || 0)}` }); }}
+                    style={{ marginTop: 8, width: "100%", background: "#fff", color: "#065f46", border: "1.5px solid #6ee7b7", borderRadius: 9, padding: "8px 0", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+                    ✅ Dar baixa em tudo em aberto ({fmtBR(pp.emAberto || 0)})
+                  </button>
+                )}
+                {baixa?.chave === pp.pessoa && escolhaBaixa()}
                 <button onClick={() => setAberta(aberto ? null : pp.pessoa)} style={{ marginTop: 6, background: "none", border: "none", color: "#7b1a0a", fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0 }}>{aberto ? "▴ Esconder lançamentos" : (minhas.length === 1 ? "▾ Ver o lançamento" : `▾ Ver os ${minhas.length} lançamentos`)}</button>
                 {aberto && minhas.map(c => (
                   <div key={c._id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid #f3f3f3", fontSize: 12.5, flexWrap: "wrap" }}>
@@ -5330,14 +5378,18 @@ function RelatorioEquipe() {
                           📝 {c.observacao || "adicionar observação"} <span style={{ color: "#bbb" }}>✏️</span>
                         </div>
                       )}
+                      {c.pagoEm
+                        ? <div style={{ fontSize: 11.5, color: "#065f46", fontWeight: 700, marginTop: 2 }}>✅ {pagoTxt(c)} <button onClick={() => desfazerBaixa(c)} style={{ background: "none", border: "none", color: "#888", fontSize: 11, cursor: "pointer", padding: 0, marginLeft: 4, textDecoration: "underline" }}>desfazer baixa</button></div>
+                        : <div style={{ fontSize: 11.5, color: "#b45309", marginTop: 2 }}>⏳ Em aberto {baixa?.chave !== c._id && <button onClick={() => setBaixa({ chave: c._id, ids: [c._id], forma: "", rotulo: `${dataHora(c.data)}, ${fmtBR(c.valorEfetivo)}` })} style={{ background: "none", border: "none", color: "#065f46", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, marginLeft: 4, textDecoration: "underline" }}>dar baixa</button>}</div>}
+                      {baixa?.chave === c._id && escolhaBaixa()}
                       {c.tipo === "funcionario" && c.valor !== null && <div style={{ color: "#888", fontSize: 11 }}>pela regra seria {fmtBR(c.valorRegra)}</div>}
                       {c.tipo === "dono" && c.custoHoje != null && Math.abs(c.custoHoje - c.custo) >= 0.01 && <div style={{ color: "#991b1b", fontSize: 11.5, fontWeight: 700 }}>gravado {fmtBR(c.custo)} · pelo custo de hoje {fmtBR(c.custoHoje)}</div>}
                       {c.tipo === "dono" && c.custoSuspeito > 0 && <div style={{ color: "#991b1b", fontSize: 11 }}>🚨 custo acima do preço do cardápio: confira o custo no Estoque</div>}
                       {c.tipo === "dono" && c.semCustoItens?.length > 0 && <div style={{ color: "#92400e", fontSize: 11 }}>sem custo: {c.semCustoItens.join(", ")}</div>}
                       {c.custoOriginal != null && <div style={{ color: "#888", fontSize: 11 }}>atualizado{c.recalculadoEm ? ` em ${new Date(c.recalculadoEm).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}` : ""} (era {fmtBR(c.custoOriginal)})</div>}
                     </div>
-                    {c.tipo === "dono" ? (
-                      <span style={{ fontWeight: 700, color: "#b45309", whiteSpace: "nowrap" }}>{fmtBR(c.valorEfetivo)}{c.semCustoItens?.length > 0 && <span title="itens sem custo cadastrado"> ⚠️</span>}</span>
+                    {c.tipo === "dono" || c.pagoEm ? (
+                      <span style={{ fontWeight: 700, color: c.tipo === "dono" ? "#b45309" : "#0e7490", whiteSpace: "nowrap" }}>{fmtBR(c.valorEfetivo)}{c.semCustoItens?.length > 0 && <span title="itens sem custo cadastrado"> ⚠️</span>}</span>
                     ) : (
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                         <InputDinheiro value={valores[c._id] !== undefined ? valores[c._id] : moedaDeNumero(c.valorEfetivo)}
@@ -5348,7 +5400,7 @@ function RelatorioEquipe() {
                         {c.valor !== null && valores[c._id] === undefined && <button onClick={() => salvarValor(c, true)} title="Voltar ao valor da regra" style={{ background: "#f0f0f0", color: "#555", border: "none", borderRadius: 7, padding: "6px 8px", cursor: "pointer", fontSize: 12 }}>↺ regra</button>}
                       </div>
                     )}
-                    <button onClick={() => desfazer(c)} title="Desfazer (devolve ao estoque)" style={{ background: "#fee2e2", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 13 }}>↩️</button>
+                    <button onClick={() => desfazer(c)} title={c.pagoEm ? "Pago: desfaça a baixa antes" : "Desfazer (devolve ao estoque)"} style={{ background: "#fee2e2", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 13, opacity: c.pagoEm ? 0.35 : 1 }}>↩️</button>
                   </div>
                 ))}
               </div>

@@ -258,6 +258,12 @@ const ConsumoInternoSchema = new mongoose.Schema({
   pessoa:     { type: String, default: "", trim: true, maxlength: 60 },   // quem consumiu (nome da comanda)
   itens:      { type: Array, required: true },                           // cada item leva a sua "nota" (ex.: sem cebola)
   observacao: { type: String, default: "", maxlength: 300 },              // observação geral da mesa na hora de registrar
+  // Baixa de pagamento (pedido da Daiane, 22/10/2026): o lançamento continua
+  // no relatório, só fica marcado como pago. Pago fica travado (valor,
+  // recálculo e desfazer pedem desfazer a baixa antes).
+  pagoEm:         { type: Date, default: null },
+  formaPagamento: { type: String, default: "" },   // dinheiro | pix | cartao | desconto no salario | outro
+  pagoPor:        { type: String, default: "" },
   // Regra da casa (salao/equipe.js): dono paga o custo; funcionário paga o
   // cardápio com R$ 2 de desconto por espeto. Tudo calculado no momento do
   // consumo, para mudança de custo ou de regra não reescrever o passado.
@@ -3168,9 +3174,10 @@ async function relatorioEquipe(listaBruta) {
   for (const c of lista) {
     const nome = (c.pessoa || "").trim() || "Sem nome";
     const k = nome.toLowerCase();
-    if (!porPessoa[k]) porPessoa[k] = { pessoa: nome, tipo: c.tipo, vezes: 0, itens: 0, total: 0, custo: 0, editados: 0, semCusto: 0, produtos: {} };
+    if (!porPessoa[k]) porPessoa[k] = { pessoa: nome, tipo: c.tipo, vezes: 0, itens: 0, total: 0, pago: 0, emAberto: 0, custo: 0, editados: 0, semCusto: 0, produtos: {} };
     const pp = porPessoa[k];
     pp.vezes++; pp.total += valorEfetivo(c); pp.custo += Number(c.custo) || 0; pp.semCusto += Number(c.semCusto) || 0;
+    if (c.pagoEm) pp.pago += valorEfetivo(c); else pp.emAberto += valorEfetivo(c);
     if (c.tipo === "funcionario" && c.valor !== null && c.valor !== undefined) pp.editados++;
     if (c.tipo === "dono") pp.tipo = "dono";
     for (const it of c.itens || []) {
@@ -3180,17 +3187,19 @@ async function relatorioEquipe(listaBruta) {
     }
   }
   const pessoas = Object.values(porPessoa)
-    .map(pp => ({ ...pp, total: arred(pp.total), custo: arred(pp.custo), produtos: Object.entries(pp.produtos).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd) }))
+    .map(pp => ({ ...pp, total: arred(pp.total), pago: arred(pp.pago), emAberto: arred(pp.emAberto), custo: arred(pp.custo), produtos: Object.entries(pp.produtos).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd) }))
     .sort((a, b) => (a.tipo === b.tipo ? b.total - a.total : a.tipo === "dono" ? -1 : 1));
-  const soma = (tipo) => arred(pessoas.filter(p => p.tipo === tipo).reduce((s, p) => s + p.total, 0));
+  const soma = (tipo, campo = "total") => arred(pessoas.filter(p => p.tipo === tipo).reduce((s, p) => s + p[campo], 0));
   return {
     lancamentos: lista.length,
+    emAberto: arred(pessoas.reduce((s, p) => s + p.emAberto, 0)),
+    pagoTotal: arred(pessoas.reduce((s, p) => s + p.pago, 0)),
     itensTotal: pessoas.reduce((s, p) => s + p.itens, 0),
-    donos: { total: soma("dono"), pessoas: pessoas.filter(p => p.tipo === "dono").length },
-    funcionarios: { total: soma("funcionario"), pessoas: pessoas.filter(p => p.tipo === "funcionario").length },
+    donos: { total: soma("dono"), emAberto: soma("dono", "emAberto"), pago: soma("dono", "pago"), pessoas: pessoas.filter(p => p.tipo === "dono").length },
+    funcionarios: { total: soma("funcionario"), emAberto: soma("funcionario", "emAberto"), pago: soma("funcionario", "pago"), pessoas: pessoas.filter(p => p.tipo === "funcionario").length },
     semCusto: [...hojeDe.values()].filter(h => h.semCusto > 0).length,
     itensSemCusto: [...new Set([...hojeDe.values()].flatMap(h => h.semCustoItens))].sort((a, b) => a.localeCompare(b, "pt-BR")),
-    divergentes: lista.filter(c => c.tipo === "dono" && Math.abs((hojeDe.get(String(c._id))?.custo ?? c.custo) - (Number(c.custo) || 0)) >= 0.01).map(c => String(c._id)),
+    divergentes: lista.filter(c => c.tipo === "dono" && !c.pagoEm && Math.abs((hojeDe.get(String(c._id))?.custo ?? c.custo) - (Number(c.custo) || 0)) >= 0.01).map(c => String(c._id)),
     porPessoa: pessoas,
     lista: lista.map(c => {
       const hoje = hojeDe.get(String(c._id));
@@ -3201,6 +3210,7 @@ async function relatorioEquipe(listaBruta) {
         custoOriginal: c.custoOriginal ?? null, recalculadoEm: c.recalculadoEm || null,
         itens: (c.itens || []).map(it => ({ nome: it.nome, qty: Number(it.qty) || 1, nota: String(it.nota || "").trim() })),
         observacao: c.observacao || "",
+        pagoEm: c.pagoEm || null, formaPagamento: c.formaPagamento || "", pagoPor: c.pagoPor || "",
       };
     }),
   };
@@ -3287,7 +3297,7 @@ app.post("/consumo-interno/recalcular", authMiddleware(["dono"]), async (req, re
     for (const c of regs) {
       const hoje = calcularConsumo({ pessoa: c.pessoa, itens: c.itens, cardapio: CARDAPIO, estoques, config });
       const tipo = c.tipo || hoje.tipo;
-      if (tipo !== "dono") continue;
+      if (tipo !== "dono" || c.pagoEm) continue;   // pago fica como foi pago
       const de = Number(c.custo) || 0;
       if (c.tipo && Math.abs(hoje.custo - de) < 0.01 && hoje.semCusto === (c.semCusto || 0)) continue;
       await ConsumoInternoDB.updateOne({ _id: c._id }, {
@@ -3301,6 +3311,31 @@ app.post("/consumo-interno/recalcular", authMiddleware(["dono"]), async (req, re
   } catch (e) {
     console.error("Erro ao recalcular consumo da equipe:", e.message);
     res.status(500).json({ erro: "Erro ao recalcular" });
+  }
+});
+
+// POST /consumo-interno/baixa { ids, pago = true, forma } — dá (ou desfaz) a
+// baixa de pagamento de um ou vários lançamentos ("dar baixa em tudo" da
+// pessoa no período). O lançamento não some: só fica marcado como pago.
+const FORMAS_BAIXA = ["dinheiro", "pix", "cartao", "desconto no salario", "outro"];
+app.post("/consumo-interno/baixa", authMiddleware(["dono"]), async (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).filter(id => mongoose.Types.ObjectId.isValid(id));
+  if (!ids.length) return res.status(400).json({ erro: "Nenhum lançamento informado" });
+  if (ids.length > 500) return res.status(400).json({ erro: "Lançamentos demais de uma vez" });
+  const pagar = req.body?.pago !== false;
+  const forma = String(req.body?.forma || "").trim().toLowerCase();
+  if (pagar && !FORMAS_BAIXA.includes(forma)) return res.status(400).json({ erro: "Escolha a forma: dinheiro, pix, cartão, desconto no salário ou outro" });
+  const quem = req.user?.nome || req.user?.role || "";
+  try {
+    // "pagoEm: null" também pega lançamento antigo, gravado antes deste campo
+    const r = pagar
+      ? await ConsumoInternoDB.updateMany({ _id: { $in: ids }, pagoEm: null }, { $set: { pagoEm: new Date(), formaPagamento: forma, pagoPor: quem } })
+      : await ConsumoInternoDB.updateMany({ _id: { $in: ids }, pagoEm: { $ne: null } }, { $set: { pagoEm: null, formaPagamento: "", pagoPor: "" } });
+    console.log(`Consumo da equipe: ${pagar ? "baixa" : "baixa desfeita"} em ${r.modifiedCount} lançamento(s) por ${quem}${pagar ? " (" + forma + ")" : ""}`);
+    res.json({ ok: true, alterados: r.modifiedCount });
+  } catch (e) {
+    console.error("Erro na baixa do consumo da equipe:", e.message);
+    res.status(500).json({ erro: "Erro ao dar baixa" });
   }
 });
 
@@ -3335,6 +3370,7 @@ app.patch("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => 
     if (!atual) return res.status(404).json({ erro: "Lançamento não encontrado" });
     const [reg] = await completarRegistrosEquipe([atual]);
     if (reg.tipo === "dono") return res.status(400).json({ erro: "Dono paga o preço de custo; esse valor não se edita" });
+    if (atual.pagoEm) return res.status(409).json({ erro: "Esse consumo já está pago. Desfaça a baixa para mudar o valor." });
     const c = await ConsumoInternoDB.findByIdAndUpdate(req.params.id, { $set: { valor } }, { new: true }).lean();
     res.json({ ok: true, valor: c.valor, valorEfetivo: valorEfetivo({ ...reg, valor: c.valor }) });
   } catch (e) {
@@ -3347,6 +3383,9 @@ app.patch("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => 
 app.delete("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ erro: "Id inválido" });
   try {
+    const atual = await ConsumoInternoDB.findById(req.params.id).select("pagoEm").lean();
+    if (!atual) return res.status(404).json({ erro: "Lançamento não encontrado" });
+    if (atual.pagoEm) return res.status(409).json({ erro: "Esse consumo já está pago. Desfaça a baixa antes de desfazer o consumo." });
     const c = await ConsumoInternoDB.findByIdAndDelete(req.params.id).lean();
     if (!c) return res.status(404).json({ erro: "Lançamento não encontrado" });
     const devolvido = await estornarEstoqueDaVenda("interno:" + req.params.id);

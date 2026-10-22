@@ -145,6 +145,34 @@ console.log("\n=== 8b) observações: da mesa e de cada item ===");
   await api("DELETE", "/consumo-interno/" + c.corpo._id);
 }
 
+console.log("\n=== 8c) baixa de pagamento (fica registrado, marcado como pago) ===");
+{
+  const c1 = (await api("POST", "/consumo-interno", { mesa: 901, pessoa: "Carla", itens: [alcatra(1)] })).corpo;   // 9 - 2 = 7
+  const c2 = (await api("POST", "/consumo-interno", { mesa: 901, pessoa: "Carla", itens: [cerveja(1)] })).corpo;   // 12
+  let r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  let carla = r.porPessoa.find(p => p.pessoa === "Carla");
+  ok(carla.total === 19 && carla.emAberto === 19 && carla.pago === 0, `Carla: R$ 19 em aberto (${carla.emAberto})`);
+  ok((await api("POST", "/consumo-interno/baixa", { ids: [c1._id] })).status === 400, "sem a forma de pagamento: recusa");
+  ok((await api("POST", "/consumo-interno/baixa", { ids: [c1._id], forma: "pix" }, tokenGarcom)).status === 403, "garçom não dá baixa");
+  const b = await api("POST", "/consumo-interno/baixa", { ids: [c1._id], forma: "pix" });
+  r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  carla = r.porPessoa.find(p => p.pessoa === "Carla");
+  const l1 = r.lista.find(x => x._id === c1._id);
+  ok(b.corpo.alterados === 1 && l1.pagoEm && l1.formaPagamento === "pix", "baixa no 1º: pago no Pix, continua na lista");
+  ok(carla.pago === 7 && carla.emAberto === 12 && carla.total === 19, "Carla: pago R$ 7, em aberto R$ 12, total segue R$ 19");
+  ok((await api("POST", "/consumo-interno/baixa", { ids: [c1._id], forma: "dinheiro" })).corpo.alterados === 0, "dar baixa de novo não muda nada (continua Pix)");
+  ok((await api("PATCH", "/consumo-interno/" + c1._id, { valor: 1 })).status === 409, "pago: o valor não muda sem desfazer a baixa");
+  ok((await api("DELETE", "/consumo-interno/" + c1._id)).status === 409, "pago: não dá para desfazer o consumo sem desfazer a baixa");
+  const tudo = await api("POST", "/consumo-interno/baixa", { ids: [c1._id, c2._id], forma: "desconto no salario" });
+  ok(tudo.corpo.alterados === 1, "\"dar baixa em tudo\": só o que estava em aberto muda");
+  const volta = await api("POST", "/consumo-interno/baixa", { ids: [c1._id], pago: false });
+  r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
+  ok(volta.corpo.alterados === 1 && !r.lista.find(x => x._id === c1._id).pagoEm && r.porPessoa.find(p => p.pessoa === "Carla").emAberto === 7, "desfazer a baixa: volta a ficar em aberto");
+  await api("POST", "/consumo-interno/baixa", { ids: [c2._id], pago: false });
+  await api("DELETE", "/consumo-interno/" + c1._id);
+  await api("DELETE", "/consumo-interno/" + c2._id);
+}
+
 console.log("\n=== 9) auditoria: custo errado no dia (5,68 gravado como 568) ===");
 {
   let r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
