@@ -2766,6 +2766,52 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
 }
 
 // ── DROPDOWN CARDÁPIO ─────────────────────────────────────────
+// Busca com autocompletar para escolher um item do estoque. Pedido da dona
+// (21/10/2026): a lista com TODOS os itens abria a tela inteira no celular.
+// Digita parte do nome (sem diferença de acento ou maiúscula) e toca no item;
+// Enter pega o primeiro. Escolhido, mostra o item com "trocar".
+const semAcento = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+function BuscaItem({ itens = [], valor = "", onEscolher, placeholder = "Digite para buscar...", descrever }) {
+  const [q, setQ] = useState("");
+  const [trocando, setTrocando] = useState(false);
+  const sel = itens.find(i => i._id === valor);
+  const txt = (i) => (descrever ? descrever(i) : i.nome);
+  const termos = semAcento(q).trim().split(/\s+/).filter(Boolean);
+  const comeca = (i) => (semAcento(i.nome).startsWith(termos[0]) ? 0 : 1);
+  const achados = termos.length
+    ? itens.filter(i => termos.every(t => semAcento(i.nome).includes(t)))
+        .sort((a, b) => comeca(a) - comeca(b) || String(a.nome).localeCompare(String(b.nome), "pt-BR", { sensitivity: "base" }))
+        .slice(0, 8)
+    : [];
+  const escolher = (i) => { onEscolher(i._id); setQ(""); setTrocando(false); };
+  const base = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box", background: "#fff" };
+  if (sel && !trocando) {
+    return (
+      <div style={{ ...base, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, borderColor: "#cbd5e1", background: "#f8fafc" }}>
+        <span style={{ fontWeight: 700, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{txt(sel)}</span>
+        <button onClick={() => { setTrocando(true); setQ(""); }} style={{ background: "none", border: "none", color: "#7b1a0a", fontWeight: 700, fontSize: 12, cursor: "pointer", padding: 0, flexShrink: 0 }}>trocar</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ width: "100%", minWidth: 0 }}>
+      <input value={q} autoFocus={trocando} onChange={e => setQ(e.target.value)} placeholder={placeholder}
+        onKeyDown={e => { if (e.key === "Enter" && achados[0]) { e.preventDefault(); escolher(achados[0]); } if (e.key === "Escape" && sel) setTrocando(false); }}
+        style={base} />
+      {termos.length > 0 && (
+        <div style={{ border: "1px solid #e5e7eb", borderRadius: 8, marginTop: 4, background: "#fff", overflow: "hidden", boxShadow: "0 4px 12px rgba(0,0,0,0.08)" }}>
+          {achados.length === 0
+            ? <div style={{ padding: "9px 10px", fontSize: 12, color: "#999" }}>Nada encontrado com "{q}"</div>
+            : achados.map(i => (
+              <button key={i._id} onClick={() => escolher(i)} style={{ display: "block", width: "100%", textAlign: "left", padding: "11px 10px", border: "none", borderBottom: "1px solid #f3f4f6", background: "#fff", fontSize: 13, color: "#222", cursor: "pointer" }}>{txt(i)}</button>
+            ))}
+        </div>
+      )}
+      {sel && trocando && <button onClick={() => setTrocando(false)} style={{ marginTop: 4, background: "none", border: "none", color: "#888", fontSize: 11.5, cursor: "pointer", padding: 0 }}>manter {sel.nome}</button>}
+    </div>
+  );
+}
+
 function CardapioDropdown({ valor, onChange, nomeManual, onNomeManual, cardapio = [] }) {
   const [busca, setBusca] = useState("");
   const [aberto, setAberto] = useState(false);
@@ -3165,16 +3211,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
         {comEscolha&&(
           <div style={{marginBottom:8}}>
             <div style={{fontSize:11,color:"#888",marginBottom:3}}>Item</div>
-            <select value={f.item?._id||""} onChange={e=>setPerdaForm(p=>({...p,item:itens.find(i=>i._id===e.target.value)||null}))} style={inp}>
-              <option value="">— escolher —</option>
-              {catsEstoque.filter(c=>c!=="todos").map(c=>(
-                <optgroup key={c} label={c}>
-                  {itens.filter(i=>categoriaDe(i)===c).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),"pt-BR",{sensitivity:"base"})).map(i=>(
-                    <option key={i._id} value={i._id}>{i.nome} ({qtdBR(i.quantidade)} {i.tipo==="chopp"?"L":i.unidade})</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+            <BuscaItem itens={itens} valor={f.item?._id||""} placeholder="Digite o item (ex.: frango, chopp)"
+              descrever={i=>`${i.nome} (${qtdBR(i.quantidade)} ${i.tipo==="chopp"?"L":i.unidade})`}
+              onEscolher={id=>setPerdaForm(p=>({...p,item:itens.find(i=>i._id===id)||null}))}/>
           </div>
         )}
         <div style={{marginBottom:8}}>
@@ -3217,14 +3256,6 @@ function Estoque({ backendUrl, cardapio = [] }) {
   // Só espeto vira produto de uma produção (pedido da dona, 17/10/2026): item
   // de categoria de espeto (dele ou do cardápio ligado) ou com "espeto" no nome
   const ehEspetoEst = (it) => [String(it?.categoria || "").trim(), categoriaDoCardapio(it || {})].some(c => CATEGORIAS_ESPETO.includes(c)) || /espet/i.test(it?.nome || "");
-  const opcoesEstoque = (excluir = [], filtro = null) => catsEstoque.filter(c=>c!=="todos").map(c=>{
-    const lista = itens.filter(i=>categoriaDe(i)===c&&!excluir.includes(i._id)&&(!filtro||filtro(i))).sort((a,b)=>String(a.nome).localeCompare(String(b.nome),"pt-BR",{sensitivity:"base"}));
-    return lista.length===0?null:(
-      <optgroup key={c} label={c}>
-        {lista.map(i=><option key={i._id} value={i._id}>{i.nome} ({fmtQ(qtdNum(i.quantidade))} {unidDe(i)})</option>)}
-      </optgroup>
-    );
-  });
   const formProducao = () => {
     const f = prodForm; if (!f) return null;
     const produto = itens.find(i=>i._id===f.produtoId);
@@ -3243,10 +3274,9 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
         <div style={{marginBottom:8}}>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>O que foi feito</div>
-          <select value={f.produtoId} onChange={e=>escolherProdutoProd(e.target.value)} style={inp}>
-            <option value="">— escolher o espeto —</option>
-            {opcoesEstoque(f.insumos.map(l=>l.estoqueId).filter(Boolean), ehEspetoEst)}
-          </select>
+          <BuscaItem itens={itens.filter(i=>ehEspetoEst(i)&&!f.insumos.some(l=>l.estoqueId===i._id))} valor={f.produtoId}
+            placeholder="Digite o espeto (ex.: alcatra)" descrever={i=>`${i.nome} (${fmtQ(qtdNum(i.quantidade))} ${unidDe(i)})`}
+            onEscolher={escolherProdutoProd}/>
           {!itens.some(ehEspetoEst)&&<div style={{fontSize:11.5,color:"#92400e",marginTop:4}}>Nenhum espeto no estoque. Cadastre o espeto em "+ Cadastrar item no estoque", ligado ao item do cardápio.</div>}
         </div>
         <div style={{marginBottom:6}}>
@@ -3267,11 +3297,12 @@ function Estoque({ backendUrl, cardapio = [] }) {
         {f.insumos.map((l,idx)=>{
           const est = itens.find(i=>i._id===l.estoqueId);
           return (
-            <div key={idx} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
-              <select value={l.estoqueId} onChange={e=>{const id=e.target.value; const temNaUltima=!!(f.ultima?.insumos||[]).some(i=>String(i.estoqueId)===id); setLinha(idx,{estoqueId:id,auto:temNaUltima&&!String(l.qtd).trim()?true:l.auto&&temNaUltima});}} style={{...inp,flex:1,minWidth:0}}>
-                <option value="">— ingrediente —</option>
-                {opcoesEstoque([f.produtoId, ...f.insumos.filter((_,j)=>j!==idx).map(x=>x.estoqueId)].filter(Boolean))}
-              </select>
+            <div key={idx} style={{display:"flex",gap:6,alignItems:"flex-start",marginBottom:6}}>
+              <div style={{flex:1,minWidth:0}}>
+                <BuscaItem itens={itens.filter(i=>i._id!==f.produtoId&&!f.insumos.some((x,j)=>j!==idx&&x.estoqueId===i._id))} valor={l.estoqueId}
+                  placeholder="Digite o ingrediente" descrever={i=>`${i.nome} (${fmtQ(qtdNum(i.quantidade))} ${unidDe(i)})`}
+                  onEscolher={id=>{const temNaUltima=!!(f.ultima?.insumos||[]).some(i=>String(i.estoqueId)===id); setLinha(idx,{estoqueId:id,auto:temNaUltima&&!String(l.qtd).trim()?true:l.auto&&temNaUltima});}}/>
+              </div>
               <input value={l.qtd} onChange={e=>setLinha(idx,{qtd:e.target.value.replace(/[^\d.,]/g,""),auto:false})} inputMode="decimal" placeholder="qtd" style={{...inp,width:74,textAlign:"right",fontWeight:700,color:l.auto?"#5b21b6":"#333"}}/>
               <span style={{fontSize:12,color:"#888",width:22}}>{est?unidDe(est):""}</span>
               {f.insumos.length>1&&<button onClick={()=>setProdForm(p=>({...p,insumos:p.insumos.filter((_,j)=>j!==idx)}))} title="Tirar" style={{background:"#f3f4f6",border:"none",borderRadius:7,width:28,height:28,cursor:"pointer",color:"#888",flexShrink:0}}>×</button>}
