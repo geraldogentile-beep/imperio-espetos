@@ -4301,7 +4301,7 @@ function CaixaGaveta({ backendUrl, conf, recarregar }) {
   const btn = (bg, cor, borda) => ({ flex: "1 1 140px", background: bg, color: cor, border: borda ? `1.5px solid ${borda}` : "none", borderRadius: 10, padding: "11px 8px", fontWeight: 700, fontSize: 13, cursor: "pointer" });
   const aberto = conf?.abertura != null;
   const motivoSel = MOTIVOS_SAIDA.find(x => x.k === motivo) || MOTIVOS_SAIDA[0];
-  const icone = { retirada: "➖", reforco: "➕", gasto: "💸" };
+  const icone = { retirada: "➖", reforco: "➕", gasto: "💸", equipe: "👥" };
 
   return (
     <div style={{ background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: aberto ? "1.5px solid transparent" : "1.5px solid #f59e0b" }}>
@@ -4380,8 +4380,11 @@ function CaixaGaveta({ backendUrl, conf, recarregar }) {
           {conf.movimentos.map(m => (
             <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", borderTop: "1px solid #f5f5f5" }}>
               <span style={{ flex: 1, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{icone[m.tipo]} {m.motivo || (m.tipo === "reforco" ? "Reforço" : "Saída")} <span style={{ color: "#aaa" }}>· {horaCurta(m.data)}</span></span>
-              <span style={{ fontWeight: 700, color: m.tipo === "reforco" ? "#065f46" : "#b91c1c" }}>{m.tipo === "reforco" ? "+" : "−"} {fmtBR(m.valor)}</span>
-              <button onClick={() => excluir(m)} title="Excluir" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "0 2px" }}>🗑️</button>
+              <span style={{ fontWeight: 700, color: m.tipo === "reforco" || m.tipo === "equipe" ? "#065f46" : "#b91c1c" }}>{m.tipo === "reforco" || m.tipo === "equipe" ? "+" : "−"} {fmtBR(m.valor)}</span>
+              {/* Consumo da equipe pago: desfaz a baixa em Rel. → Equipe */}
+              {m.tipo === "equipe"
+                ? <span title="Para tirar, desfaça a baixa em Rel. → Equipe" style={{ fontSize: 13, padding: "0 2px", opacity: 0.35 }}>🔒</span>
+                : <button onClick={() => excluir(m)} title="Excluir" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "0 2px" }}>🗑️</button>}
             </div>
           ))}
         </div>
@@ -4542,6 +4545,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
   <div class="linha"><span>+ Salão em dinheiro</span><span>${fmtBR((f.caixa.dinheiroSalao||0))}</span></div>
   ${f.caixa.dinheiroDelivery>0?`<div class="linha"><span>${f.caixa.deliveryNaGaveta?"+ Delivery em dinheiro":"Delivery em dinheiro (fora da gaveta)"}</span><span>${fmtBR(f.caixa.dinheiroDelivery)}</span></div>`:""}
   ${f.caixa.reforcos>0?`<div class="linha"><span>+ Reforços</span><span>${fmtBR(f.caixa.reforcos)}</span></div>`:""}
+  ${f.caixa.equipeDinheiro>0?`<div class="linha"><span>+ Consumo da equipe (dinheiro)</span><span>${fmtBR(f.caixa.equipeDinheiro)}</span></div>`:""}
   ${f.caixa.retiradas>0?`<div class="linha"><span>- Saídas</span><span>${fmtBR(f.caixa.retiradas)}</span></div>`:""}
   ${f.caixa.gastosDoCaixa>0?`<div class="linha"><span>- Gastos pagos da gaveta</span><span>${fmtBR(f.caixa.gastosDoCaixa)}</span></div>`:""}
   <div class="total"><span>ESPERADO</span><span>${fmtBR(f.caixa.esperado)}</span></div>
@@ -4664,6 +4668,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
                     </label>
                   )}
                   {conf.reforcos > 0 && li("+ Reforços de troco", fmtBR(conf.reforcos), "#065f46")}
+                  {conf.equipeDinheiro > 0 && li("+ Consumo da equipe pago em dinheiro", fmtBR(conf.equipeDinheiro), "#065f46")}
                   {conf.retiradas > 0 && li("− Saídas", fmtBR(conf.retiradas), "#b91c1c")}
                   {conf.gastosDoCaixa > 0 && li("− Gastos pagos da gaveta", fmtBR(conf.gastosDoCaixa), "#b91c1c")}
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:800,padding:"6px 0",borderTop:"1px solid #e5e5e5",marginTop:4,color:"#333"}}><span>Deveria ter na gaveta</span><span>{fmtBR(esperado)}</span></div>
@@ -4739,7 +4744,7 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
                 {f.caixa?.esperado!=null&&(
                   <div style={{background:"#faf9f8",borderRadius:8,padding:"8px 10px",marginBottom:6,fontSize:12}}>
                     <div style={{fontSize:10,color:"#888",marginBottom:4}}>💵 Gaveta</div>
-                    <div style={{display:"flex",justifyContent:"space-between"}}><span>Abertura {fmtBR(f.caixa.abertura||0)} · dinheiro {fmtBR((f.caixa.dinheiroSalao||0)+(f.caixa.deliveryNaGaveta?(f.caixa.dinheiroDelivery||0):0))}{f.caixa.reforcos>0?` · +${fmtBR(f.caixa.reforcos)}`:""}{(f.caixa.retiradas||0)+(f.caixa.gastosDoCaixa||0)>0?` · −${fmtBR((f.caixa.retiradas||0)+(f.caixa.gastosDoCaixa||0))}`:""}</span></div>
+                    <div style={{display:"flex",justifyContent:"space-between"}}><span>Abertura {fmtBR(f.caixa.abertura||0)} · dinheiro {fmtBR((f.caixa.dinheiroSalao||0)+(f.caixa.deliveryNaGaveta?(f.caixa.dinheiroDelivery||0):0))}{(f.caixa.reforcos||0)+(f.caixa.equipeDinheiro||0)>0?` · +${fmtBR((f.caixa.reforcos||0)+(f.caixa.equipeDinheiro||0))}`:""}{(f.caixa.retiradas||0)+(f.caixa.gastosDoCaixa||0)>0?` · −${fmtBR((f.caixa.retiradas||0)+(f.caixa.gastosDoCaixa||0))}`:""}</span></div>
                     <div style={{display:"flex",justifyContent:"space-between",fontWeight:700,marginTop:2}}><span>Esperado</span><span>{fmtBR(f.caixa.esperado)}</span></div>
                     {f.caixa.contado!=null
                       ? <div style={{display:"flex",justifyContent:"space-between",fontWeight:800,marginTop:2,color:Math.abs(f.caixa.diferenca)<0.005?"#065f46":f.caixa.diferenca>0?"#92400e":"#991b1b"}}><span>Contado {fmtBR(f.caixa.contado)}</span><span>{Math.abs(f.caixa.diferenca)<0.005?"✅ bateu":f.caixa.diferenca>0?`sobrou ${fmtBR(f.caixa.diferenca)}`:`faltou ${fmtBR(-f.caixa.diferenca)}`}</span></div>
@@ -5238,12 +5243,12 @@ function RelatorioEquipe() {
   const lancamentosDe = (pp) => (rel?.lista || []).filter(c => (c.pessoa || "Sem nome").trim().toLowerCase() === pp.pessoa.toLowerCase());
   const dataHora = (d) => new Date(d).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   const itensTxt = (c) => c.itens.map(i => `${i.qty}x ${i.nome}${i.nota ? ` (${i.nota})` : ""}`).join(", ");
-  const FORMAS_TXT = { dinheiro: "Dinheiro", pix: "Pix", cartao: "Cartão", "desconto no salario": "Desconto no salário", outro: "Outro" };
+  const FORMAS_TXT = { dinheiro: "Dinheiro (gaveta)", pix: "Pix", cartao: "Cartão", "desconto no salario": "Desconto no salário", outro: "Outro" };
   const pagoTxt = (c) => `pago em ${new Date(c.pagoEm).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} · ${FORMAS_TXT[c.formaPagamento] || c.formaPagamento}`;
   const escolhaBaixa = () => (
     <div style={{ marginTop: 8, padding: 10, border: "1.5px solid #10b981", borderRadius: 10, background: "#f0fdf4" }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: "#065f46", marginBottom: 6 }}>✅ Dar baixa: {baixa.rotulo}</div>
-      <div style={{ fontSize: 11.5, color: "#555", marginBottom: 6 }}>Como foi pago?</div>
+      <div style={{ fontSize: 11.5, color: "#555", marginBottom: 6 }}>Como foi pago? <span style={{ color: "#888" }}>Em dinheiro, o valor entra na conferência da gaveta do caixa aberto.</span></div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
         {Object.entries(FORMAS_TXT).map(([k, l]) => (
           <button key={k} onClick={() => setBaixa(b => ({ ...b, forma: k }))} style={{ padding: "7px 11px", borderRadius: 20, border: `2px solid ${baixa.forma === k ? "#10b981" : "#e0e0e0"}`, background: baixa.forma === k ? "#d1fae5" : "#fff", color: baixa.forma === k ? "#065f46" : "#555", fontWeight: baixa.forma === k ? 700 : 500, fontSize: 12.5, cursor: "pointer" }}>{l}</button>

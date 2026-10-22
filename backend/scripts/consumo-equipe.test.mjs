@@ -168,7 +168,16 @@ console.log("\n=== 8c) baixa de pagamento (fica registrado, marcado como pago) =
   const volta = await api("POST", "/consumo-interno/baixa", { ids: [c1._id], pago: false });
   r = (await api("GET", "/consumo-interno?mes=" + MES)).corpo;
   ok(volta.corpo.alterados === 1 && !r.lista.find(x => x._id === c1._id).pagoEm && r.porPessoa.find(p => p.pessoa === "Carla").emAberto === 7, "desfazer a baixa: volta a ficar em aberto");
+  // Pago em dinheiro: entra na conferência da gaveta; desfazer a baixa tira
   await api("POST", "/consumo-interno/baixa", { ids: [c2._id], pago: false });
+  const g0 = (await api("GET", "/caixa/conferencia")).corpo;
+  await api("POST", "/consumo-interno/baixa", { ids: [c1._id], forma: "dinheiro" });
+  const g1 = (await api("GET", "/caixa/conferencia")).corpo;
+  ok(g1.equipeDinheiro === 7 && g1.esperadoSemDelivery === g0.esperadoSemDelivery + 7 && g1.movimentos.some(m => m.tipo === "equipe" && m.valor === 7), `baixa em dinheiro entra na gaveta: esperado ${g0.esperadoSemDelivery} -> ${g1.esperadoSemDelivery}`);
+  await api("POST", "/consumo-interno/baixa", { ids: [c2._id], forma: "pix" });
+  ok((await api("GET", "/caixa/conferencia")).corpo.equipeDinheiro === 7, "baixa no Pix não entra na gaveta");
+  await api("POST", "/consumo-interno/baixa", { ids: [c1._id, c2._id], pago: false });
+  ok((await api("GET", "/caixa/conferencia")).corpo.equipeDinheiro === 0, "desfazer a baixa tira da gaveta");
   await api("DELETE", "/consumo-interno/" + c1._id);
   await api("DELETE", "/consumo-interno/" + c2._id);
 }

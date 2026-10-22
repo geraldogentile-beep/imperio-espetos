@@ -445,6 +445,7 @@ const FechamentoDiaSchema = new mongoose.Schema({
     reforcos:         { type: Number, default: 0 },
     retiradas:        { type: Number, default: 0 },
     gastosDoCaixa:    { type: Number, default: 0 },
+    equipeDinheiro:   { type: Number, default: 0 },      // consumo da equipe pago em dinheiro na gaveta
     esperado:         { type: Number, default: null },
     contado:          { type: Number, default: null },
     diferenca:        { type: Number, default: null },   // contado - esperado (+ sobrou, - faltou)
@@ -3721,10 +3722,14 @@ async function resumoDoPeriodo(inicio, fim) {
 // Conferência da gaveta do período: fundo de abertura + dinheiro das vendas
 // + reforços − retiradas − gastos pagos com dinheiro da gaveta = esperado.
 async function conferenciaDoCaixa(inicio, fim, resumo) {
-  const [movimentos, gastos] = await Promise.all([
+  const [movimentos, gastos, equipeBruto] = await Promise.all([
     CaixaMovimentoDB.find({ data: { $gte: inicio, $lt: fim } }).sort({ data: 1 }).lean(),
     DespesaDB.find({ doCaixa: true, data: { $gte: inicio, $lt: fim } }).sort({ data: 1 }).lean(),
+    // Consumo da equipe com baixa "dinheiro": o dinheiro entrou na gaveta na
+    // hora da baixa (pedido do usuário, 22/10/2026). Desfazer a baixa tira daqui.
+    ConsumoInternoDB.find({ formaPagamento: "dinheiro", pagoEm: { $gte: inicio, $lt: fim } }).lean(),
   ]);
+  const equipe = await completarRegistrosEquipe(equipeBruto);
   const abertura = movimentos.filter(m => m.tipo === "abertura").pop();   // a última vale
   const reforcos = movimentos.filter(m => m.tipo === "reforco");
   const retiradas = movimentos.filter(m => m.tipo === "retirada");
@@ -3737,12 +3742,14 @@ async function conferenciaDoCaixa(inicio, fim, resumo) {
     reforcos: soma(reforcos),
     retiradas: soma(retiradas),
     gastosDoCaixa: soma(gastos),
+    equipeDinheiro: arred(equipe.reduce((s, r) => s + valorEfetivo(r), 0)),
     movimentos: [
       ...movimentos.filter(m => m.tipo !== "abertura").map(m => ({ id: m._id, tipo: m.tipo, valor: m.valor, motivo: m.motivo, data: m.data })),
       ...gastos.map(g => ({ id: g._id, tipo: "gasto", valor: g.valor, motivo: [g.tipo, g.descricao].filter(Boolean).join(" — "), data: g.data })),
+      ...equipe.map(r => ({ id: r._id, tipo: "equipe", valor: valorEfetivo(r), motivo: `Consumo da equipe pago: ${r.pessoa || "sem nome"}`, data: r.pagoEm })),
     ].sort((a, b) => new Date(a.data) - new Date(b.data)),
   };
-  const base = (c.abertura || 0) + c.dinheiroSalao + c.reforcos - c.retiradas - c.gastosDoCaixa;
+  const base = (c.abertura || 0) + c.dinheiroSalao + c.reforcos + c.equipeDinheiro - c.retiradas - c.gastosDoCaixa;
   c.esperadoSemDelivery = arred(base);
   c.esperadoComDelivery = arred(base + c.dinheiroDelivery);
   return c;
@@ -3872,7 +3879,7 @@ app.post("/fechamento-dia", authMiddleware(["dono"]), async (req, res) => {
       porGarcom,
       caixa: {
         abertura: c.abertura, dinheiroSalao: c.dinheiroSalao, dinheiroDelivery: c.dinheiroDelivery, deliveryNaGaveta: naGaveta,
-        reforcos: c.reforcos, retiradas: c.retiradas, gastosDoCaixa: c.gastosDoCaixa,
+        reforcos: c.reforcos, retiradas: c.retiradas, gastosDoCaixa: c.gastosDoCaixa, equipeDinheiro: c.equipeDinheiro,
         esperado, contado: contadoN, diferenca: contadoN === null ? null : arred(contadoN - esperado),
         movimentos: c.movimentos,
       },
