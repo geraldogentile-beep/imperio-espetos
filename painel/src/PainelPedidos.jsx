@@ -5141,6 +5141,158 @@ function LancamentoGastos({ mes, setMes }) {
 // Consumo de donos e funcionários, por nome. Dono paga o custo; funcionário
 // paga o cardápio com R$ 2 de desconto por espeto (o valor do funcionário
 // pode ser corrigido à mão). Fica fora do caixa: é o acerto com a equipe.
+// ── RELATÓRIO DE FORMAÇÃO DE PREÇOS ───────────────────────────
+// Pedido da equipe (23/10/2026): ver o Formador de Preço de todos os produtos
+// de uma vez, sem abrir item por item no Estoque. Mesmas contas do Formador:
+// custo por venda = custo da unidade x consumo por venda; margem real =
+// (preço − custo) / preço; sugerido = custo / (1 − meta), subindo para o
+// próximo R$ 0,50. Só leitura: custo e meta se mudam no Estoque.
+const SITUACAO_PRECO = {
+  ok:         { txt: "✅ Na meta",                 cor: "#065f46", bg: "#d1fae5" },
+  atencao:    { txt: "⚠️ Perto do limite",          cor: "#92400e", bg: "#fef3c7" },
+  abaixo:     { txt: "🚨 Abaixo da meta",           cor: "#991b1b", bg: "#fee2e2" },
+  prejuizo:   { txt: "🚨 Custo maior que o preço",  cor: "#991b1b", bg: "#fee2e2" },
+  semmeta:    { txt: "Sem margem desejada",         cor: "#555",    bg: "#f3f4f6" },
+  semcusto:   { txt: "Sem custo cadastrado",        cor: "#92400e", bg: "#fff7ed" },
+  semvinculo: { txt: "Sem item no estoque",         cor: "#555",    bg: "#f3f4f6" },
+};
+function RelatorioPrecos() {
+  const [cardapio, setCardapio] = useState(null);
+  const [estoque, setEstoque] = useState(null);
+  const [erro, setErro] = useState("");
+  const [busca, setBusca] = useState("");
+  const [cat, setCat] = useState("todos");
+  const [filtro, setFiltro] = useState("todos");   // todos | atencao | semcusto
+  async function carregar() {
+    setErro("");
+    try {
+      const [rc, re] = await Promise.all([authFetch(BACKEND_URL + "/cardapio"), authFetch(BACKEND_URL + "/estoque")]);
+      if (!rc.ok || !re.ok) { setErro("Não foi possível carregar os preços."); return; }
+      setCardapio(await rc.json()); setEstoque(await re.json());
+    } catch { setErro("Sem conexão."); }
+  }
+  useEffect(() => { carregar(); }, []);
+
+  const low = (x) => String(x || "").trim().toLowerCase();
+  const pct = (v) => (v === null || v === undefined ? "—" : (Math.round(v * 10) / 10).toFixed(1).replace(".", ",") + "%");
+  const linhas = (cardapio || []).filter(i => i.ativo !== false).map(i => {
+    const est = (estoque || []).find(e => (e.cardapioNomes || []).some(n => low(n) === low(i.nome)));
+    const preco = Number(i.preco) || 0;
+    const custo = est ? (Number(est.custoPorUnidade) || 0) * (Number(est.consumoPorVenda) || 1) : 0;
+    const meta = Number(est?.margemDesejada) || 0;
+    const metaValida = meta > 0 && meta < 100;
+    const temCusto = custo > 0;
+    const lucro = temCusto ? preco - custo : null;
+    const margem = temCusto && preco > 0 ? (lucro / preco) * 100 : null;
+    const sugerido = temCusto && metaValida ? Math.ceil((custo / (1 - meta / 100)) * 2 - 1e-9) / 2 : null;
+    let situacao = "semvinculo";
+    if (est && !temCusto) situacao = "semcusto";
+    else if (est) {
+      if (custo >= preco) situacao = "prejuizo";
+      else if (!metaValida) situacao = "semmeta";
+      else if (margem >= meta) situacao = "ok";
+      else if (margem >= meta * 0.8) situacao = "atencao";
+      else situacao = "abaixo";
+    }
+    return { item: i, est, preco, custo: temCusto ? custo : null, lucro, margem, meta: metaValida ? meta : null, sugerido, situacao, lanche: ehLanche(i) };
+  });
+  const precisaAtencao = (l) => ["atencao", "abaixo", "prejuizo"].includes(l.situacao);
+  const semCusto = (l) => ["semcusto", "semvinculo"].includes(l.situacao);
+  const visiveis = linhas
+    .filter(l => cat === "todos" || l.item.categoria === cat)
+    .filter(l => filtro === "todos" || (filtro === "atencao" ? precisaAtencao(l) : semCusto(l)))
+    .filter(l => !busca.trim() || low(l.item.nome).includes(low(busca)));
+  const categorias = ordenarCategorias(linhas.map(l => l.item.categoria));
+  const comCusto = linhas.filter(l => l.margem !== null);
+  const margemMedia = comCusto.length ? comCusto.reduce((t, l) => t + l.margem, 0) / comCusto.length : null;
+
+  function imprimir() {
+    const win = abrirJanelaImpressao("width=900,height=900");
+    if (!win) return;
+    const tr = (l) => `<tr><td>${l.item.nome}${l.lanche ? " <i>(base)</i>" : ""}</td><td class="n">${fmtBR(l.preco)}</td><td class="n">${l.custo !== null ? fmtBR(l.custo) : "—"}</td><td class="n">${l.lucro !== null ? fmtBR(l.lucro) : "—"}</td><td class="n">${pct(l.margem)}</td><td class="n">${l.meta !== null ? pct(l.meta) : "—"}</td><td class="n">${l.sugerido !== null ? fmtBR(l.sugerido) : "—"}</td><td>${SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")}</td></tr>`;
+    const corpo = categorias.filter(c => c !== "todos").map(c => { const ls = visiveis.filter(l => l.item.categoria === c); return ls.length ? `<tr class="c"><td colspan="8">${c}</td></tr>` + ls.map(tr).join("") : ""; }).join("");
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Formação de preços</title>
+      <style>body{font-family:Arial,sans-serif;padding:20px;color:#222;font-size:12px}h1{font-size:18px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{padding:5px 6px;border-bottom:1px solid #e5e5e5;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}tr.c td{background:#f3f3f3;font-weight:bold;border-top:2px solid #999}@media print{button{display:none}}</style></head><body>
+      <h1>Império dos Espetos — Formação de preços</h1><div style="color:#666">gerado em ${new Date().toLocaleString("pt-BR")} · margem real = (preço − custo) ÷ preço · sugerido = preço para atingir a margem desejada</div>
+      <table><tr><th>Produto</th><th class="n">Preço</th><th class="n">Custo</th><th class="n">Lucro</th><th class="n">Margem real</th><th class="n">Meta</th><th class="n">Sugerido</th><th>Situação</th></tr>${corpo}</table>
+      <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
+    win.document.close();
+  }
+  function baixarCsv() {
+    const num = (v) => (v === null || v === undefined ? "" : (Number(v) || 0).toFixed(2).replace(".", ","));
+    const ls = [["Categoria", "Produto", "Preço", "Custo por venda", "Lucro por venda", "Margem real (%)", "Margem desejada (%)", "Preço sugerido", "Situação"],
+      ...visiveis.map(l => [l.item.categoria, l.item.nome + (l.lanche ? " (base)" : ""), num(l.preco), num(l.custo), num(l.lucro), num(l.margem), num(l.meta), num(l.sugerido), SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")])];
+    const csv = "\ufeff" + ls.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = "formacao-de-precos.csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  const card = { background: "#fff", borderRadius: 14, padding: 14, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" };
+  const chip = (ativo) => ({ whiteSpace: "nowrap", padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: ativo ? 700 : 500, background: ativo ? "#7b1a0a" : "#f0f0f0", color: ativo ? "#fff" : "#555" });
+  if (erro) return <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>{erro} <button onClick={carregar} style={{ marginLeft: 8 }}>Tentar de novo</button></div>;
+  if (!cardapio || !estoque) return <div style={{ color: "#888", fontSize: 13, textAlign: "center" }}>Carregando...</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Metrica icon="🏷️" label="Produtos" valor={linhas.length} sub={`${comCusto.length} com custo`} cor="#7b1a0a" />
+        <Metrica icon="✅" label="Na meta" valor={linhas.filter(l => l.situacao === "ok").length} cor="#10b981" />
+        <Metrica icon="🚨" label="Precisam de atenção" valor={linhas.filter(precisaAtencao).length} cor="#ef4444" />
+        <Metrica icon="📦" label="Sem custo" valor={linhas.filter(semCusto).length} cor="#f59e0b" />
+        <Metrica icon="📊" label="Margem média" valor={pct(margemMedia)} sub="dos que têm custo" cor="#0891b2" />
+      </div>
+      <div style={{ fontSize: 11.5, color: "#888", lineHeight: 1.5 }}>Custo e margem desejada vêm do Formador de Preço de cada item (Estoque → item). Para mudar, é lá; aqui é só para ver tudo junto.</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {[["todos", "Todos"], ["atencao", "🚨 Precisam de atenção"], ["semcusto", "📦 Sem custo"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFiltro(k)} style={chip(filtro === k)}>{l}</button>
+        ))}
+      </div>
+      <div style={{ background: "#fff", borderRadius: 12, padding: "9px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.07)", display: "flex", alignItems: "center", gap: 8 }}>
+        <span>🔍</span>
+        <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar produto..." style={{ border: "none", outline: "none", flex: 1, fontSize: 13, background: "transparent" }} />
+        {busca && <span onClick={() => setBusca("")} style={{ cursor: "pointer", color: "#aaa", fontSize: 16 }}>×</span>}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {categorias.map(c => <button key={c} onClick={() => setCat(c)} style={chip(cat === c)}>{c === "todos" ? "📋 Todas" : c}</button>)}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button onClick={imprimir} style={{ flex: 1, minWidth: 150, background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🖨️ Imprimir / salvar PDF</button>
+        <button onClick={baixarCsv} style={{ flex: 1, minWidth: 150, background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>⬇️ Planilha</button>
+      </div>
+      {visiveis.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>Nenhum produto {filtro === "atencao" ? "precisando de atenção" : filtro === "semcusto" ? "sem custo" : "encontrado"}{busca ? ` com "${busca}"` : ""}.</div>}
+      {categorias.filter(c => c !== "todos").map(c => {
+        const ls = visiveis.filter(l => l.item.categoria === c).sort((a, b) => String(a.item.nome).localeCompare(String(b.item.nome), "pt-BR", { sensitivity: "base" }));
+        if (!ls.length) return null;
+        return (
+          <div key={c} style={card}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a", marginBottom: 6 }}>{c} <span style={{ fontWeight: 400, color: "#aaa", fontSize: 12 }}>· {ls.length}</span></div>
+            {ls.map(l => {
+              const st = SITUACAO_PRECO[l.situacao];
+              const corMargem = l.situacao === "ok" ? "#065f46" : ["abaixo", "prejuizo"].includes(l.situacao) ? "#b91c1c" : l.situacao === "atencao" ? "#b45309" : "#555";
+              return (
+                <div key={l.item.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 0", borderTop: "1px solid #f3f3f3" }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13.5, color: "#222" }}>{l.item.nome}</div>
+                    <div style={{ fontSize: 12, color: "#555", marginTop: 1 }}>Venda <strong>{fmtBR(l.preco)}</strong>{l.custo !== null && <> · Custo {fmtBR(l.custo)} · Lucro <strong style={{ color: l.lucro >= 0 ? "#065f46" : "#b91c1c" }}>{fmtBR(l.lucro)}</strong></>}</div>
+                    {l.lanche && <div style={{ fontSize: 11, color: "#888" }}>Lanche: o custo é só da base; o espeto escolhido soma no preço e no custo.</div>}
+                    <span style={{ display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 700, borderRadius: 6, padding: "2px 7px", background: st.bg, color: st.cor }}>{st.txt}</span>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 16, color: corMargem }}>{pct(l.margem)}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>{l.meta !== null ? `meta ${pct(l.meta)}` : "margem real"}</div>
+                    {/* Só quando o preço não alcança a meta: sugerir baixar confundia */}
+                    {l.sugerido !== null && l.sugerido - l.preco >= 0.01 && <div style={{ fontSize: 11.5, color: "#b91c1c", fontWeight: 700, marginTop: 2 }}>sugerido {fmtBR(l.sugerido)}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function RelatorioEquipe() {
   const [modo, setModo] = useState("mes");
   const [ref, setRef] = useState(hojeISO);
@@ -5797,7 +5949,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
     <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
 
       {/* Período (as telas do mês têm o próprio seletor) */}
-      {!["gastos", "mes", "equipe"].includes(subAba) && (
+      {!["gastos", "mes", "equipe", "precos"].includes(subAba) && (
         <div style={{ display: "flex", gap: 8, background: "#fff", borderRadius: 12, padding: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
           {[["hoje","Hoje"],["semana","7 dias"],["mes","30 dias"]].map(([k, l]) => (
             <button key={k} onClick={() => setPeriodo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: periodo === k ? "#7b1a0a" : "transparent", color: periodo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
@@ -5807,7 +5959,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["equipe","👥 Equipe"],["lucro","💰 Lucro"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["equipe","👥 Equipe"],["lucro","💰 Lucro"],["precos","🏷️ Preços"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
@@ -5821,6 +5973,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       {subAba === "gastos" && <LancamentoGastos mes={mesRel} setMes={setMesRel} />}
       {subAba === "mes" && <RelatorioMensal mes={mesRel} setMes={setMesRel} />}
       {subAba === "equipe" && <RelatorioEquipe />}
+      {subAba === "precos" && <RelatorioPrecos />}
 
       {/* GERAL */}
       {subAba === "geral" && <>
