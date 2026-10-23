@@ -2536,6 +2536,13 @@ const qtdBR = (v) => String(qtdNum(v)).replace(".", ",");
 // Porcentagem digitada com vírgula ("33,5") ou ponto -> número. parseFloat
 // sozinho parava na vírgula e "33,5" virava 33.
 const parsePct = (s) => { const n = parseFloat(String(s ?? "").replace(",", ".")); return Number.isFinite(n) ? n : 0; };
+// Margem é sobre o PREÇO; markup é sobre o CUSTO ("X% em cima do custo").
+// Markup 100% = vender pelo dobro = margem 50% (a equipe confundia os dois,
+// 23/10/2026). A meta continua guardada como margem; o markup é só a outra forma de ver.
+const markupDeMargem = (m) => (m > 0 && m < 100 ? (m / (100 - m)) * 100 : null);
+const margemDeMarkup = (mk) => (mk > 0 ? (mk / (100 + mk)) * 100 : null);
+const pctBR = (v, casas = 1) => (v === null || v === undefined || !Number.isFinite(v) ? "—" : (Math.round(v * 10 ** casas) / 10 ** casas).toFixed(casas).replace(".", ",") + "%");
+const lerMetaEm = () => { try { return localStorage.getItem("imperio_meta_em") === "markup" ? "markup" : "margem"; } catch { return "margem"; } };
 const pctTexto = (v) => (v === null || v === undefined || v === "" ? "" : String(v).replace(".", ","));
 // Quantidade digitada com vírgula ou ponto ("0,4", "2.5") -> número (NaN se vazio/inválido)
 const lerDecimal = (s) => parseFloat(String(s ?? "").trim().replace(",", "."));
@@ -2545,6 +2552,12 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const [precoManual, setPrecoManual] = useState("");
   const [aplicando, setAplicando] = useState(false);
   const [aplicadoMsg, setAplicadoMsg] = useState(null);
+  // Meta digitada como margem (sobre o preço) ou markup (em cima do custo).
+  // Guardada sempre como margem; a escolha fica neste aparelho.
+  const [metaEm, setMetaEm] = useState(lerMetaEm);
+  const [mkTxt, setMkTxt] = useState("");
+  const [editandoMk, setEditandoMk] = useState(false);
+  const trocarMetaEm = (v) => { setMetaEm(v); try { localStorage.setItem("imperio_meta_em", v); } catch {} };
 
   function parseMoeda(str) { return parseMoedaGlobal(str); }
   function handleMascara(campo, val) {
@@ -2573,6 +2586,11 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const precoFinal    = modoPreco === "manual" ? parseMoeda(precoManual) : precoSugerido;
   const pct1 = (v) => (Number(v) || 0).toFixed(1).replace(".", ",") + "%";
   const margemReal    = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / pv) * 100 : null;
+  const markupReal    = pv > 0 && custoVenda > 0 ? ((pv - custoVenda) / custoVenda) * 100 : null;
+  const markupMeta    = markupDeMargem(m);
+  // Campo de markup: mostra o que a pessoa digitou enquanto digita; fora disso, a conversão da meta
+  const mkDaMeta = markupMeta !== null ? String(Math.round(markupMeta * 10) / 10).replace(".", ",") : "";
+  useEffect(() => { if (!editandoMk) setMkTxt(mkDaMeta); }, [mkDaMeta, editandoMk, metaEm]);
   const margemFinal   = precoFinal > 0 && custoVenda > 0 ? ((precoFinal - custoVenda) / precoFinal) * 100 : null;
   const lucroPorVenda = pv > 0 ? pv - custoVenda : 0;
 
@@ -2587,9 +2605,9 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
   const txtStatus = { ok:"#065f46", atencao:"#92400e", alerta:"#991b1b" };
   const icnStatus = { ok:"✅", atencao:"⚠️", alerta:"🚨" };
   const msgStatus = {
-    ok:      `Margem real ${pct1(margemReal)} — acima da meta!`,
-    atencao: `Margem real ${pct1(margemReal)} — próximo do limite.`,
-    alerta:  `Margem real ${pct1(margemReal)} — abaixo da meta de ${pctTexto(m)}%!`,
+    ok:      `Margem real ${pct1(margemReal)} (markup ${pctBR(markupReal)}) — acima da meta!`,
+    atencao: `Margem real ${pct1(margemReal)} (markup ${pctBR(markupReal)}) — próximo do limite.`,
+    alerta:  `Margem real ${pct1(margemReal)} (markup ${pctBR(markupReal)}) — abaixo da meta de ${pctTexto(m)}% (markup ${pctBR(markupMeta)})!`,
   };
 
   // Aplica preço ao cardápio via API
@@ -2637,18 +2655,39 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
               onChange={e=>handleMascara("custoPorUnidade", e.target.value)}
               placeholder="R$ 0,00" style={inpBase}/>
           </div>
-          <div style={{width:80}}>
-            <div style={{fontSize:11,color:"#888",marginBottom:3}}>Margem (%)</div>
-            <input type="text" inputMode="decimal" value={pctTexto(margem)}
-              onChange={e=>{
-                // Aceita "33,5" ou "33.5": até 2 inteiros e 2 decimais, máximo 99
-                const mm = e.target.value.replace(/[^\d.,]/g,"").replace(".", ",").match(/^(\d{0,2})(,\d{0,2})?/);
-                let v = mm ? mm[1] + (mm[2] || "") : "";
-                if (parsePct(v) > 99) v = "99";
-                onChange("margemDesejada", v);
-              }}
-              placeholder="60" style={{...inpBase,textAlign:"center",borderColor:m>=100?"#ef4444":"#e0e0e0"}}/>
+          <div style={{width:96}}>
+            <div style={{fontSize:11,color:"#888",marginBottom:3}}>{metaEm === "markup" ? "Markup (%)" : "Margem (%)"}</div>
+            {metaEm === "markup" ? (
+              <input type="text" inputMode="decimal" value={mkTxt}
+                onFocus={()=>setEditandoMk(true)} onBlur={()=>setEditandoMk(false)}
+                onChange={e=>{
+                  // Markup: até 4 inteiros e 2 decimais (ex.: 100 = o dobro do custo)
+                  const mm = e.target.value.replace(/[^\d.,]/g,"").replace(".", ",").match(/^(\d{0,4})(,\d{0,2})?/);
+                  const v = mm ? mm[1] + (mm[2] || "") : "";
+                  setMkTxt(v);
+                  const mg = margemDeMarkup(parsePct(v));
+                  onChange("margemDesejada", mg ? String(Math.round(mg * 100) / 100).replace(".", ",") : "");
+                }}
+                placeholder="100" style={{...inpBase,textAlign:"center"}}/>
+            ) : (
+              <input type="text" inputMode="decimal" value={pctTexto(margem)}
+                onChange={e=>{
+                  // Aceita "33,5" ou "33.5": até 2 inteiros e 2 decimais, máximo 99
+                  const mm = e.target.value.replace(/[^\d.,]/g,"").replace(".", ",").match(/^(\d{0,2})(,\d{0,2})?/);
+                  let v = mm ? mm[1] + (mm[2] || "") : "";
+                  if (parsePct(v) > 99) v = "99";
+                  onChange("margemDesejada", v);
+                }}
+                placeholder="60" style={{...inpBase,textAlign:"center",borderColor:m>=100?"#ef4444":"#e0e0e0"}}/>
+            )}
+            {m > 0 && m < 100 && <div style={{fontSize:10,color:"#888",marginTop:2,textAlign:"center"}}>{metaEm === "markup" ? `= margem ${pctBR(m)}` : `= markup ${pctBR(markupMeta)}`}</div>}
           </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          <span style={{fontSize:11,color:"#888"}}>Meta em:</span>
+          {[["margem","Margem (sobre o preço)"],["markup","Markup (em cima do custo)"]].map(([k,l])=>(
+            <button key={k} onClick={()=>trocarMetaEm(k)} style={{padding:"4px 10px",borderRadius:16,border:`1.5px solid ${metaEm===k?"#7b1a0a":"#e0e0e0"}`,background:metaEm===k?"#fef0ed":"#fff",color:metaEm===k?"#7b1a0a":"#666",fontWeight:metaEm===k?700:500,fontSize:11,cursor:"pointer"}}>{l}</button>
+          ))}
         </div>
         <div>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>Preço atual (R$)</div>
@@ -2659,7 +2698,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
         </div>
       </div>
 
-      {m >= 100 && (
+      {m >= 100 && metaEm === "margem" && (
         <div style={{background:"#fee2e2",border:"1.5px solid #fca5a5",borderRadius:8,padding:"8px 12px",fontSize:11.5,color:"#991b1b",lineHeight:1.5}}>
           A margem é a parte do preço que fica de lucro, então vai de 1% a 99%. Para vender pelo <strong>dobro</strong> do custo, use <strong>50%</strong>; pelo triplo, 67%.
         </div>
@@ -2694,6 +2733,7 @@ function FormadorPreco({ custo, margem, precoVenda, consumoPorVenda, onChange, c
             <div style={{flex:1,background:"#fff",borderRadius:8,padding:"8px 10px",minWidth:90}}>
               <div style={{fontSize:10,color:"#888"}}>Lucro por venda</div>
               <div style={{fontWeight:700,fontSize:13,color:lucroPorVenda>=0?"#10b981":"#ef4444",marginTop:2}}>{fmtBR(lucroPorVenda)}</div>
+              {margemReal !== null && <div style={{fontSize:9.5,color:"#888",marginTop:1}}>margem {pctBR(margemReal)} · markup {pctBR(markupReal)}</div>}
             </div>
           )}
         </div>
@@ -5195,7 +5235,8 @@ function RelatorioPrecos() {
       else if (margem >= meta * 0.8) situacao = "atencao";
       else situacao = "abaixo";
     }
-    return { item: i, est, preco, custo: temCusto ? custo : null, lucro, margem, meta: metaValida ? meta : null, sugerido, situacao, lanche: ehLanche(i) };
+    const markup = temCusto ? (lucro / custo) * 100 : null;
+    return { item: i, est, preco, custo: temCusto ? custo : null, lucro, margem, markup, meta: metaValida ? meta : null, metaMarkup: metaValida ? markupDeMargem(meta) : null, sugerido, situacao, lanche: ehLanche(i) };
   });
   const precisaAtencao = (l) => ["atencao", "abaixo", "prejuizo"].includes(l.situacao);
   const semCusto = (l) => ["semcusto", "semvinculo"].includes(l.situacao);
@@ -5210,19 +5251,19 @@ function RelatorioPrecos() {
   function imprimir() {
     const win = abrirJanelaImpressao("width=900,height=900");
     if (!win) return;
-    const tr = (l) => `<tr><td>${l.item.nome}${l.lanche ? " <i>(base)</i>" : ""}</td><td class="n">${fmtBR(l.preco)}</td><td class="n">${l.custo !== null ? fmtBR(l.custo) : "—"}</td><td class="n">${l.lucro !== null ? fmtBR(l.lucro) : "—"}</td><td class="n">${pct(l.margem)}</td><td class="n">${l.meta !== null ? pct(l.meta) : "—"}</td><td class="n">${l.sugerido !== null ? fmtBR(l.sugerido) : "—"}</td><td>${SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")}</td></tr>`;
-    const corpo = categorias.filter(c => c !== "todos").map(c => { const ls = visiveis.filter(l => l.item.categoria === c); return ls.length ? `<tr class="c"><td colspan="8">${c}</td></tr>` + ls.map(tr).join("") : ""; }).join("");
+    const tr = (l) => `<tr><td>${l.item.nome}${l.lanche ? " <i>(base)</i>" : ""}</td><td class="n">${fmtBR(l.preco)}</td><td class="n">${l.custo !== null ? fmtBR(l.custo) : "—"}</td><td class="n">${l.lucro !== null ? fmtBR(l.lucro) : "—"}</td><td class="n">${pct(l.margem)}</td><td class="n">${pct(l.markup)}</td><td class="n">${l.meta !== null ? `${pct(l.meta)} / ${pct(l.metaMarkup)}` : "—"}</td><td class="n">${l.sugerido !== null ? fmtBR(l.sugerido) : "—"}</td><td>${SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")}</td></tr>`;
+    const corpo = categorias.filter(c => c !== "todos").map(c => { const ls = visiveis.filter(l => l.item.categoria === c); return ls.length ? `<tr class="c"><td colspan="9">${c}</td></tr>` + ls.map(tr).join("") : ""; }).join("");
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Formação de preços</title>
       <style>body{font-family:Arial,sans-serif;padding:20px;color:#222;font-size:12px}h1{font-size:18px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{padding:5px 6px;border-bottom:1px solid #e5e5e5;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}tr.c td{background:#f3f3f3;font-weight:bold;border-top:2px solid #999}@media print{button{display:none}}</style></head><body>
-      <h1>Império dos Espetos — Formação de preços</h1><div style="color:#666">gerado em ${new Date().toLocaleString("pt-BR")} · margem real = (preço − custo) ÷ preço · sugerido = preço para atingir a margem desejada</div>
-      <table><tr><th>Produto</th><th class="n">Preço</th><th class="n">Custo</th><th class="n">Lucro</th><th class="n">Margem real</th><th class="n">Meta</th><th class="n">Sugerido</th><th>Situação</th></tr>${corpo}</table>
+      <h1>Império dos Espetos — Formação de preços</h1><div style="color:#666">gerado em ${new Date().toLocaleString("pt-BR")} · margem = lucro ÷ preço · markup = lucro ÷ custo · sugerido = preço para atingir a margem desejada</div>
+      <table><tr><th>Produto</th><th class="n">Preço</th><th class="n">Custo</th><th class="n">Lucro</th><th class="n">Margem real</th><th class="n">Markup real</th><th class="n">Meta (margem / markup)</th><th class="n">Sugerido</th><th>Situação</th></tr>${corpo}</table>
       <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
     win.document.close();
   }
   function baixarCsv() {
     const num = (v) => (v === null || v === undefined ? "" : (Number(v) || 0).toFixed(2).replace(".", ","));
-    const ls = [["Categoria", "Produto", "Preço", "Custo por venda", "Lucro por venda", "Margem real (%)", "Margem desejada (%)", "Preço sugerido", "Situação"],
-      ...visiveis.map(l => [l.item.categoria, l.item.nome + (l.lanche ? " (base)" : ""), num(l.preco), num(l.custo), num(l.lucro), num(l.margem), num(l.meta), num(l.sugerido), SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")])];
+    const ls = [["Categoria", "Produto", "Preço", "Custo por venda", "Lucro por venda", "Margem real (%)", "Markup real (%)", "Margem desejada (%)", "Markup desejado (%)", "Preço sugerido", "Situação"],
+      ...visiveis.map(l => [l.item.categoria, l.item.nome + (l.lanche ? " (base)" : ""), num(l.preco), num(l.custo), num(l.lucro), num(l.margem), num(l.markup), num(l.meta), num(l.metaMarkup), num(l.sugerido), SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")])];
     const csv = "\ufeff" + ls.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = "formacao-de-precos.csv"; a.click();
@@ -5250,6 +5291,8 @@ function RelatorioPrecos() {
           <div style={{ marginTop: 6 }}>
             <div><strong>Custo por venda</strong> = custo da unidade × consumo por venda (do Formador de Preço do item).</div>
             <div style={{ marginTop: 4 }}><strong>Margem real</strong> = (preço − custo) ÷ preço. Ex.: custo R$ 9,50 e preço R$ 15,00 → 5,50 ÷ 15,00 = <strong>36,7%</strong>.</div>
+            <div style={{ marginTop: 4 }}><strong>Markup real</strong> = (preço − custo) ÷ custo, o "quanto em cima do custo". Mesmo exemplo: 5,50 ÷ 9,50 = <strong>57,9%</strong>.</div>
+            <div style={{ marginTop: 4 }}>Conversão: markup 50% = margem 33,3% · markup 100% (o dobro do custo) = margem 50% · markup 150% = margem 60% · markup 200% (o triplo) = margem 66,7%. No Formador de Preço dá para digitar a meta do jeito que preferir ("Meta em: Margem | Markup").</div>
             <div style={{ marginTop: 4 }}><strong>Preço sugerido</strong> = custo ÷ (1 − margem desejada), arredondado <strong>para cima</strong> até o próximo R$ 0,50. Ex.: meta de 45% → 9,50 ÷ 0,55 = 17,27 → <strong>R$ 17,50</strong> (que dá 45,7%).</div>
             <div style={{ marginTop: 4 }}><strong>Situação:</strong> ✅ na meta (margem real igual ou acima da desejada) · ⚠️ perto do limite (abaixo, mas a menos de 20% da meta: com meta de 45%, a partir de 36%) · 🚨 abaixo da meta (menos que isso) · 🚨 custo maior que o preço.</div>
             <div style={{ marginTop: 6, background: "#fff", borderRadius: 8, padding: "6px 9px", color: "#7c2d12" }}><strong>Atenção:</strong> a margem é sobre o <strong>preço</strong>, não "em cima do custo". Margem de 50% = vender pelo <strong>dobro</strong> do custo (custo R$ 6 → preço R$ 12). Pôr 50% em cima do custo (R$ 6 → R$ 9) dá só 33% de margem.</div>
@@ -5295,7 +5338,8 @@ function RelatorioPrecos() {
                   </div>
                   <div style={{ textAlign: "right", flexShrink: 0 }}>
                     <div style={{ fontWeight: 800, fontSize: 16, color: corMargem }}>{pct(l.margem)}</div>
-                    <div style={{ fontSize: 11, color: "#888" }}>{l.meta !== null ? `meta ${pct(l.meta)}` : "margem real"}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>margem{l.markup !== null ? ` · markup ${pct(l.markup)}` : ""}</div>
+                    {l.meta !== null && <div style={{ fontSize: 11, color: "#888" }}>meta {pct(l.meta)} (markup {pct(l.metaMarkup)})</div>}
                     {/* Só quando o preço não alcança a meta: sugerir baixar confundia */}
                     {l.sugerido !== null && l.sugerido - l.preco >= 0.01 && <div style={{ fontSize: 11.5, color: "#b91c1c", fontWeight: 700, marginTop: 2 }}>sugerido {fmtBR(l.sugerido)}</div>}
                   </div>
