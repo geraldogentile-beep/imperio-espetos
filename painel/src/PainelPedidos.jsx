@@ -5163,6 +5163,7 @@ function RelatorioPrecos() {
   const [busca, setBusca] = useState("");
   const [cat, setCat] = useState("todos");
   const [filtro, setFiltro] = useState("todos");   // todos | atencao | semcusto
+  const [verComo, setVerComo] = useState(false);    // quadro "Como é calculado"
   async function carregar() {
     setErro("");
     try {
@@ -5242,6 +5243,21 @@ function RelatorioPrecos() {
         <Metrica icon="📊" label="Margem média" valor={pct(margemMedia)} sub="dos que têm custo" cor="#0891b2" />
       </div>
       <div style={{ fontSize: 11.5, color: "#888", lineHeight: 1.5 }}>Custo e margem desejada vêm do Formador de Preço de cada item (Estoque → item). Para mudar, é lá; aqui é só para ver tudo junto.</div>
+      {/* Pergunta da equipe (23/10/2026): "como chega nessas recomendações?" */}
+      <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 12, padding: "10px 12px", color: "#1e3a8a", fontSize: 12.5, lineHeight: 1.6 }}>
+        <button onClick={() => setVerComo(v => !v)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 700, fontSize: 13, color: "#1e3a8a", width: "100%", textAlign: "left" }}>ℹ️ Como é calculado {verComo ? "▴" : "▾"}</button>
+        {verComo && (
+          <div style={{ marginTop: 6 }}>
+            <div><strong>Custo por venda</strong> = custo da unidade × consumo por venda (do Formador de Preço do item).</div>
+            <div style={{ marginTop: 4 }}><strong>Margem real</strong> = (preço − custo) ÷ preço. Ex.: custo R$ 9,50 e preço R$ 15,00 → 5,50 ÷ 15,00 = <strong>36,7%</strong>.</div>
+            <div style={{ marginTop: 4 }}><strong>Preço sugerido</strong> = custo ÷ (1 − margem desejada), arredondado <strong>para cima</strong> até o próximo R$ 0,50. Ex.: meta de 45% → 9,50 ÷ 0,55 = 17,27 → <strong>R$ 17,50</strong> (que dá 45,7%).</div>
+            <div style={{ marginTop: 4 }}><strong>Situação:</strong> ✅ na meta (margem real igual ou acima da desejada) · ⚠️ perto do limite (abaixo, mas a menos de 20% da meta: com meta de 45%, a partir de 36%) · 🚨 abaixo da meta (menos que isso) · 🚨 custo maior que o preço.</div>
+            <div style={{ marginTop: 6, background: "#fff", borderRadius: 8, padding: "6px 9px", color: "#7c2d12" }}><strong>Atenção:</strong> a margem é sobre o <strong>preço</strong>, não "em cima do custo". Margem de 50% = vender pelo <strong>dobro</strong> do custo (custo R$ 6 → preço R$ 12). Pôr 50% em cima do custo (R$ 6 → R$ 9) dá só 33% de margem.</div>
+            <div style={{ marginTop: 6 }}>A margem cobre só o custo do produto: gás, carvão, salários, aluguel e imposto também saem dela, então a meta precisa ser alta o bastante para isso.</div>
+            <div style={{ marginTop: 4 }}>O sugerido é só referência: o sistema nunca muda preço sozinho, e com custo errado a sugestão também sai errada. Para aplicar um preço: Estoque → item → Formador de Preço → "Aplicar ao cardápio".</div>
+          </div>
+        )}
+      </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         {[["todos", "Todos"], ["atencao", "🚨 Precisam de atenção"], ["semcusto", "📦 Sem custo"]].map(([k, l]) => (
           <button key={k} onClick={() => setFiltro(k)} style={chip(filtro === k)}>{l}</button>
