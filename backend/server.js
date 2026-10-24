@@ -2928,6 +2928,75 @@ app.post("/estoque/:id/perda", authMiddleware(["dono"]), async (req, res) => {
   }
 });
 
+// GET /relatorio/itens?dia=|semana=|mes=|ano=|de=&ate= — item por item do
+// período (pedido da dona, 24/10/2026): vendido no salão e no delivery
+// (quantidade e valor pelo preço do item na comanda, antes de desconto),
+// consumo da equipe, perdas e o total que saiu, com o dia a dia (hora a hora
+// no dia; mês a mês no ano). Perda de item que não é vendido por unidade
+// (frango em kg, chopp em litros) fica numa linha própria, na unidade dele.
+app.get("/relatorio/itens", authMiddleware(["dono"]), async (req, res) => {
+  const per = periodoDaConsulta(req.query);
+  if (!per) return res.status(400).json({ erro: "Informe dia=AAAA-MM-DD, semana=AAAA-MM-DD, mes=AAAA-MM, ano=AAAA ou de/ate" });
+  const noPeriodo = { $gte: per.inicio, $lt: per.fim };
+  try {
+    const [vendas, pedidos, equipe, perdas, estoques] = await Promise.all([
+      VendaSalaoDB.find({ fechamento: noPeriodo }).select("itens fechamento").lean(),
+      PedidoDB.find({ status: "entregue", $or: [{ entregueEm: noPeriodo }, { entregueEm: null, horario: noPeriodo }] }).select("itens entregueEm horario").lean(),
+      ConsumoInternoDB.find({ data: noPeriodo }).select("itens data").lean(),
+      MovEstoqueDB.find({ tipo: "perda", horario: noPeriodo }).lean(),
+      EstoqueDB.find({}).select("nome cardapioNomes categoria unidade tipo consumoPorVenda").lean(),
+    ]);
+    const itens = {}, porPeriodo = {};
+    const categoriaDo = (nome, it) => CARDAPIO.find(c => String(c.nome).toLowerCase() === nome.toLowerCase())?.categoria || it?.categoria || it?.cat || "Outros";
+    const linha = (nome, extra = {}) => {
+      const k = nome.toLowerCase() + "|" + (extra.unidade || "un");
+      return (itens[k] ||= { chave: k, nome, categoria: extra.categoria || categoriaDo(nome, extra), unidade: extra.unidade || "un", salao: 0, salaoValor: 0, delivery: 0, deliveryValor: 0, equipe: 0, perdas: 0, porPeriodo: {} });
+    };
+    const somar = (l, campo, q, quando, valor = 0) => {
+      l[campo] += q;
+      if (valor) l[campo + "Valor"] += valor;
+      const p = per.chave(quando);
+      l.porPeriodo[p] = (l.porPeriodo[p] || 0) + q;
+      const pp = (porPeriodo[p] ||= { periodo: p, quantidade: 0, valor: 0 });
+      if (l.unidade === "un") pp.quantidade += q;
+      pp.valor += valor;
+    };
+    const nomeDe = (it) => String(it?.nomeBase || it?.nome || "").trim();
+    for (const v of vendas) for (const it of v.itens || []) { const n = nomeDe(it); if (!n) continue; const q = Number(it.qty) || 1; somar(linha(n, it), "salao", q, v.fechamento, q * (Number(it.preco) || 0)); }
+    for (const pd of pedidos) for (const it of pd.itens || []) { const n = nomeDe(it); if (!n) continue; const q = Number(it.qty) || 1; somar(linha(n, it), "delivery", q, pd.entregueEm || pd.horario, q * (Number(it.preco) || 0)); }
+    for (const c of equipe) for (const it of c.itens || []) { const n = nomeDe(it); if (!n) continue; somar(linha(n, it), "equipe", Number(it.qty) || 1, c.data); }
+    for (const m of perdas) {
+      const est = estoques.find(e => String(e._id) === String(m.estoqueId));
+      const unidade = est?.tipo === "chopp" ? "L" : (est?.unidade || "un");
+      const porUnidade = unidade === "un" && (Number(est?.consumoPorVenda) || 1) === 1 && est?.cardapioNomes?.[0];
+      const l = porUnidade ? linha(est.cardapioNomes[0]) : linha(est?.nome || m.estoqueNome || "?", { unidade, categoria: est?.categoria || "Estoque" });
+      somar(l, "perdas", Number(m.quantidade) || 0, m.horario);
+    }
+    const r4 = (v) => Math.round((Number(v) || 0) * 10000) / 10000;
+    const lista = Object.values(itens).map(l => ({
+      ...l, salaoValor: arred(l.salaoValor), deliveryValor: arred(l.deliveryValor), perdas: r4(l.perdas),
+      vendido: l.salao + l.delivery, vendidoValor: arred(l.salaoValor + l.deliveryValor),
+      total: r4(l.salao + l.delivery + l.equipe + l.perdas),
+      porPeriodo: Object.entries(l.porPeriodo).map(([periodo, quantidade]) => ({ periodo, quantidade: r4(quantidade) })).sort((a, b) => a.periodo.localeCompare(b.periodo)),
+    })).sort((a, b) => b.total - a.total || a.nome.localeCompare(b.nome, "pt-BR"));
+    const un = lista.filter(l => l.unidade === "un");
+    res.json({
+      inicio: per.inicio, fim: per.fim, agrupar: per.agrupar,
+      totais: {
+        vendido: un.reduce((t, l) => t + l.vendido, 0), vendidoValor: arred(lista.reduce((t, l) => t + l.vendidoValor, 0)),
+        salao: un.reduce((t, l) => t + l.salao, 0), delivery: un.reduce((t, l) => t + l.delivery, 0),
+        equipe: un.reduce((t, l) => t + l.equipe, 0), perdas: r4(un.reduce((t, l) => t + l.perdas, 0)),
+        vendas: vendas.length, pedidos: pedidos.length,
+      },
+      porPeriodo: Object.values(porPeriodo).map(p => ({ ...p, valor: arred(p.valor) })).sort((a, b) => a.periodo.localeCompare(b.periodo)),
+      itens: lista,
+    });
+  } catch (e) {
+    console.error("Erro no relatório por item:", e.message);
+    res.status(500).json({ erro: "Erro ao montar o relatório por item" });
+  }
+});
+
 // GET /estoque/perdas — perdas da semana, do mês ou do ano (ou de/ate),
 // por item, por motivo e período a período.
 //   ?semana=AAAA-MM-DD (qualquer dia da semana; vai de segunda a domingo)
@@ -3028,6 +3097,14 @@ function periodoDaConsulta(q = {}) {
     const a = Number(q.ano);
     if (!Number.isInteger(a) || a < 2000 || a > 2100) return null;
     return { inicio: new Date(Date.UTC(a, 0, 1) + FUSO_MS), fim: new Date(Date.UTC(a + 1, 0, 1) + FUSO_MS), agrupar: "mes", chave: porMes };
+  }
+  if (q.dia !== undefined) {
+    const m = String(q.dia).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    const d0 = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (isNaN(d0)) return null;
+    const porHora = (d) => new Date(new Date(d).getTime() - FUSO_MS).toISOString().slice(11, 13) + "h";
+    return { inicio: new Date(d0 + FUSO_MS), fim: new Date(d0 + 86400000 + FUSO_MS), agrupar: "hora", chave: porHora };
   }
   if (q.mes !== undefined) {
     const lim = limitesDoMes(q.mes);

@@ -4992,13 +4992,15 @@ const isoDia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,
 const diaDe = (iso) => { const [a, m, d] = String(iso).split("-").map(Number); return new Date(a, m - 1, d, 12); };
 function segundaDe(iso) { const d = diaDe(iso); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; }
 function consultaPeriodo(modo, ref) {
+  if (modo === "dia") return "dia=" + String(ref).slice(0, 10);
   if (modo === "semana") return "semana=" + isoDia(segundaDe(ref));
   if (modo === "ano") return "ano=" + String(ref).slice(0, 4);
   return "mes=" + String(ref).slice(0, 7);
 }
 function moverPeriodo(modo, ref, delta) {
   const d = diaDe(ref);
-  if (modo === "semana") d.setDate(d.getDate() + 7 * delta);
+  if (modo === "dia") d.setDate(d.getDate() + delta);
+  else if (modo === "semana") d.setDate(d.getDate() + 7 * delta);
   else if (modo === "ano") d.setFullYear(d.getFullYear() + delta, 0, 1);
   else d.setMonth(d.getMonth() + delta, 1);
   return isoDia(d);
@@ -5006,6 +5008,11 @@ function moverPeriodo(modo, ref, delta) {
 function rotuloPeriodo(modo, ref) {
   if (modo === "ano") return "Ano de " + String(ref).slice(0, 4);
   if (modo === "mes") return rotuloMes(String(ref).slice(0, 7));
+  if (modo === "dia") {
+    const d = diaDe(ref);
+    const nome = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"][d.getDay()];
+    return `${String(ref).slice(0, 10) === hojeISO() ? "Hoje" : nome}, ${fmtDataBR(ref)}`;
+  }
   const seg = segundaDe(ref), dom = new Date(seg); dom.setDate(seg.getDate() + 6);
   const f = (d) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
   return `Semana ${f(seg)} a ${f(dom)}/${dom.getFullYear()}`;
@@ -5349,6 +5356,213 @@ function RelatorioPrecos() {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── RELATÓRIO ITEM POR ITEM ───────────────────────────────────
+// Pedido da equipe (24/10/2026): o que saiu de cada item no dia, na semana,
+// no mês ou no ano — vendido no salão e no delivery, consumo da equipe e
+// perdas —, com busca de item que autocompleta e o dia a dia de cada um.
+// O valor é o preço do item na comanda/pedido (antes do desconto da conta).
+const DIAS_CURTO = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+function rotuloPedaco(agrupar, p) {
+  if (agrupar === "hora") return p;
+  if (agrupar === "mes") return MESES_NOME[Number(String(p).slice(5, 7)) - 1] || p;
+  const d = diaDe(p);
+  return `${DIAS_CURTO[d.getDay()]} ${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function RelatorioItens() {
+  const [modo, setModo] = useState("dia");
+  const [ref, setRef] = useState(hojeISO);
+  const [rel, setRel] = useState(null);
+  const [erro, setErro] = useState("");
+  const [cardapio, setCardapio] = useState([]);
+  const [sel, setSel] = useState(null);             // { chave, nome, unidade } escolhido na busca
+  const [cat, setCat] = useState("todos");
+  const [aberto, setAberto] = useState(null);       // item com o dia a dia aberto
+  const [verPedacos, setVerPedacos] = useState(null); // null = automático
+
+  async function carregar() {
+    setErro("");
+    try {
+      const r = await authFetch(BACKEND_URL + "/relatorio/itens?" + consultaPeriodo(modo, ref));
+      if (r.ok) setRel(await r.json()); else setErro("Não foi possível carregar o relatório por item.");
+    } catch { setErro("Sem conexão."); }
+  }
+  useEffect(() => { carregar(); }, [modo, ref]);
+  useEffect(() => {
+    authFetch(BACKEND_URL + "/cardapio").then(r => (r.ok ? r.json() : [])).then(c => setCardapio(Array.isArray(c) ? c : [])).catch(() => {});
+  }, []);
+
+  // A busca acha o que saiu no período e também o resto do cardápio (para
+  // ver que um item não vendeu nada); o escolhido continua ao trocar o período.
+  const opcoes = (() => {
+    const m = new Map();
+    for (const i of rel?.itens || []) m.set(i.chave, { _id: i.chave, nome: i.nome, unidade: i.unidade });
+    for (const c of cardapio) {
+      const nome = String(c?.nome || "").trim();
+      if (c.ativo === false || !nome) continue;
+      const k = nome.toLowerCase() + "|un";
+      if (!m.has(k)) m.set(k, { _id: k, nome, unidade: "un" });
+    }
+    if (sel && !m.has(sel.chave)) m.set(sel.chave, { _id: sel.chave, nome: sel.nome, unidade: sel.unidade });
+    return [...m.values()];
+  })();
+  const itens = rel?.itens || [];
+  const escolhido = sel ? itens.find(i => i.chave === sel.chave) || null : null;
+  const categorias = ordenarCategorias(itens.map(i => i.categoria));
+  const catAtiva = categorias.includes(cat) ? cat : "todos"; // a categoria pode não ter nada no novo período
+  const visiveis = sel ? (escolhido ? [escolhido] : []) : itens.filter(i => catAtiva === "todos" || i.categoria === catAtiva);
+  const q = (v, un = "un") => (un === "un" ? qtdBR(v) : `${qtdBR(v)} ${un}`);
+  const titulo = rotuloPeriodo(modo, ref);
+  const tituloPedacos = rel?.agrupar === "hora" ? "Hora a hora" : rel?.agrupar === "mes" ? "Mês a mês" : "Dia a dia";
+  const pedacos = sel ? escolhido?.porPeriodo || [] : rel?.porPeriodo || [];
+  const mostrarPedacos = verPedacos ?? pedacos.length <= 12;
+  const base = sel
+    ? escolhido || { vendido: 0, salao: 0, delivery: 0, vendidoValor: 0, equipe: 0, perdas: 0, unidade: sel.unidade }
+    : { ...(rel?.totais || {}), unidade: "un" };
+
+  const barras = (lista, un) => {
+    const max = Math.max(1, ...lista.map(p => p.quantidade));
+    return lista.map(p => (
+      <div key={p.periodo} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: 12 }}>
+        <div style={{ width: 64, color: "#555", flexShrink: 0 }}>{rotuloPedaco(rel.agrupar, p.periodo)}</div>
+        <div style={{ flex: 1, minWidth: 30, background: "#f3f4f6", borderRadius: 4, height: 14, overflow: "hidden" }}>
+          <div style={{ width: `${(p.quantidade / max) * 100}%`, background: "#c2410c", height: "100%", borderRadius: 4 }} />
+        </div>
+        <div style={{ width: 52, textAlign: "right", fontWeight: 700, color: "#333", flexShrink: 0 }}>{q(p.quantidade, un)}</div>
+        {p.valor !== undefined && <div style={{ width: 78, textAlign: "right", color: "#888", flexShrink: 0 }}>{fmtBR(p.valor)}</div>}
+      </div>
+    ));
+  };
+
+  function imprimir() {
+    if (!rel) return;
+    const win = abrirJanelaImpressao("width=900,height=900");
+    if (!win) return;
+    const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const tr = (i) => `<tr><td>${esc(i.nome)}${i.unidade !== "un" ? ` <i>(${i.unidade})</i>` : ""}</td><td class="n">${qtdBR(i.salao)}</td><td class="n">${qtdBR(i.delivery)}</td><td class="n">${qtdBR(i.equipe)}</td><td class="n">${qtdBR(i.perdas)}</td><td class="n"><b>${qtdBR(i.total)}</b></td><td class="n">${fmtBR(i.vendidoValor)}</td></tr>`;
+    const corpo = ordenarCategorias(visiveis.map(i => i.categoria)).filter(c => c !== "todos")
+      .map(c => `<tr class="c"><td colspan="7">${esc(c)}</td></tr>` + visiveis.filter(i => i.categoria === c).map(tr).join("")).join("");
+    const pedTab = pedacos.length ? `<h2>${tituloPedacos}${sel ? " — " + esc(sel.nome) : ""}</h2><table><tr><th>${rel.agrupar === "hora" ? "Hora" : rel.agrupar === "mes" ? "Mês" : "Dia"}</th><th class="n">Quantidade</th>${sel ? "" : '<th class="n">Valor vendido</th>'}</tr>` +
+      pedacos.map(p => `<tr><td>${rotuloPedaco(rel.agrupar, p.periodo)}</td><td class="n">${qtdBR(p.quantidade)}</td>${sel ? "" : `<td class="n">${fmtBR(p.valor)}</td>`}</tr>`).join("") + "</table>" : "";
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Itens ${esc(titulo)}</title>
+      <style>body{font-family:Arial,sans-serif;padding:20px;color:#222;font-size:12px}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:18px 0 0}table{width:100%;border-collapse:collapse;margin-top:10px}td,th{padding:5px 6px;border-bottom:1px solid #e5e5e5;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}tr.c td{background:#f3f3f3;font-weight:bold;border-top:2px solid #999}@media print{button{display:none}}</style></head><body>
+      <h1>Império dos Espetos — Item por item${sel ? ": " + esc(sel.nome) : ""}</h1><div style="color:#666">${esc(titulo)} · gerado em ${new Date().toLocaleString("pt-BR")} · valor = preço do item na comanda, antes do desconto da conta</div>
+      <p>Vendidos: <b>${q(base.vendido, base.unidade)}</b> (salão ${qtdBR(base.salao)} · delivery ${qtdBR(base.delivery)}) · Valor vendido: <b>${fmtBR(base.vendidoValor)}</b> · Equipe: <b>${qtdBR(base.equipe)}</b> · Perdas: <b>${qtdBR(base.perdas)}</b></p>
+      ${visiveis.length ? `<table><tr><th>Item</th><th class="n">Salão</th><th class="n">Delivery</th><th class="n">Equipe</th><th class="n">Perdas</th><th class="n">Total</th><th class="n">Valor vendido</th></tr>${corpo}</table>` : "<p>Nada saiu nesse período.</p>"}
+      ${pedTab}
+      <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
+    win.document.close();
+  }
+  function baixarCsv() {
+    const n = (v) => String(qtdNum(v)).replace(".", ",");
+    const din = (v) => (Number(v) || 0).toFixed(2).replace(".", ",");
+    const ls = [["Categoria", "Item", "Unidade", "Salão", "Valor salão", "Delivery", "Valor delivery", "Equipe", "Perdas", "Total que saiu", "Valor vendido"],
+      ...visiveis.map(i => [i.categoria, i.nome, i.unidade, n(i.salao), din(i.salaoValor), n(i.delivery), din(i.deliveryValor), n(i.equipe), n(i.perdas), n(i.total), din(i.vendidoValor)])];
+    const csv = "﻿" + ls.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = `itens-${consultaPeriodo(modo, ref).replace("=", "-")}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  const card = { background: "#fff", borderRadius: 14, padding: 14, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" };
+  const chip = (ativo) => ({ whiteSpace: "nowrap", padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: ativo ? 700 : 500, background: ativo ? "#7b1a0a" : "#f0f0f0", color: ativo ? "#fff" : "#555" });
+  const linhaItem = (i) => {
+    const ab = !sel && aberto === i.chave; // com item escolhido, o dia a dia já está no quadro de cima
+    const partes = [i.salao && `Salão ${q(i.salao, i.unidade)}`, i.delivery && `Delivery ${q(i.delivery, i.unidade)}`, i.equipe && `Equipe ${q(i.equipe, i.unidade)}`, i.perdas && `Perdas ${q(i.perdas, i.unidade)}`].filter(Boolean);
+    return (
+      <div key={i.chave} style={{ borderTop: "1px solid #f3f3f3" }}>
+        <div onClick={() => !sel && setAberto(ab ? null : i.chave)} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 0", cursor: sel ? "default" : "pointer" }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 13.5, color: "#222" }}>{i.nome}{i.unidade !== "un" && <span style={{ fontWeight: 400, color: "#888", fontSize: 11.5 }}> ({i.unidade}, estoque)</span>}</div>
+            <div style={{ fontSize: 12, color: "#555", marginTop: 1 }}>{partes.join(" · ")}</div>
+            {i.vendidoValor > 0 && <div style={{ fontSize: 12, color: "#065f46", fontWeight: 700, marginTop: 1 }}>Vendido {fmtBR(i.vendidoValor)}</div>}
+          </div>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: 17, color: "#7b1a0a" }}>{q(i.total, i.unidade)}</div>
+            <div style={{ fontSize: 11, color: "#888" }}>no total{sel ? "" : ab ? " ▴" : " ▾"}</div>
+          </div>
+        </div>
+        {ab && (
+          <div style={{ background: "#fafafa", borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}>
+            {(i.salaoValor > 0 || i.deliveryValor > 0) && <div style={{ fontSize: 12, color: "#555", marginBottom: 6 }}>Salão {fmtBR(i.salaoValor)} · Delivery {fmtBR(i.deliveryValor)}</div>}
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{tituloPedacos} (tudo que saiu)</div>
+            {barras(i.porPeriodo, i.unidade)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 6, background: "#fff", borderRadius: 12, padding: 5, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
+        {[["dia", "Dia"], ["semana", "Semana"], ["mes", "Mês"], ["ano", "Ano"]].map(([k, l]) => (
+          <button key={k} onClick={() => { setModo(k); setVerPedacos(null); }} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: modo === k ? "#7b1a0a" : "transparent", color: modo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+      <NavPeriodo modo={modo} ref_={ref} setRef={(d) => { setRef(d); setVerPedacos(null); }} />
+
+      {/* Barra de busca com autocompletar (pedido de 24/10/2026) */}
+      <div style={{ background: "#fff", borderRadius: 12, padding: "9px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.07)", display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <span style={{ paddingTop: 7 }}>🔍</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <BuscaItem itens={opcoes} valor={sel?.chave || ""} placeholder="Buscar item (ex.: alcatra, chopp)..."
+            descrever={(o) => (o.unidade !== "un" ? `${o.nome} (${o.unidade}, estoque)` : o.nome)}
+            onEscolher={(k) => { const o = opcoes.find(x => x._id === k); if (o) { setSel({ chave: o._id, nome: o.nome, unidade: o.unidade }); setAberto(null); setVerPedacos(null); } }} />
+        </div>
+        {sel && <button onClick={() => { setSel(null); setVerPedacos(null); }} style={{ background: "#f0f0f0", border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 12, fontWeight: 700, color: "#555", cursor: "pointer", flexShrink: 0 }}>✕ Todos</button>}
+      </div>
+
+      {erro && <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>{erro} <button onClick={carregar} style={{ marginLeft: 8 }}>Tentar de novo</button></div>}
+      {!rel && !erro && <div style={{ color: "#888", fontSize: 13, textAlign: "center" }}>Carregando...</div>}
+      {rel && <>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Metrica icon="🍢" label={sel ? "Vendidos" : "Itens vendidos"} valor={q(base.vendido, base.unidade)} sub={`${qtdBR(base.salao)} salão · ${qtdBR(base.delivery)} delivery`} cor="#7b1a0a" />
+          <Metrica icon="💰" label="Valor vendido" valor={fmtBR(base.vendidoValor)} sub="preço da comanda" cor="#10b981" />
+          <Metrica icon="👥" label="Equipe" valor={q(base.equipe, base.unidade)} cor="#0891b2" />
+          <Metrica icon="🗑️" label="Perdas" valor={q(base.perdas, base.unidade)} cor="#f59e0b" />
+        </div>
+        <div style={{ fontSize: 11.5, color: "#888", lineHeight: 1.5 }}>
+          Vendido = salão + delivery, pelo preço do item na comanda (antes do desconto da conta, sem a taxa de entrega). Total = vendido + equipe + perdas.
+          {modo === "dia" && " Conta pela hora em que a conta fechou (delivery: a entrega); depois da meia-noite já é o dia seguinte."}
+          {!sel && " Perda de item controlado em kg ou litro aparece na unidade do estoque e fica fora da soma de unidades."}
+        </div>
+
+        {pedacos.length > 0 && (
+          <div style={card}>
+            <button onClick={() => setVerPedacos(!mostrarPedacos)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 800, fontSize: 14, color: "#7b1a0a", width: "100%", textAlign: "left" }}>
+              📊 {tituloPedacos}{sel ? `: ${sel.nome}` : ""} {mostrarPedacos ? "▴" : "▾"}
+            </button>
+            <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{sel ? "tudo que saiu (vendido, equipe e perdas)" : "unidades que saíram (vendido, equipe e perdas) e valor vendido"}</div>
+            {mostrarPedacos && <div style={{ marginTop: 8 }}>{barras(pedacos, sel ? sel.unidade : "un")}</div>}
+          </div>
+        )}
+
+        {!sel && categorias.length > 2 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {categorias.map(c => <button key={c} onClick={() => setCat(c)} style={chip(catAtiva === c)}>{c === "todos" ? "📋 Todas" : c}</button>)}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={imprimir} style={{ flex: 1, minWidth: 150, background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🖨️ Imprimir / salvar PDF</button>
+          <button onClick={baixarCsv} style={{ flex: 1, minWidth: 150, background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>⬇️ Planilha</button>
+        </div>
+
+        {visiveis.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>{sel ? `Nada de ${sel.nome} saiu em ${titulo.replace(/^Hoje, /, "hoje, ")}.` : "Nada saiu nesse período."}</div>}
+        {ordenarCategorias(visiveis.map(i => i.categoria)).filter(c => c !== "todos").map(c => {
+          const ls = visiveis.filter(i => i.categoria === c);
+          return (
+            <div key={c} style={card}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a", marginBottom: 6 }}>{c} <span style={{ fontWeight: 400, color: "#aaa", fontSize: 12 }}>· {ls.length}</span></div>
+              {ls.map(linhaItem)}
+            </div>
+          );
+        })}
+      </>}
     </div>
   );
 }
@@ -6009,7 +6223,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
     <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
 
       {/* Período (as telas do mês têm o próprio seletor) */}
-      {!["gastos", "mes", "equipe", "precos"].includes(subAba) && (
+      {!["gastos", "mes", "equipe", "precos", "itens"].includes(subAba) && (
         <div style={{ display: "flex", gap: 8, background: "#fff", borderRadius: 12, padding: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
           {[["hoje","Hoje"],["semana","7 dias"],["mes","30 dias"]].map(([k, l]) => (
             <button key={k} onClick={() => setPeriodo(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: periodo === k ? "#7b1a0a" : "transparent", color: periodo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
@@ -6019,7 +6233,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["equipe","👥 Equipe"],["lucro","💰 Lucro"],["precos","🏷️ Preços"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["equipe","👥 Equipe"],["lucro","💰 Lucro"],["precos","🏷️ Preços"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["itens","🍢 Itens"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>
@@ -6034,6 +6248,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       {subAba === "mes" && <RelatorioMensal mes={mesRel} setMes={setMesRel} />}
       {subAba === "equipe" && <RelatorioEquipe />}
       {subAba === "precos" && <RelatorioPrecos />}
+      {subAba === "itens" && <RelatorioItens />}
 
       {/* GERAL */}
       {subAba === "geral" && <>
