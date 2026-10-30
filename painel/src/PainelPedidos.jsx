@@ -2942,8 +2942,12 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const [entradaMotivo, setEntradaMotivo] = useState("entrada mercadoria");
   const [ajusteQtd, setAjusteQtd] = useState("");
   const [ajusteMotivo, setAjusteMotivo] = useState("ajuste manual");
-  // Perda: espeto que caiu, queimou, estragou. perdaForm = { item, qtd, motivo, descricao }
+  // Perda: espeto que caiu, queimou, estragou. Vários itens de uma vez, com o
+  // mesmo motivo (pedido de 30/10/2026).
+  // perdaForm = { fixo (id do item aberto, ou null), linhas: [{ id, item, qtd }], motivo, descricao }
   const [perdaForm, setPerdaForm] = useState(null);
+  const linhaPerda = (item = null) => ({ id: Date.now() + Math.random(), item, qtd: "1" });
+  const novaPerda = (item = null) => ({ fixo: item?._id || null, linhas: [linhaPerda(item)], motivo: "Caiu no chão", descricao: "" });
   // Relatório de perdas por semana, mês ou ano; refPerdas = um dia dentro do período
   const [modoPerdas, setModoPerdas] = useState("mes");
   const [refPerdas, setRefPerdas] = useState(hojeISO);
@@ -2966,7 +2970,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
   function showMsg(texto, tipo="ok") {
     setMsg({texto,tipo});
     clearTimeout(timerMsg.current);
-    timerMsg.current = setTimeout(()=>setMsg(null), tipo==="ok" ? 5000 : 7000);
+    // Mensagem longa (perda de vários itens) fica mais tempo na tela
+    timerMsg.current = setTimeout(()=>setMsg(null), Math.max(tipo==="ok" ? 5000 : 7000, String(texto).length * 55));
   }
 
   async function carregar() {
@@ -3081,29 +3086,51 @@ function Estoque({ backendUrl, cardapio = [] }) {
     setSaving(false);
   }
 
+  // Cada linha vira um lançamento próprio, com o mesmo motivo. Se alguma
+  // falhar, as outras ficam lançadas e o formulário fica só com as que faltam.
   async function lancarPerda() {
     const f = perdaForm;
-    if (!f?.item) return showMsg("Escolha o item.", "erro");
-    const q = lerDecimal(f.qtd);
-    if (!(q > 0)) return showMsg("Informe quantos foram perdidos.", "erro");
+    if (!f) return;
+    const linhas = f.linhas || [];
+    const varias = linhas.length > 1;
+    for (const [n, l] of linhas.entries()) {
+      if (!l.item) return showMsg(varias ? `Escolha o item ${n + 1} (ou tire a linha).` : "Escolha o item.", "erro");
+      if (!(lerDecimal(l.qtd) > 0)) return showMsg(varias ? `Informe quanto se perdeu de ${l.item.nome}.` : "Informe quantos foram perdidos.", "erro");
+    }
     const motivo = f.motivo;
     const descricao = String(f.descricao || "").trim();
     if (motivo === "Outro" && !descricao) return showMsg("Escreva o que aconteceu.", "erro");
     setSaving(true);
-    try {
-      const r = await authFetch(backendUrl + `/estoque/${f.item._id}/perda`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quantidade: q, motivo, descricao }) });
-      if (!r.ok) { const e = await r.json().catch(() => ({})); showMsg(e.erro || "Não foi possível lançar a perda.", "erro"); setSaving(false); return; }
-      const d = await r.json().catch(() => ({}));
-      const u = f.item.tipo === "chopp" ? "L" : f.item.unidade;
-      const antes = qtdNum(f.item.quantidade);
-      showMsg(antes < q
-        ? `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. O estoque tinha só ${qtdBR(antes)} ${u} e ficou em 0 — confira se as entradas foram lançadas.`
-        : `🗑️ Perda lançada: ${q} ${u} de ${f.item.nome}. Estoque: ${qtdBR(antes)} → ${qtdBR(d.quantidade)} ${u}.`);
-      const id = f.item._id;
-      setPerdaForm(null); carregar();
-      if (selItem?._id === id) carregarMovs(id);
+    const feitas = [], falhas = [];
+    let erro = "";
+    for (const l of linhas) {
+      const q = lerDecimal(l.qtd);
+      try {
+        const r = await authFetch(backendUrl + `/estoque/${l.item._id}/perda`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quantidade: q, motivo, descricao }) });
+        if (!r.ok) { const e = await r.json().catch(() => ({})); erro = e.erro || "Não foi possível lançar a perda."; falhas.push(l); continue; }
+        const d = await r.json().catch(() => ({}));
+        feitas.push({ item: l.item, q, antes: qtdNum(l.item.quantidade), depois: d.quantidade });
+      } catch { erro = "Erro de conexão."; falhas.push(l); }
+    }
+    const u = (it) => (it.tipo === "chopp" ? "L" : it.unidade);
+    if (feitas.length === 1 && !falhas.length) {
+      const x = feitas[0];
+      showMsg(x.antes < x.q
+        ? `🗑️ Perda lançada: ${qtdBR(x.q)} ${u(x.item)} de ${x.item.nome}. O estoque tinha só ${qtdBR(x.antes)} ${u(x.item)} e ficou em 0 — confira se as entradas foram lançadas.`
+        : `🗑️ Perda lançada: ${qtdBR(x.q)} ${u(x.item)} de ${x.item.nome}. Estoque: ${qtdBR(x.antes)} → ${qtdBR(x.depois)} ${u(x.item)}.`);
+    } else if (feitas.length) {
+      const zerou = feitas.filter(x => x.antes < x.q);
+      showMsg(`🗑️ ${feitas.length === 1 ? "1 perda lançada" : feitas.length + " perdas lançadas"}: ${feitas.map(x => `${qtdBR(x.q)} ${u(x.item)} de ${x.item.nome}`).join(", ")}.`
+        + (zerou.length ? ` Ficaram em 0 (o estoque tinha menos): ${zerou.map(x => x.item.nome).join(", ")} — confira as entradas.` : "")
+        + (falhas.length ? ` ⚠️ Não lançou: ${falhas.map(l => l.item.nome).join(", ")} (${erro}). Continua no formulário para tentar de novo.` : ""),
+        falhas.length ? "erro" : "ok");
+    } else showMsg(erro, "erro");
+    if (feitas.length) {
+      carregar();
+      if (selItem && feitas.some(x => x.item._id === selItem._id)) carregarMovs(selItem._id);
       if (subAba === "perdas") carregarPerdas();
-    } catch { showMsg("Erro de conexão.", "erro"); }
+    }
+    setPerdaForm(falhas.length ? { ...f, linhas: falhas } : null);
     setSaving(false);
   }
 
@@ -3244,28 +3271,53 @@ function Estoque({ backendUrl, cardapio = [] }) {
   const MOTIVOS_PERDA = ["Caiu no chão", "Queimou", "Estragou / venceu", "Outro"];
   const formPerda = (comEscolha) => {
     const f = perdaForm; if (!f) return null;
-    const unid = f.item ? (f.item.tipo === "chopp" ? "L" : f.item.unidade) : "";
+    const linhas = f.linhas || [];
+    const varias = linhas.length > 1;
+    const mudar = (id, campo, valor) => setPerdaForm(p => ({ ...p, linhas: p.linhas.map(l => (l.id === id ? { ...l, [campo]: valor } : l)) }));
+    const btnQtd = {width:44,height:44,borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:20,fontWeight:800,cursor:"pointer",color:"#7b1a0a"};
     return (
       <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #f97316",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
-        <div style={{fontWeight:700,fontSize:14,marginBottom:10}}>🗑️ Lançar perda{f.item&&!comEscolha?` — ${f.item.nome}`:""}</div>
-        {comEscolha&&(
-          <div style={{marginBottom:8}}>
-            <div style={{fontSize:11,color:"#888",marginBottom:3}}>Item</div>
-            <BuscaItem itens={itens} valor={f.item?._id||""} placeholder="Digite o item (ex.: frango, chopp)"
-              descrever={i=>`${i.nome} (${qtdBR(i.quantidade)} ${i.tipo==="chopp"?"L":i.unidade})`}
-              onEscolher={id=>setPerdaForm(p=>({...p,item:itens.find(i=>i._id===id)||null}))}/>
-          </div>
+        <div style={{fontWeight:700,fontSize:14,marginBottom:10}}>🗑️ Lançar perda{!comEscolha&&linhas[0]?.item?` — ${linhas[0].item.nome}`:""}</div>
+        {linhas.map((l, n) => {
+          const unid = l.item ? (l.item.tipo === "chopp" ? "L" : l.item.unidade) : "";
+          const usados = linhas.filter(x => x.id !== l.id && x.item).map(x => x.item._id); // o mesmo item não entra duas vezes
+          const antes = l.item ? qtdNum(l.item.quantidade) : 0, q = lerDecimal(l.qtd) || 0, depois = Math.max(0, antes - q);
+          return (
+            <div key={l.id} style={varias?{border:"1px solid #fed7aa",background:"#fffaf5",borderRadius:10,padding:10,marginBottom:8}:{marginBottom:8}}>
+              {varias&&(
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:11,fontWeight:700,color:"#c2410c"}}>Item {n+1}</span>
+                  <button onClick={()=>setPerdaForm(p=>({...p,linhas:p.linhas.filter(x=>x.id!==l.id)}))} style={{background:"none",border:"none",color:"#b91c1c",fontSize:12,fontWeight:700,cursor:"pointer",padding:0}}>✕ tirar</button>
+                </div>
+              )}
+              {comEscolha&&(
+                <div style={{marginBottom:8}}>
+                  {!varias&&<div style={{fontSize:11,color:"#888",marginBottom:3}}>Item</div>}
+                  <BuscaItem itens={itens.filter(i=>!usados.includes(i._id))} valor={l.item?._id||""} placeholder="Digite o item (ex.: frango, chopp)"
+                    descrever={i=>`${i.nome} (${qtdBR(i.quantidade)} ${i.tipo==="chopp"?"L":i.unidade})`}
+                    onEscolher={id=>mudar(l.id,"item",itens.find(i=>i._id===id)||null)}/>
+                </div>
+              )}
+              <div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade perdida{unid?` (${unid})`:""}</div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <button onClick={()=>mudar(l.id,"qtd",String(Math.max(1,(lerDecimal(l.qtd)||0)-1)))} style={btnQtd}>−</button>
+                <input value={l.qtd} onChange={e=>mudar(l.id,"qtd",e.target.value.replace(/[^\d.,]/g,""))} inputMode="decimal" style={{...inp,textAlign:"center",fontSize:18,fontWeight:800,flex:1}}/>
+                <button onClick={()=>mudar(l.id,"qtd",String((lerDecimal(l.qtd)||0)+1))} style={btnQtd}>+</button>
+              </div>
+              {l.item&&(
+                <div style={{marginTop:6,padding:"7px 10px",borderRadius:9,fontSize:12.5,background:antes<q?"#fef3c7":"#f8f7f5",color:antes<q?"#92400e":"#555"}}>
+                  Em estoque: <strong>{qtdBR(antes)} {unid}</strong> → fica <strong>{qtdBR(depois)} {unid}</strong>
+                  {antes<q&&<div style={{marginTop:2}}>O estoque tem menos do que a perda: vai ficar em 0. Confira se as entradas foram lançadas.</div>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {comEscolha&&linhas.length<30&&(
+          <button onClick={()=>setPerdaForm(p=>({...p,linhas:[...p.linhas,linhaPerda()]}))} style={{width:"100%",marginBottom:10,background:"#fff",color:"#c2410c",border:"1.5px dashed #fdba74",borderRadius:10,padding:"9px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Outro item</button>
         )}
-        <div style={{marginBottom:8}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:3}}>Quantidade perdida{unid?` (${unid})`:""}</div>
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <button onClick={()=>setPerdaForm(p=>({...p,qtd:String(Math.max(1,(lerDecimal(p.qtd)||0)-1))}))} style={{width:44,height:44,borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:20,fontWeight:800,cursor:"pointer",color:"#7b1a0a"}}>−</button>
-            <input value={f.qtd} onChange={e=>setPerdaForm(p=>({...p,qtd:e.target.value.replace(/[^\d.,]/g,"")}))} inputMode="decimal" style={{...inp,textAlign:"center",fontSize:18,fontWeight:800,flex:1}}/>
-            <button onClick={()=>setPerdaForm(p=>({...p,qtd:String((lerDecimal(p.qtd)||0)+1)}))} style={{width:44,height:44,borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:20,fontWeight:800,cursor:"pointer",color:"#7b1a0a"}}>+</button>
-          </div>
-        </div>
         <div style={{marginBottom:10}}>
-          <div style={{fontSize:11,color:"#888",marginBottom:4}}>Motivo</div>
+          <div style={{fontSize:11,color:"#888",marginBottom:4}}>Motivo{varias?" (vale para todos os itens)":""}</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
             {MOTIVOS_PERDA.map(m=>(
               <button key={m} onClick={()=>setPerdaForm(p=>({...p,motivo:m}))} style={{padding:"8px 12px",borderRadius:20,border:`2px solid ${f.motivo===m?"#f97316":"#e0e0e0"}`,background:f.motivo===m?"#fff7ed":"#fff",color:f.motivo===m?"#c2410c":"#555",fontWeight:f.motivo===m?700:500,fontSize:13,cursor:"pointer"}}>{m}</button>
@@ -3277,17 +3329,8 @@ function Estoque({ backendUrl, cardapio = [] }) {
           <textarea value={f.descricao||""} onChange={e=>setPerdaForm(p=>({...p,descricao:e.target.value}))} rows={2} maxLength={200}
             placeholder="ex.: caíram da grelha na hora de virar" style={{...inp,resize:"vertical",fontFamily:"inherit"}}/>
         </div>
-        {f.item&&(()=>{
-          const antes = qtdNum(f.item.quantidade), q = lerDecimal(f.qtd) || 0, depois = Math.max(0, antes - q);
-          return (
-            <div style={{marginBottom:10,padding:"8px 10px",borderRadius:9,fontSize:12.5,background:antes<q?"#fef3c7":"#f8f7f5",color:antes<q?"#92400e":"#555"}}>
-              Em estoque: <strong>{antes} {unid}</strong> → fica <strong>{Math.round(depois*100)/100} {unid}</strong>
-              {antes<q&&<div style={{marginTop:2}}>O estoque tem menos do que a perda: vai ficar em 0. Confira se as entradas foram lançadas.</div>}
-            </div>
-          );
-        })()}
         <div style={{display:"flex",gap:8}}>
-          <button onClick={lancarPerda} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":"🗑️ Confirmar perda"}</button>
+          <button onClick={lancarPerda} disabled={saving} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"11px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>{saving?"Salvando...":varias?`🗑️ Confirmar ${linhas.length} perdas`:"🗑️ Confirmar perda"}</button>
           <button onClick={()=>setPerdaForm(null)} style={{background:"#f0f0f0",color:"#555",border:"none",borderRadius:10,padding:"11px 16px",fontWeight:600,fontSize:13,cursor:"pointer"}}>Cancelar</button>
         </div>
       </div>
@@ -3505,14 +3548,14 @@ function Estoque({ backendUrl, cardapio = [] }) {
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>{setEntradaForm(it);setEntradaQtd("");}} style={{flex:1,background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>📥 Entrada</button>
               <button onClick={()=>{setAjusteForm(it);setAjusteQtd(String(qtdNum(it.quantidade)));}} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#3b82f6)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔧 Ajustar</button>
-              <button onClick={()=>setPerdaForm({item:it,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🗑️ Perda</button>
+              <button onClick={()=>setPerdaForm(novaPerda(it))} style={{flex:1,background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:10,padding:"10px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🗑️ Perda</button>
             </div>
             <button onClick={()=>abrirProducao(it)} style={{marginTop:8,width:"100%",background:"#fff",color:"#5b21b6",border:"1.5px solid #c4b5fd",borderRadius:10,padding:"9px 0",fontWeight:700,fontSize:13,cursor:"pointer"}}>🔪 {ehEspetoEst(it)?"Produzir (de que foi feito)":"Usar em produção (virou o quê)"}</button>
           </div>
         )}
 
         {/* Modais de entrada, ajuste e perda */}
-        {perdaForm?.item?._id===it._id&&formPerda(false)}
+        {perdaForm?.fixo===it._id&&formPerda(false)}
         {prodForm?.origem===it._id&&formProducao()}
         {entradaForm&&(
           <div style={{background:"#fff",borderRadius:14,padding:16,border:"1.5px solid #10b981",boxShadow:"0 2px 12px rgba(0,0,0,0.1)"}}>
@@ -3611,7 +3654,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
 
         <button onClick={()=>setNovoForm(true)} style={{background:"linear-gradient(135deg,#7b1a0a,#c0392b)",color:"#fff",border:"none",borderRadius:12,padding:"12px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>+ Cadastrar item no estoque</button>
         {itens.length>0&&!perdaForm&&(
-          <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{background:"#fff",color:"#c2410c",border:"1.5px solid #fdba74",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda (caiu, queimou, estragou)</button>
+          <button onClick={()=>setPerdaForm(novaPerda())} style={{background:"#fff",color:"#c2410c",border:"1.5px solid #fdba74",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda (caiu, queimou, estragou)</button>
         )}
         {perdaForm&&formPerda(true)}
         {itens.length>1&&!prodForm&&(
@@ -3861,7 +3904,7 @@ function Estoque({ backendUrl, cardapio = [] }) {
           </div>
           <NavPeriodo modo={modoPerdas} ref_={refPerdas} setRef={setRefPerdas} />
           {!perdaForm&&itens.length>0&&(
-            <button onClick={()=>setPerdaForm({item:null,qtd:"1",motivo:"Caiu no chão",descricao:""})} style={{background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda</button>
+            <button onClick={()=>setPerdaForm(novaPerda())} style={{background:"linear-gradient(135deg,#c2410c,#f97316)",color:"#fff",border:"none",borderRadius:12,padding:"11px 0",fontWeight:700,fontSize:14,cursor:"pointer"}}>🗑️ Lançar perda</button>
           )}
           {perdaForm&&formPerda(true)}
           {!relPerdas?<div style={{color:"#888",fontSize:13,textAlign:"center"}}>Carregando...</div>:(
