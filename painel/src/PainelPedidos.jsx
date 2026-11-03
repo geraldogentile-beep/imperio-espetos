@@ -7248,8 +7248,11 @@ function ordenarCategorias(lista) {
     .sort((a, b) => String(a).localeCompare(String(b), "pt-BR", { sensitivity: "base" }));
   return ["todos", ...resto];
 }
-function ordenarCardapio(lista, ordemCats = []) {
-  const idx = (c) => { const i = ordemCats.indexOf(c); return i < 0 ? 999 : i; };
+// grupoDe junta categorias numa aba só (no salão, Tradicionais, Especiais e
+// Doces viram "Espetos"): dentro do grupo vale só o nome, para "Alcatra" e
+// "Alcatra com queijo" ficarem juntas (pedido dos donos, 03/11/2026).
+function ordenarCardapio(lista, ordemCats = [], grupoDe = (c) => c) {
+  const idx = (c) => { const i = ordemCats.indexOf(grupoDe(c)); return i < 0 ? 999 : i; };
   return [...lista].sort((a, b) => (idx(a.cat || a.categoria) - idx(b.cat || b.categoria)) || compNome(a, b));
 }
 
@@ -8509,7 +8512,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           reclamou da distancia entre o nome e o preco (a linha ocupava a tela
           inteira) e do tanto que o garcom rolava para achar o item. */}
       <div style={{padding:"10px 14px 80px",display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))",gap:8,alignItems:"start"}}>
-        {ordenarCardapio(cardapio.filter(filtrarCardapio), cats).map(item=>{
+        {ordenarCardapio(cardapio.filter(filtrarCardapio), catsComEspetos, c=>espetoCats.includes(c)?"Espetos":c).map(item=>{
           // Lanche montado: as opcoes sao os espetos do cardapio e o preco e
           // base + espeto, entao ele acompanha sozinho o preco do espeto.
           const montarCom = (Array.isArray(item.montarCom) && item.montarCom.length)

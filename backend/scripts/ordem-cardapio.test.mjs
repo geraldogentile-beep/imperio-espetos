@@ -35,6 +35,16 @@ console.log("\n=== em 'Todos', categorias na ordem das abas e nomes dentro ===")
   const r = ordenarCardapio(lista, abas).map(i => i.categoria[0] + ":" + i.nome);
   ok(r.join(",") === "T:Alcatra,T:Coração,T:Frango,E:Picanha,Á:água com gás,Á:Água sem gás,Á:Água tônica,G:Bala Fini", r.join(", "));
 }
+console.log("\n=== salão: aba 'Espetos' junta Tradicionais e Especiais por nome ===");
+{
+  const comQueijo = [...lista, { id: 6, nome: "Alcatra com queijo", categoria: "Especiais" }];
+  const grupo = (c) => (["Tradicionais", "Especiais"].includes(c) ? "Espetos" : c);
+  const abasSalao = ["todos", "Espetos", "Água", "Guloseimas"];
+  const r = ordenarCardapio(comQueijo.filter(i => grupo(i.categoria) === "Espetos"), abasSalao, grupo).map(i => i.nome);
+  ok(r.join(",") === "Alcatra,Alcatra com queijo,Coração,Frango,Picanha", `Espetos: ${r.join(", ")}`);
+  const t = ordenarCardapio(comQueijo, abasSalao, grupo).map(i => i.nome);
+  ok(t.slice(0, 5).join(",") === "Alcatra,Alcatra com queijo,Coração,Frango,Picanha" && t[5] === "água com gás" && t[8] === "Bala Fini", `Todos: espetos juntos na frente, depois as abas: ${t.join(", ")}`);
+}
 console.log("\n=== nao mexe na lista original ===");
 {
   const antes = lista.map(i => i.id).join(",");
