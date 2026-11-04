@@ -59,6 +59,23 @@ console.log("\n=== 2) semana, mês e ano ===");
   ok((await api("GET", "/relatorio/itens?dia=" + ontem)).corpo.itens.length === 0, "ontem: nada");
 }
 
+console.log("\n=== 3) entre datas (dias inteiros de Brasília, os dois inclusos) ===");
+{
+  const dias = (iso, n) => new Date(Date.parse(iso + "T12:00:00Z") + n * 86400e3).toISOString().slice(0, 10);
+  const it = (await api("GET", `/relatorio/itens?de=${hoje}&ate=${hoje}`)).corpo;
+  ok(it.totais?.vendido === 5 && it.agrupar === "dia", `itens de hoje a hoje: ${it.totais?.vendido} vendidos, dia a dia`);
+  const sem = (await api("GET", `/relatorio/itens?de=${dias(hoje, -10)}&ate=${dias(hoje, -1)}`)).corpo;
+  ok(sem.itens?.length === 0, "até ontem: nada (o fim é o dia inteiro, não passa para hoje)");
+  const m = (await api("GET", `/relatorio/mensal?de=${dias(hoje, -6)}&ate=${hoje}`)).corpo;
+  ok(m.entradas?.qtdVendas === 2 && m.entradas.qtdDelivery === 1 && m.entradas.salao === 39 && m.entradas.total === 55 && m.de === dias(hoje, -6) && Array.isArray(m.porDia) && m.porDia.length === 1, `período, 7 dias: ${m.entradas?.qtdVendas} comandas + ${m.entradas?.qtdDelivery} pedido, salão R$ ${m.entradas?.salao}, dia a dia`);
+  const longo = (await api("GET", `/relatorio/mensal?de=${dias(hoje, -200)}&ate=${hoje}`)).corpo;
+  ok(Array.isArray(longo.porMes) && !longo.porDia && longo.entradas.qtdVendas === 2, "mais de 3 meses: mês a mês");
+  ok((await api("GET", `/relatorio/mensal?de=${hoje}&ate=${dias(hoje, -1)}`)).status === 400, "até antes do de: 400");
+  ok((await api("GET", `/relatorio/mensal?de=2026-02-31&ate=2026-03-02`)).status === 400, "31/02 não existe: 400");
+  ok((await api("GET", `/relatorio/mensal?de=${hoje}`)).status === 400, "sem o até: 400");
+  ok((await api("GET", `/consumo-interno?de=${hoje}&ate=${hoje}`)).corpo.lancamentos === 1, "consumo da equipe aceita as mesmas datas");
+}
+
 await mongoose.connection.collection("pedidos").deleteOne({ id: "TESTEITENS1" });
 await mongoose.disconnect();
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);

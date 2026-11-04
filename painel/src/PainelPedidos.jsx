@@ -5071,6 +5071,39 @@ function NavPeriodo({ modo, ref_, setRef }) {
   );
 }
 
+// Entre datas (pedido dos donos, 04/11/2026): digita ou escolhe no calendário
+// do celular (input de data), com atalhos. de/ate em AAAA-MM-DD, os dois inclusos.
+const somarDias = (iso, n) => { const d = diaDe(iso); d.setDate(d.getDate() + n); return isoDia(d); };
+const rotuloDatas = (de, ate) => (de === ate ? `Dia ${fmtDataBR(de)}` : `De ${fmtDataBR(de)} a ${fmtDataBR(ate)}`);
+const inicioDoMes = (iso) => String(iso).slice(0, 8) + "01";
+function SeletorDatas({ de, ate, onMudar }) {
+  const hoje = hojeISO();
+  const fimMesPassado = somarDias(inicioDoMes(hoje), -1);
+  const atalhos = [["Hoje", hoje, hoje], ["Ontem", somarDias(hoje, -1), somarDias(hoje, -1)], ["7 dias", somarDias(hoje, -6), hoje], ["30 dias", somarDias(hoje, -29), hoje], ["Este mês", inicioDoMes(hoje), hoje], ["Mês passado", inicioDoMes(fimMesPassado), fimMesPassado]];
+  // Enquanto digita o ano, o campo passa por 0002, 0020...: só vale de 2000 em diante.
+  // De depois do Até (ou o contrário) puxa o outro junto.
+  const mudar = (campo, v) => {
+    if (!/^20\d\d-\d\d-\d\d$/.test(v)) return;
+    if (campo === "de") onMudar(v, v > ate ? v : ate);
+    else onMudar(v < de ? v : de, v);
+  };
+  const inp = { display: "block", width: "100%", marginTop: 3, padding: "9px 8px", border: "1.5px solid #e0e0e0", borderRadius: 10, fontSize: 14, color: "#333", background: "#fff", boxSizing: "border-box", fontFamily: "inherit" };
+  return (
+    <div style={{ background: "#fff", borderRadius: 12, padding: 10, boxShadow: "0 2px 8px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        <label style={{ flex: 1, minWidth: 0, fontSize: 11, color: "#888", fontWeight: 700 }}>De<input type="date" value={de} max={hoje} onChange={e => mudar("de", e.target.value)} style={inp} /></label>
+        <label style={{ flex: 1, minWidth: 0, fontSize: 11, color: "#888", fontWeight: 700 }}>Até<input type="date" value={ate} max={hoje} onChange={e => mudar("ate", e.target.value)} style={inp} /></label>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {atalhos.map(([l, a, b]) => {
+          const ativo = de === a && ate === b;
+          return <button key={l} onClick={() => onMudar(a, b)} style={{ padding: "6px 11px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: ativo ? 700 : 500, background: ativo ? "#7b1a0a" : "#f0f0f0", color: ativo ? "#fff" : "#555" }}>{l}</button>;
+        })}
+      </div>
+    </div>
+  );
+}
+
 function NavMes({ mes, setMes }) {
   const b = { background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: 10, width: 40, height: 40, fontSize: 18, cursor: "pointer", color: "#7b1a0a", fontWeight: 800 };
   return (
@@ -5243,16 +5276,26 @@ const SITUACAO_PRECO = {
   abaixo:     { txt: "🚨 Abaixo da meta",           cor: "#991b1b", bg: "#fee2e2" },
   prejuizo:   { txt: "🚨 Custo maior que o preço",  cor: "#991b1b", bg: "#fee2e2" },
   semmeta:    { txt: "Sem margem desejada",         cor: "#555",    bg: "#f3f4f6" },
+  semref:     { txt: "Poucos produtos na categoria para comparar", cor: "#555", bg: "#f3f4f6" },
   semcusto:   { txt: "Sem custo cadastrado",        cor: "#92400e", bg: "#fff7ed" },
   semvinculo: { txt: "Sem item no estoque",         cor: "#555",    bg: "#f3f4f6" },
 };
+// Com o que comparar (pedido dos donos, 04/11/2026): a margem desejada de
+// quase todos os itens tinha sido preenchida a partir do preço de hoje, então
+// tudo saía "na meta" e o relatório não mostrava quem pode subir. Margem
+// típica da categoria = a do meio (mediana), com pelo menos 3 produtos com custo.
+const BASES_PRECO = [["item", "Meta de cada item"], ["categoria", "Típica da categoria"], ["unica", "Uma meta para todos"]];
+const mediana = (v) => { const s = [...v].sort((a, b) => a - b), n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; };
 function RelatorioPrecos() {
   const [cardapio, setCardapio] = useState(null);
   const [estoque, setEstoque] = useState(null);
+  const [vendas30, setVendas30] = useState(null);  // nome (minúsculo) -> vendidos nos últimos 30 dias
   const [erro, setErro] = useState("");
   const [busca, setBusca] = useState("");
   const [cat, setCat] = useState("todos");
-  const [filtro, setFiltro] = useState("todos");   // todos | atencao | semcusto
+  const [filtro, setFiltro] = useState("todos");   // todos | subir | ok | semcusto
+  const [base, setBase] = useState("item");        // item | categoria | unica
+  const [metaUnicaTxt, setMetaUnicaTxt] = useState("50");
   const [verComo, setVerComo] = useState(false);    // quadro "Como é calculado"
   async function carregar() {
     setErro("");
@@ -5260,60 +5303,88 @@ function RelatorioPrecos() {
       const [rc, re] = await Promise.all([authFetch(BACKEND_URL + "/cardapio"), authFetch(BACKEND_URL + "/estoque")]);
       if (!rc.ok || !re.ok) { setErro("Não foi possível carregar os preços."); return; }
       setCardapio(await rc.json()); setEstoque(await re.json());
-    } catch { setErro("Sem conexão."); }
+    } catch { setErro("Sem conexão."); return; }
+    // Quanto cada produto vendeu nos últimos 30 dias (salão + delivery), para
+    // estimar quanto o preço sugerido traria a mais por mês
+    try {
+      const r = await authFetch(`${BACKEND_URL}/relatorio/itens?de=${new Date(Date.now() - 30 * 86400000).toISOString()}&ate=${new Date().toISOString()}`);
+      if (r.ok) {
+        const d = await r.json(), m = {};
+        for (const i of d.itens || []) if (i.unidade === "un") m[String(i.nome).trim().toLowerCase()] = i.vendido;
+        setVendas30(m);
+      }
+    } catch { /* sem o ganho por mês */ }
   }
   useEffect(() => { carregar(); }, []);
 
   const low = (x) => String(x || "").trim().toLowerCase();
   const pct = (v) => (v === null || v === undefined ? "—" : (Math.round(v * 10) / 10).toFixed(1).replace(".", ",") + "%");
-  const linhas = (cardapio || []).filter(i => i.ativo !== false).map(i => {
+  const metaUnica = parsePct(metaUnicaTxt);
+  const metaUnicaOk = metaUnica > 0 && metaUnica < 100;
+  // Preço, custo e margem de hoje de cada produto
+  const brutas = (cardapio || []).filter(i => i.ativo !== false).map(i => {
     const est = (estoque || []).find(e => (e.cardapioNomes || []).some(n => low(n) === low(i.nome)));
     const preco = Number(i.preco) || 0;
     const custo = est ? (Number(est.custoPorUnidade) || 0) * (Number(est.consumoPorVenda) || 1) : 0;
-    const meta = Number(est?.margemDesejada) || 0;
-    const metaValida = meta > 0 && meta < 100;
-    const temCusto = custo > 0;
-    const lucro = temCusto ? preco - custo : null;
-    const margem = temCusto && preco > 0 ? (lucro / preco) * 100 : null;
-    const sugerido = temCusto && metaValida ? Math.ceil((custo / (1 - meta / 100)) * 2 - 1e-9) / 2 : null;
+    const metaItem = Number(est?.margemDesejada) || 0;
+    return { item: i, est, preco, custo: custo > 0 ? custo : null, margem: custo > 0 && preco > 0 ? ((preco - custo) / preco) * 100 : null, metaItem: metaItem > 0 && metaItem < 100 ? metaItem : null };
+  });
+  const margensDa = {};
+  for (const l of brutas) if (l.margem !== null) (margensDa[l.item.categoria] ||= []).push(l.margem);
+  const tipicaDa = (c) => (margensDa[c]?.length >= 3 ? mediana(margensDa[c]) : null);
+  const linhas = brutas.map(l => {
+    const { est, preco, custo, margem } = l;
+    const meta = base === "unica" ? (metaUnicaOk ? metaUnica : null) : base === "categoria" ? tipicaDa(l.item.categoria) : l.metaItem;
+    const lucro = custo !== null ? preco - custo : null;
+    const sugerido = custo !== null && meta !== null ? Math.ceil((custo / (1 - meta / 100)) * 2 - 1e-9) / 2 : null;
     let situacao = "semvinculo";
-    if (est && !temCusto) situacao = "semcusto";
+    if (est && custo === null) situacao = "semcusto";
     else if (est) {
       if (custo >= preco) situacao = "prejuizo";
-      else if (!metaValida) situacao = "semmeta";
+      else if (meta === null) situacao = base === "categoria" ? "semref" : "semmeta";
       else if (margem >= meta) situacao = "ok";
       else if (margem >= meta * 0.8) situacao = "atencao";
       else situacao = "abaixo";
     }
-    const markup = temCusto ? (lucro / custo) * 100 : null;
-    return { item: i, est, preco, custo: temCusto ? custo : null, lucro, margem, markup, meta: metaValida ? meta : null, metaMarkup: metaValida ? markupDeMargem(meta) : null, sugerido, situacao, lanche: ehLanche(i) };
+    const sobe = sugerido !== null && sugerido - preco >= 0.01 ? sugerido - preco : 0;
+    const vendidos = vendas30 ? vendas30[low(l.item.nome)] || 0 : null;
+    return { ...l, lucro, markup: custo !== null ? (lucro / custo) * 100 : null, meta, metaMarkup: meta !== null ? markupDeMargem(meta) : null, sugerido, sobe, vendidos, ganhoMes: sobe && vendidos ? sobe * vendidos : 0, situacao, lanche: ehLanche(l.item) };
   });
-  const precisaAtencao = (l) => ["atencao", "abaixo", "prejuizo"].includes(l.situacao);
+  const podeSubir = (l) => ["atencao", "abaixo", "prejuizo"].includes(l.situacao);
   const semCusto = (l) => ["semcusto", "semvinculo"].includes(l.situacao);
   const visiveis = linhas
     .filter(l => cat === "todos" || l.item.categoria === cat)
-    .filter(l => filtro === "todos" || (filtro === "atencao" ? precisaAtencao(l) : semCusto(l)))
+    .filter(l => filtro === "todos" || (filtro === "subir" ? podeSubir(l) : filtro === "ok" ? l.situacao === "ok" : semCusto(l)))
     .filter(l => !busca.trim() || low(l.item.nome).includes(low(busca)));
   const categorias = ordenarCategorias(linhas.map(l => l.item.categoria));
   const comCusto = linhas.filter(l => l.margem !== null);
   const margemMedia = comCusto.length ? comCusto.reduce((t, l) => t + l.margem, 0) / comCusto.length : null;
+  const ganhoTotal = linhas.filter(podeSubir).reduce((t, l) => t + l.ganhoMes, 0);
+  // Meta igual (menos de 1 ponto) à margem de hoje: foi preenchida pelo preço atual
+  const comMetaItem = brutas.filter(l => l.metaItem !== null && l.margem !== null);
+  const copiadas = comMetaItem.filter(l => Math.abs(l.margem - l.metaItem) < 1).length;
+  const baseTxt = base === "unica" ? `uma meta de ${pct(metaUnica)} para todos` : base === "categoria" ? "a margem típica de cada categoria" : "a margem desejada de cada item";
+  const ordenarSubir = (ls) => [...ls].sort((a, b) => b.ganhoMes - a.ganhoMes || b.sobe - a.sobe || String(a.item.nome).localeCompare(String(b.item.nome), "pt-BR", { sensitivity: "base" }));
 
   function imprimir() {
-    const win = abrirJanelaImpressao("width=900,height=900");
+    const win = abrirJanelaImpressao("width=1000,height=900");
     if (!win) return;
-    const tr = (l) => `<tr><td>${l.item.nome}${l.lanche ? " <i>(base)</i>" : ""}</td><td class="n">${fmtBR(l.preco)}</td><td class="n">${l.custo !== null ? fmtBR(l.custo) : "—"}</td><td class="n">${l.lucro !== null ? fmtBR(l.lucro) : "—"}</td><td class="n">${pct(l.margem)}</td><td class="n">${pct(l.markup)}</td><td class="n">${l.meta !== null ? `${pct(l.meta)} / ${pct(l.metaMarkup)}` : "—"}</td><td class="n">${l.sugerido !== null ? fmtBR(l.sugerido) : "—"}</td><td>${SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")}</td></tr>`;
-    const corpo = categorias.filter(c => c !== "todos").map(c => { const ls = visiveis.filter(l => l.item.categoria === c); return ls.length ? `<tr class="c"><td colspan="9">${c}</td></tr>` + ls.map(tr).join("") : ""; }).join("");
+    const tr = (l) => `<tr><td>${l.item.nome}${l.lanche ? " <i>(base)</i>" : ""}</td><td class="n">${fmtBR(l.preco)}</td><td class="n">${l.custo !== null ? fmtBR(l.custo) : "—"}</td><td class="n">${l.lucro !== null ? fmtBR(l.lucro) : "—"}</td><td class="n">${pct(l.margem)}</td><td class="n">${pct(l.markup)}</td><td class="n">${l.meta !== null ? `${pct(l.meta)} / ${pct(l.metaMarkup)}` : "—"}</td><td class="n">${l.sobe ? fmtBR(l.sugerido) : "—"}</td><td class="n">${l.vendidos ?? "—"}</td><td class="n">${l.ganhoMes ? "+" + fmtBR(l.ganhoMes) : "—"}</td><td>${SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")}</td></tr>`;
+    const corpo = filtro === "subir"
+      ? ordenarSubir(visiveis).map(tr).join("")
+      : categorias.filter(c => c !== "todos").map(c => { const ls = visiveis.filter(l => l.item.categoria === c); return ls.length ? `<tr class="c"><td colspan="11">${c}${base === "categoria" && tipicaDa(c) !== null ? ` · margem típica ${pct(tipicaDa(c))}` : ""}</td></tr>` + ls.map(tr).join("") : ""; }).join("");
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Formação de preços</title>
-      <style>body{font-family:Arial,sans-serif;padding:20px;color:#222;font-size:12px}h1{font-size:18px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{padding:5px 6px;border-bottom:1px solid #e5e5e5;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}tr.c td{background:#f3f3f3;font-weight:bold;border-top:2px solid #999}@media print{button{display:none}}</style></head><body>
-      <h1>Império dos Espetos — Formação de preços</h1><div style="color:#666">gerado em ${new Date().toLocaleString("pt-BR")} · margem = lucro ÷ preço · markup = lucro ÷ custo · sugerido = preço para atingir a margem desejada</div>
-      <table><tr><th>Produto</th><th class="n">Preço</th><th class="n">Custo</th><th class="n">Lucro</th><th class="n">Margem real</th><th class="n">Markup real</th><th class="n">Meta (margem / markup)</th><th class="n">Sugerido</th><th>Situação</th></tr>${corpo}</table>
+      <style>body{font-family:Arial,sans-serif;padding:20px;color:#222;font-size:11.5px}h1{font-size:18px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{padding:5px 5px;border-bottom:1px solid #e5e5e5;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}tr.c td{background:#f3f3f3;font-weight:bold;border-top:2px solid #999}@media print{button{display:none}}</style></head><body>
+      <h1>Império dos Espetos — Formação de preços${filtro === "subir" ? ": podem subir" : ""}</h1><div style="color:#666">gerado em ${new Date().toLocaleString("pt-BR")} · comparando com ${baseTxt} · margem = lucro ÷ preço · markup = lucro ÷ custo · sugerido = preço para chegar na meta${ganhoTotal > 0 ? ` · subindo os que estão abaixo para o sugerido: +${fmtBR(ganhoTotal)} por mês, pelas vendas dos últimos 30 dias` : ""}</div>
+      <table><tr><th>Produto</th><th class="n">Preço</th><th class="n">Custo</th><th class="n">Lucro</th><th class="n">Margem real</th><th class="n">Markup real</th><th class="n">Meta (margem / markup)</th><th class="n">Sugerido</th><th class="n">Vendidos 30 dias</th><th class="n">A mais por mês</th><th>Situação</th></tr>${corpo}</table>
       <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
     win.document.close();
   }
   function baixarCsv() {
     const num = (v) => (v === null || v === undefined ? "" : (Number(v) || 0).toFixed(2).replace(".", ","));
-    const ls = [["Categoria", "Produto", "Preço", "Custo por venda", "Lucro por venda", "Margem real (%)", "Markup real (%)", "Margem desejada (%)", "Markup desejado (%)", "Preço sugerido", "Situação"],
-      ...visiveis.map(l => [l.item.categoria, l.item.nome + (l.lanche ? " (base)" : ""), num(l.preco), num(l.custo), num(l.lucro), num(l.margem), num(l.markup), num(l.meta), num(l.metaMarkup), num(l.sugerido), SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")])];
+    const ls = [["Comparando com", baseTxt], [],
+      ["Categoria", "Produto", "Preço", "Custo por venda", "Lucro por venda", "Margem real (%)", "Markup real (%)", "Meta usada: margem (%)", "Meta usada: markup (%)", "Preço sugerido", "Vendidos (30 dias)", "A mais por mês com o sugerido", "Situação"],
+      ...(filtro === "subir" ? ordenarSubir(visiveis) : visiveis).map(l => [l.item.categoria, l.item.nome + (l.lanche ? " (base)" : ""), num(l.preco), num(l.custo), num(l.lucro), num(l.margem), num(l.markup), num(l.meta), num(l.metaMarkup), l.sobe ? num(l.sugerido) : "", l.vendidos ?? "", l.ganhoMes ? num(l.ganhoMes) : "", SITUACAO_PRECO[l.situacao].txt.replace(/^[^\p{L}]+/u, "")])];
     const csv = "\ufeff" + ls.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = "formacao-de-precos.csv"; a.click();
@@ -5322,6 +5393,29 @@ function RelatorioPrecos() {
 
   const card = { background: "#fff", borderRadius: 14, padding: 14, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" };
   const chip = (ativo) => ({ whiteSpace: "nowrap", padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: ativo ? 700 : 500, background: ativo ? "#7b1a0a" : "#f0f0f0", color: ativo ? "#fff" : "#555" });
+  const linhaProduto = (l, comCategoria = false) => {
+    const st = SITUACAO_PRECO[l.situacao];
+    const corMargem = l.situacao === "ok" ? "#065f46" : ["abaixo", "prejuizo"].includes(l.situacao) ? "#b91c1c" : l.situacao === "atencao" ? "#b45309" : "#555";
+    return (
+      <div key={l.item.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 0", borderTop: "1px solid #f3f3f3" }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 13.5, color: "#222" }}>{l.item.nome}{comCategoria && <span style={{ fontWeight: 400, color: "#999", fontSize: 11.5 }}> · {l.item.categoria}</span>}</div>
+          <div style={{ fontSize: 12, color: "#555", marginTop: 1 }}>Venda <strong>{fmtBR(l.preco)}</strong>{l.custo !== null && <> · Custo {fmtBR(l.custo)} · Lucro <strong style={{ color: l.lucro >= 0 ? "#065f46" : "#b91c1c" }}>{fmtBR(l.lucro)}</strong></>}</div>
+          {l.vendidos !== null && l.est && <div style={{ fontSize: 11.5, color: "#888", marginTop: 1 }}>{l.vendidos ? `Vendeu ${l.vendidos} nos últimos 30 dias` : "Não vendeu nos últimos 30 dias"}</div>}
+          {l.lanche && <div style={{ fontSize: 11, color: "#888" }}>Lanche: o custo é só da base; o espeto escolhido soma no preço e no custo.</div>}
+          <span style={{ display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 700, borderRadius: 6, padding: "2px 7px", background: st.bg, color: st.cor }}>{st.txt}</span>
+        </div>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontWeight: 800, fontSize: 16, color: corMargem }}>{pct(l.margem)}</div>
+          <div style={{ fontSize: 11, color: "#888" }}>margem{l.markup !== null ? ` · markup ${pct(l.markup)}` : ""}</div>
+          {l.meta !== null && <div style={{ fontSize: 11, color: "#888" }}>meta {pct(l.meta)} (markup {pct(l.metaMarkup)})</div>}
+          {/* Só quando o preço não alcança a meta: sugerir baixar confundia */}
+          {l.sobe > 0 && <div style={{ fontSize: 11.5, color: "#b91c1c", fontWeight: 700, marginTop: 2 }}>sugerido {fmtBR(l.sugerido)}</div>}
+          {l.ganhoMes > 0 && <div style={{ fontSize: 11, color: "#065f46", fontWeight: 700 }}>+{fmtBR(l.ganhoMes)}/mês</div>}
+        </div>
+      </div>
+    );
+  };
   if (erro) return <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>{erro} <button onClick={carregar} style={{ marginLeft: 8 }}>Tentar de novo</button></div>;
   if (!cardapio || !estoque) return <div style={{ color: "#888", fontSize: 13, textAlign: "center" }}>Carregando...</div>;
   return (
@@ -5329,10 +5423,41 @@ function RelatorioPrecos() {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <Metrica icon="🏷️" label="Produtos" valor={linhas.length} sub={`${comCusto.length} com custo`} cor="#7b1a0a" />
         <Metrica icon="✅" label="Na meta" valor={linhas.filter(l => l.situacao === "ok").length} cor="#10b981" />
-        <Metrica icon="🚨" label="Precisam de atenção" valor={linhas.filter(precisaAtencao).length} cor="#ef4444" />
+        <Metrica icon="💡" label="Podem subir" valor={linhas.filter(podeSubir).length} sub={ganhoTotal > 0 ? `+${fmtBR(ganhoTotal)}/mês` : null} cor="#ef4444" />
         <Metrica icon="📦" label="Sem custo" valor={linhas.filter(semCusto).length} cor="#f59e0b" />
         <Metrica icon="📊" label="Margem média" valor={pct(margemMedia)} sub="dos que têm custo" cor="#0891b2" />
       </div>
+
+      {/* Com o que comparar a margem de cada produto */}
+      <div style={{ ...card, padding: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 6 }}>Comparar a margem com:</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {BASES_PRECO.map(([k, l]) => <button key={k} onClick={() => setBase(k)} style={chip(base === k)}>{l}</button>)}
+        </div>
+        {base === "unica" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12.5, color: "#555" }}>Margem de</span>
+            <input value={metaUnicaTxt} inputMode="decimal" onChange={e => { const m = e.target.value.replace(/[^\d.,]/g, "").replace(".", ",").match(/^(\d{0,2})(,\d{0,2})?/); setMetaUnicaTxt(m ? m[1] + (m[2] || "") : ""); }}
+              style={{ width: 64, padding: "7px 8px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 14, fontWeight: 700, textAlign: "center", color: "#333", background: "#fff" }} />
+            <span style={{ fontSize: 12.5, color: "#555" }}>%{metaUnicaOk ? ` = markup ${pct(markupDeMargem(metaUnica))}` : ""}</span>
+            {!metaUnicaOk && <span style={{ fontSize: 11.5, color: "#b91c1c" }}>use de 1 a 99</span>}
+          </div>
+        )}
+        <div style={{ fontSize: 11.5, color: "#888", marginTop: 6, lineHeight: 1.5 }}>
+          {base === "item" && "A margem desejada que está no Formador de Preço de cada item (Estoque → item)."}
+          {base === "categoria" && "A margem do meio da categoria: metade dos produtos dela ganha mais, metade menos. Mostra quem está mais barato que os parecidos. Precisa de pelo menos 3 produtos com custo na categoria."}
+          {base === "unica" && "A mesma margem para todos os produtos. Só para comparar aqui: não muda nada no Estoque."}
+        </div>
+      </div>
+      {base === "item" && copiadas >= 5 && copiadas * 2 >= comMetaItem.length && (
+        <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 12, padding: "10px 12px", color: "#7c2d12", fontSize: 12.5, lineHeight: 1.55 }}>
+          <strong>⚠️ Atenção:</strong> em {copiadas} de {comMetaItem.length} produtos a margem desejada é quase igual à margem que o preço de hoje já dá. Parece que ela foi preenchida a partir do preço atual. Por isso quase tudo aparece "na meta".
+          <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button onClick={() => setBase("categoria")} style={{ ...chip(false), background: "#fff", border: "1px solid #fdba74", color: "#9a3412", fontWeight: 700 }}>Comparar com a categoria</button>
+            <button onClick={() => setBase("unica")} style={{ ...chip(false), background: "#fff", border: "1px solid #fdba74", color: "#9a3412", fontWeight: 700 }}>Usar uma meta para todos</button>
+          </div>
+        </div>
+      )}
       <div style={{ fontSize: 11.5, color: "#888", lineHeight: 1.5 }}>Custo e margem desejada vêm do Formador de Preço de cada item (Estoque → item). Para mudar, é lá; aqui é só para ver tudo junto.</div>
       {/* Pergunta da equipe (23/10/2026): "como chega nessas recomendações?" */}
       <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 12, padding: "10px 12px", color: "#1e3a8a", fontSize: 12.5, lineHeight: 1.6 }}>
@@ -5343,19 +5468,26 @@ function RelatorioPrecos() {
             <div style={{ marginTop: 4 }}><strong>Margem real</strong> = (preço − custo) ÷ preço. Ex.: custo R$ 9,50 e preço R$ 15,00 → 5,50 ÷ 15,00 = <strong>36,7%</strong>.</div>
             <div style={{ marginTop: 4 }}><strong>Markup real</strong> = (preço − custo) ÷ custo, o "quanto em cima do custo". Mesmo exemplo: 5,50 ÷ 9,50 = <strong>57,9%</strong>.</div>
             <div style={{ marginTop: 4 }}>Conversão: markup 50% = margem 33,3% · markup 100% (o dobro do custo) = margem 50% · markup 150% = margem 60% · markup 200% (o triplo) = margem 66,7%. No Formador de Preço dá para digitar a meta do jeito que preferir ("Meta em: Margem | Markup").</div>
-            <div style={{ marginTop: 4 }}><strong>Preço sugerido</strong> = custo ÷ (1 − margem desejada), arredondado <strong>para cima</strong> até o próximo R$ 0,50. Ex.: meta de 45% → 9,50 ÷ 0,55 = 17,27 → <strong>R$ 17,50</strong> (que dá 45,7%).</div>
-            <div style={{ marginTop: 4 }}><strong>Situação:</strong> ✅ na meta (margem real igual ou acima da desejada) · ⚠️ perto do limite (abaixo, mas a menos de 20% da meta: com meta de 45%, a partir de 36%) · 🚨 abaixo da meta (menos que isso) · 🚨 custo maior que o preço.</div>
+            <div style={{ marginTop: 4 }}><strong>Meta usada</strong>: a que estiver escolhida em "Comparar a margem com" — a margem desejada de cada item, a margem típica da categoria (a do meio) ou uma meta única digitada aqui.</div>
+            <div style={{ marginTop: 4 }}><strong>Preço sugerido</strong> = custo ÷ (1 − meta), arredondado <strong>para cima</strong> até o próximo R$ 0,50. Ex.: meta de 45% → 9,50 ÷ 0,55 = 17,27 → <strong>R$ 17,50</strong> (que dá 45,7%).</div>
+            <div style={{ marginTop: 4 }}><strong>A mais por mês</strong> = (sugerido − preço de hoje) × quantos foram vendidos nos últimos 30 dias (salão + delivery). É uma estimativa: supõe que continue vendendo o mesmo tanto.</div>
+            <div style={{ marginTop: 4 }}><strong>Situação:</strong> ✅ na meta (margem real igual ou acima da meta) · ⚠️ perto do limite (abaixo, mas a menos de 20% da meta: com meta de 45%, a partir de 36%) · 🚨 abaixo da meta (menos que isso) · 🚨 custo maior que o preço. "Podem subir" = perto do limite, abaixo da meta ou custo maior que o preço.</div>
             <div style={{ marginTop: 6, background: "#fff", borderRadius: 8, padding: "6px 9px", color: "#7c2d12" }}><strong>Atenção:</strong> a margem é sobre o <strong>preço</strong>, não "em cima do custo". Margem de 50% = vender pelo <strong>dobro</strong> do custo (custo R$ 6 → preço R$ 12). Pôr 50% em cima do custo (R$ 6 → R$ 9) dá só 33% de margem.</div>
             <div style={{ marginTop: 6 }}>A margem cobre só o custo do produto: gás, carvão, salários, aluguel e imposto também saem dela, então a meta precisa ser alta o bastante para isso.</div>
-            <div style={{ marginTop: 4 }}>O sugerido é só referência: o sistema nunca muda preço sozinho, e com custo errado a sugestão também sai errada. Para aplicar um preço: Estoque → item → Formador de Preço → "Aplicar ao cardápio".</div>
+            <div style={{ marginTop: 4 }}>O sugerido é só referência: o sistema nunca muda preço sozinho, e com custo errado a sugestão também sai errada. Bebida de marca tem o preço do mercado como limite. Para aplicar um preço: Estoque → item → Formador de Preço → "Aplicar ao cardápio".</div>
           </div>
         )}
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["todos", "Todos"], ["atencao", "🚨 Precisam de atenção"], ["semcusto", "📦 Sem custo"]].map(([k, l]) => (
+        {[["todos", "Todos"], ["subir", "💡 Podem subir"], ["ok", "✅ Na meta"], ["semcusto", "📦 Sem custo"]].map(([k, l]) => (
           <button key={k} onClick={() => setFiltro(k)} style={chip(filtro === k)}>{l}</button>
         ))}
       </div>
+      {filtro === "subir" && ganhoTotal > 0 && (
+        <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 12, padding: "10px 12px", color: "#065f46", fontSize: 12.5, lineHeight: 1.5 }}>
+          Subindo para o sugerido os que estão abaixo da meta: cerca de <strong>+{fmtBR(ganhoTotal)} por mês</strong>, pelo que venderam nos últimos 30 dias. Em ordem de quem traz mais.
+        </div>
+      )}
       <div style={{ background: "#fff", borderRadius: 12, padding: "9px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.07)", display: "flex", alignItems: "center", gap: 8 }}>
         <span>🔍</span>
         <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar produto..." style={{ border: "none", outline: "none", flex: 1, fontSize: 13, background: "transparent" }} />
@@ -5368,37 +5500,19 @@ function RelatorioPrecos() {
         <button onClick={imprimir} style={{ flex: 1, minWidth: 150, background: "#7b1a0a", color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>🖨️ Imprimir / salvar PDF</button>
         <button onClick={baixarCsv} style={{ flex: 1, minWidth: 150, background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>⬇️ Planilha</button>
       </div>
-      {visiveis.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>Nenhum produto {filtro === "atencao" ? "precisando de atenção" : filtro === "semcusto" ? "sem custo" : "encontrado"}{busca ? ` com "${busca}"` : ""}.</div>}
-      {categorias.filter(c => c !== "todos").map(c => {
-        const ls = visiveis.filter(l => l.item.categoria === c).sort((a, b) => String(a.item.nome).localeCompare(String(b.item.nome), "pt-BR", { sensitivity: "base" }));
-        if (!ls.length) return null;
-        return (
-          <div key={c} style={card}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a", marginBottom: 6 }}>{c} <span style={{ fontWeight: 400, color: "#aaa", fontSize: 12 }}>· {ls.length}</span></div>
-            {ls.map(l => {
-              const st = SITUACAO_PRECO[l.situacao];
-              const corMargem = l.situacao === "ok" ? "#065f46" : ["abaixo", "prejuizo"].includes(l.situacao) ? "#b91c1c" : l.situacao === "atencao" ? "#b45309" : "#555";
-              return (
-                <div key={l.item.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 0", borderTop: "1px solid #f3f3f3" }}>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13.5, color: "#222" }}>{l.item.nome}</div>
-                    <div style={{ fontSize: 12, color: "#555", marginTop: 1 }}>Venda <strong>{fmtBR(l.preco)}</strong>{l.custo !== null && <> · Custo {fmtBR(l.custo)} · Lucro <strong style={{ color: l.lucro >= 0 ? "#065f46" : "#b91c1c" }}>{fmtBR(l.lucro)}</strong></>}</div>
-                    {l.lanche && <div style={{ fontSize: 11, color: "#888" }}>Lanche: o custo é só da base; o espeto escolhido soma no preço e no custo.</div>}
-                    <span style={{ display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 700, borderRadius: 6, padding: "2px 7px", background: st.bg, color: st.cor }}>{st.txt}</span>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontWeight: 800, fontSize: 16, color: corMargem }}>{pct(l.margem)}</div>
-                    <div style={{ fontSize: 11, color: "#888" }}>margem{l.markup !== null ? ` · markup ${pct(l.markup)}` : ""}</div>
-                    {l.meta !== null && <div style={{ fontSize: 11, color: "#888" }}>meta {pct(l.meta)} (markup {pct(l.metaMarkup)})</div>}
-                    {/* Só quando o preço não alcança a meta: sugerir baixar confundia */}
-                    {l.sugerido !== null && l.sugerido - l.preco >= 0.01 && <div style={{ fontSize: 11.5, color: "#b91c1c", fontWeight: 700, marginTop: 2 }}>sugerido {fmtBR(l.sugerido)}</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        );
-      })}
+      {visiveis.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: "#aaa", fontSize: 13 }}>Nenhum produto {filtro === "subir" ? "abaixo da meta" : filtro === "ok" ? "na meta" : filtro === "semcusto" ? "sem custo" : "encontrado"}{busca ? ` com "${busca}"` : ""}.</div>}
+      {filtro === "subir"
+        ? visiveis.length > 0 && <div style={card}>{ordenarSubir(visiveis).map(l => linhaProduto(l, true))}</div>
+        : categorias.filter(c => c !== "todos").map(c => {
+          const ls = visiveis.filter(l => l.item.categoria === c).sort((a, b) => String(a.item.nome).localeCompare(String(b.item.nome), "pt-BR", { sensitivity: "base" }));
+          if (!ls.length) return null;
+          return (
+            <div key={c} style={card}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: "#7b1a0a", marginBottom: 6 }}>{c} <span style={{ fontWeight: 400, color: "#aaa", fontSize: 12 }}>· {ls.length}{base === "categoria" && tipicaDa(c) !== null ? ` · margem típica ${pct(tipicaDa(c))}` : ""}</span></div>
+              {ls.map(l => linhaProduto(l))}
+            </div>
+          );
+        })}
     </div>
   );
 }
@@ -5416,8 +5530,10 @@ function rotuloPedaco(agrupar, p) {
   return `${DIAS_CURTO[d.getDay()]} ${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 function RelatorioItens() {
-  const [modo, setModo] = useState("dia");
+  const [modo, setModo] = useState("dia");   // dia | semana | mes | ano | datas
   const [ref, setRef] = useState(hojeISO);
+  const [datas, setDatas] = useState(() => [inicioDoMes(hojeISO()), hojeISO()]);
+  const consulta = modo === "datas" ? `de=${datas[0]}&ate=${datas[1]}` : consultaPeriodo(modo, ref);
   const [rel, setRel] = useState(null);
   const [erro, setErro] = useState("");
   const [cardapio, setCardapio] = useState([]);
@@ -5429,11 +5545,11 @@ function RelatorioItens() {
   async function carregar() {
     setErro("");
     try {
-      const r = await authFetch(BACKEND_URL + "/relatorio/itens?" + consultaPeriodo(modo, ref));
+      const r = await authFetch(BACKEND_URL + "/relatorio/itens?" + consulta);
       if (r.ok) setRel(await r.json()); else setErro("Não foi possível carregar o relatório por item.");
     } catch { setErro("Sem conexão."); }
   }
-  useEffect(() => { carregar(); }, [modo, ref]);
+  useEffect(() => { carregar(); }, [consulta]);
   useEffect(() => {
     authFetch(BACKEND_URL + "/cardapio").then(r => (r.ok ? r.json() : [])).then(c => setCardapio(Array.isArray(c) ? c : [])).catch(() => {});
   }, []);
@@ -5458,7 +5574,7 @@ function RelatorioItens() {
   const catAtiva = categorias.includes(cat) ? cat : "todos"; // a categoria pode não ter nada no novo período
   const visiveis = sel ? (escolhido ? [escolhido] : []) : itens.filter(i => catAtiva === "todos" || i.categoria === catAtiva);
   const q = (v, un = "un") => (un === "un" ? qtdBR(v) : `${qtdBR(v)} ${un}`);
-  const titulo = rotuloPeriodo(modo, ref);
+  const titulo = modo === "datas" ? rotuloDatas(datas[0], datas[1]) : rotuloPeriodo(modo, ref);
   const tituloPedacos = rel?.agrupar === "hora" ? "Hora a hora" : rel?.agrupar === "mes" ? "Mês a mês" : "Dia a dia";
   const pedacos = sel ? escolhido?.porPeriodo || [] : rel?.porPeriodo || [];
   const mostrarPedacos = verPedacos ?? pedacos.length <= 12;
@@ -5507,7 +5623,7 @@ function RelatorioItens() {
     const csv = "﻿" + ls.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    a.download = `itens-${consultaPeriodo(modo, ref).replace("=", "-")}.csv`; a.click();
+    a.download = `itens-${consulta.replace(/[=&]/g, "-")}.csv`; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
@@ -5543,11 +5659,16 @@ function RelatorioItens() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", gap: 6, background: "#fff", borderRadius: 12, padding: 5, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
-        {[["dia", "Dia"], ["semana", "Semana"], ["mes", "Mês"], ["ano", "Ano"]].map(([k, l]) => (
+        {[["dia", "Dia"], ["semana", "Semana"], ["mes", "Mês"], ["ano", "Ano"], ["datas", "Datas"]].map(([k, l]) => (
           <button key={k} onClick={() => { setModo(k); setVerPedacos(null); }} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: modo === k ? "#7b1a0a" : "transparent", color: modo === k ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
-      <NavPeriodo modo={modo} ref_={ref} setRef={(d) => { setRef(d); setVerPedacos(null); }} />
+      {modo === "datas"
+        ? <>
+            <SeletorDatas de={datas[0]} ate={datas[1]} onMudar={(a, b) => { setDatas([a, b]); setVerPedacos(null); }} />
+            <div style={{ fontWeight: 800, fontSize: 15, color: "#333", textAlign: "center" }}>{titulo}</div>
+          </>
+        : <NavPeriodo modo={modo} ref_={ref} setRef={(d) => { setRef(d); setVerPedacos(null); }} />}
 
       {/* Barra de busca com autocompletar (pedido de 24/10/2026) */}
       <div style={{ background: "#fff", borderRadius: 12, padding: "9px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.07)", display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -5921,34 +6042,41 @@ function RelatorioMensal({ mes, setMes }) {
   const [rel, setRel] = useState(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState("");
-  // Mês (dia a dia) ou ano inteiro (mês a mês)
-  const [anual, setAnual] = useState(false);
+  // Mês (dia a dia), ano inteiro (mês a mês) ou entre duas datas (dia a dia;
+  // mês a mês se passar de 3 meses)
+  const [modo, setModo] = useState("mes");   // mes | ano | datas
+  const [datas, setDatas] = useState(() => [inicioDoMes(hojeISO()), hojeISO()]);
+  const anual = modo === "ano", entreDatas = modo === "datas";
   const ano = String(mes).slice(0, 4);
-  const titulo_ = anual ? `Ano de ${ano}` : rotuloMes(mes);
+  const titulo_ = entreDatas ? rotuloDatas(datas[0], datas[1]) : anual ? `Ano de ${ano}` : rotuloMes(mes);
+  const consulta = entreDatas ? `de=${datas[0]}&ate=${datas[1]}` : anual ? "ano=" + ano : "mes=" + mes;
   useEffect(() => {
     let vivo = true;
     (async () => {
       setCarregando(true); setErro("");
       try {
-        const r = await authFetch(BACKEND_URL + "/relatorio/mensal?" + (anual ? "ano=" + ano : "mes=" + mes));
+        const r = await authFetch(BACKEND_URL + "/relatorio/mensal?" + consulta);
         if (!vivo) return;
         if (r.ok) setRel(await r.json()); else setErro("Não foi possível montar o relatório.");
       } catch { if (vivo) setErro("Sem conexão."); }
       if (vivo) setCarregando(false);
     })();
     return () => { vivo = false; };
-  }, [mes, anual]);
+  }, [consulta]);
   // Linhas do detalhe: dia a dia no mês, mês a mês no ano (com as perdas)
   // Consumo da equipe no mesmo período (fora do caixa), por pessoa
   const [equipe, setEquipe] = useState(null);
   async function carregarEquipe() {
     try {
-      const r = await authFetch(BACKEND_URL + "/consumo-interno?" + (anual ? "ano=" + ano : "mes=" + mes));
+      const r = await authFetch(BACKEND_URL + "/consumo-interno?" + consulta);
       setEquipe(r.ok ? await r.json() : null);
     } catch { setEquipe(null); }
   }
-  useEffect(() => { carregarEquipe(); }, [mes, anual]);
-  const periodos = rel ? (rel.porMes || rel.porDia || []).map(x => ({ chave: x.mes || x.dia, rotulo: x.mes ? (MESES_NOME[Number(x.mes.slice(5, 7)) - 1] || x.mes) : fmtDataBR(x.dia), entradas: x.entradas, gastos: x.gastos, perdas: x.perdas || 0 })) : [];
+  useEffect(() => { carregarEquipe(); }, [consulta]);
+  const porMes = !!rel?.porMes;
+  const doPer = anual ? "do ano" : entreDatas ? "do período" : "do mês";
+  const nestePer = anual ? "neste ano" : entreDatas ? "nesse período" : "neste mês";
+  const periodos = rel ? (rel.porMes || rel.porDia || []).map(x => ({ chave: x.mes || x.dia, rotulo: x.mes ? (entreDatas ? rotuloMes(x.mes) : MESES_NOME[Number(x.mes.slice(5, 7)) - 1] || x.mes) : `${fmtDataBR(x.dia)} (${DIAS_CURTO[diaDe(x.dia).getDay()]})`, entradas: x.entradas, gastos: x.gastos, perdas: x.perdas || 0 })) : [];
   const perdasRel = rel?.perdas || { custo: 0, lancamentos: 0 };
 
   const card = { background: "#fff", borderRadius: 14, padding: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.07)" };
@@ -5969,14 +6097,14 @@ function RelatorioMensal({ mes, setMes }) {
       <style>body{font-family:Arial,sans-serif;padding:24px;color:#222;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 8px;border-bottom:2px solid #7b1a0a;padding-bottom:4px}
       table{width:100%;border-collapse:collapse}td,th{padding:5px 6px;border-bottom:1px solid #ddd;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}.tot td{font-weight:bold;border-top:2px solid #333}
       .res{display:flex;gap:16px;margin:12px 0}.res div{flex:1;border:1px solid #ddd;border-radius:8px;padding:10px}.res b{display:block;font-size:18px}@media print{button{display:none}}</style></head><body>
-      <h1>Império dos Espetos — ${titulo_}</h1><div style="color:#666">Entradas e gastos ${anual ? "do ano" : "do mês"} · gerado em ${new Date().toLocaleString("pt-BR")}</div>
+      <h1>Império dos Espetos — ${titulo_}</h1><div style="color:#666">Entradas e gastos ${doPer} · gerado em ${new Date().toLocaleString("pt-BR")}</div>
       <div class="res"><div>Entradas<b>${fmtBR(e.total)}</b></div><div>Gastos<b>${fmtBR(g.total)}</b></div><div>Resultado<b style="color:${rel.resultado >= 0 ? "#047857" : "#b91c1c"}">${fmtBR(rel.resultado)}</b></div><div>Perdas<b style="color:#c2410c">${fmtBR(perdasRel.custo)}</b><span style="font-size:11px;color:#888">${perdasRel.lancamentos} lançamento(s), informativo</span></div></div>
       <h2>Entradas</h2><table>${tr(["Salão (" + e.qtdVendas + " comandas)", fmtBR(e.salao)])}${tr(["Delivery (" + e.qtdDelivery + " pedidos)", fmtBR(e.delivery)])}
       ${tr(["Pix", fmtBR(e.porForma.pix)])}${tr(["Cartão", fmtBR(e.porForma.cartao)])}${tr(["Dinheiro", fmtBR(e.porForma.dinheiro)])}${e.porForma.outros ? tr(["Outros / não informado", fmtBR(e.porForma.outros)]) : ""}
       <tr class="tot">${tr(["Total de entradas", fmtBR(e.total)]).slice(4)}</table>
-      <div style="color:#666;margin-top:6px">Gorjetas recebidas (fora das entradas): ${fmtBR(e.gorjetas)} · Descontos dados: ${fmtBR(e.descontos)}</div>
+      <div style="color:#666;margin-top:6px">Ticket médio: ${fmtBR(ticketMedio)} · Gorjetas recebidas (fora das entradas): ${fmtBR(e.gorjetas)} · Descontos dados: ${fmtBR(e.descontos)}</div>
       <h2>Gastos por tipo</h2><table>${g.porTipo.map(t => tr([t.tipo + " (" + t.qtd + ")", fmtBR(t.total)])).join("")}<tr class="tot">${tr(["Total de gastos", fmtBR(g.total)]).slice(4)}</table>
-      <h2>${anual ? "Mês a mês" : "Dia a dia"}</h2><table><tr><th>${anual ? "Mês" : "Dia"}</th><th class="n">Entradas</th><th class="n">Gastos</th><th class="n">Saldo</th><th class="n">Perdas</th></tr>
+      <h2>${porMes ? "Mês a mês" : "Dia a dia"}</h2><table><tr><th>${porMes ? "Mês" : "Dia"}</th><th class="n">Entradas</th><th class="n">Gastos</th><th class="n">Saldo</th><th class="n">Perdas</th></tr>
       ${periodos.map(d => tr([d.rotulo, fmtBR(d.entradas), fmtBR(d.gastos), fmtBR(d.entradas - d.gastos), d.perdas ? fmtBR(d.perdas) : "—"])).join("")}</table>
       <h2>Todos os gastos</h2><table><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th class="n">Valor</th></tr>
       ${g.lista.map(d => tr([fmtDataBR(diaBR(d.data)), d.tipo, d.descricao || "", fmtBR(d.valor)])).join("")}</table>
@@ -5988,35 +6116,41 @@ function RelatorioMensal({ mes, setMes }) {
     const e = rel.entradas, g = rel.gastos;
     const num = (v) => (Number(v) || 0).toFixed(2).replace(".", ",");
     const linhas = [["Relatório", titulo_], [],
-      ["ENTRADAS"], ["Salão", num(e.salao)], ["Delivery", num(e.delivery)], ["Pix", num(e.porForma.pix)], ["Cartão", num(e.porForma.cartao)], ["Dinheiro", num(e.porForma.dinheiro)], ["Outros", num(e.porForma.outros)], ["Total entradas", num(e.total)], ["Gorjetas (fora)", num(e.gorjetas)], ["Descontos", num(e.descontos)], [],
+      ["ENTRADAS"], ["Salão", num(e.salao)], ["Delivery", num(e.delivery)], ["Pix", num(e.porForma.pix)], ["Cartão", num(e.porForma.cartao)], ["Dinheiro", num(e.porForma.dinheiro)], ["Outros", num(e.porForma.outros)], ["Total entradas", num(e.total)], ["Vendas (comandas + pedidos)", e.qtdVendas + e.qtdDelivery], ["Ticket médio", num(ticketMedio)], ["Gorjetas (fora)", num(e.gorjetas)], ["Descontos", num(e.descontos)], [],
       ["GASTOS POR TIPO"], ...g.porTipo.map(t => [t.tipo, num(t.total)]), ["Total gastos", num(g.total)], [], ["RESULTADO", num(rel.resultado)], [],
       ["PERDAS (custo, informativo)", num(perdasRel.custo)], ["Lançamentos de perda", perdasRel.lancamentos], [],
-      [anual ? "MÊS A MÊS" : "DIA A DIA", "Entradas", "Gastos", "Saldo", "Perdas"], ...periodos.map(d => [d.rotulo, num(d.entradas), num(d.gastos), num(d.entradas - d.gastos), num(d.perdas)]), [],
+      [porMes ? "MÊS A MÊS" : "DIA A DIA", "Entradas", "Gastos", "Saldo", "Perdas"], ...periodos.map(d => [d.rotulo, num(d.entradas), num(d.gastos), num(d.entradas - d.gastos), num(d.perdas)]), [],
       ["TODOS OS GASTOS", "Tipo", "Descrição", "Valor"], ...g.lista.map(d => [fmtDataBR(diaBR(d.data)), d.tipo, d.descricao || "", num(d.valor)])];
     const csv = "﻿" + linhas.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `relatorio-${anual ? ano : mes}.csv`; a.click();
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = `relatorio-${entreDatas ? datas[0] + "-a-" + datas[1] : anual ? ano : mes}.csv`; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
   const e = rel?.entradas, g = rel?.gastos;
+  const nVendas = e ? e.qtdVendas + e.qtdDelivery : 0;
+  const ticketMedio = nVendas ? e.total / nVendas : 0;
   const maxTipo = g?.porTipo?.[0]?.total || 1;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", gap: 6, background: "#fff", borderRadius: 12, padding: 5, boxShadow: "0 2px 8px rgba(0,0,0,0.07)" }}>
-        {[[false, "Mês"], [true, "Ano"]].map(([v, l]) => (
-          <button key={l} onClick={() => setAnual(v)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: anual === v ? "#7b1a0a" : "transparent", color: anual === v ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
+        {[["mes", "Mês"], ["ano", "Ano"], ["datas", "Entre datas"]].map(([v, l]) => (
+          <button key={v} onClick={() => setModo(v)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, border: "none", background: modo === v ? "#7b1a0a" : "transparent", color: modo === v ? "#fff" : "#888", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
-      {anual
+      {entreDatas
+        ? <SeletorDatas de={datas[0]} ate={datas[1]} onMudar={(a, b) => setDatas([a, b])} />
+        : anual
         ? <NavPeriodo modo="ano" ref_={mes + "-01"} setRef={(d) => setMes(String(d).slice(0, 4) + String(mes).slice(4, 7))} />
         : <NavMes mes={mes} setMes={setMes} />}
+      {entreDatas && <div style={{ fontWeight: 800, fontSize: 15, color: "#333", textAlign: "center" }}>{titulo_}</div>}
       {erro && <div style={{ background: "#fee2e2", color: "#991b1b", borderRadius: 10, padding: "10px 12px", fontSize: 13 }}>{erro}</div>}
       {!rel && !erro && <div style={{ color: "#888", fontSize: 13, textAlign: "center" }}>Montando o relatório...</div>}
       {rel && (
         <>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", opacity: carregando ? 0.6 : 1 }}>
-            <Metrica icon="📥" label="Entradas" valor={fmtBR(e.total)} sub={`${e.qtdVendas + e.qtdDelivery} ${e.qtdVendas + e.qtdDelivery === 1 ? "venda" : "vendas"}`} cor="#10b981" />
+            <Metrica icon="📥" label="Entradas" valor={fmtBR(e.total)} sub={`${nVendas} ${nVendas === 1 ? "venda" : "vendas"}`} cor="#10b981" />
+            <Metrica icon="🧾" label="Ticket médio" valor={fmtBR(ticketMedio)} sub="por comanda ou pedido" cor="#7b1a0a" />
             <Metrica icon="📤" label="Gastos" valor={fmtBR(g.total)} sub={`${g.qtd} lançamentos`} cor="#ef4444" />
             <Metrica icon={rel.resultado >= 0 ? "✅" : "⚠️"} label="Resultado" valor={fmtBR(rel.resultado)} sub={rel.resultado >= 0 ? "sobrou" : "faltou"} cor={rel.resultado >= 0 ? "#10b981" : "#ef4444"} />
             <Metrica icon="🗑️" label="Perdas" valor={fmtBR(perdasRel.custo)} sub={`${perdasRel.lancamentos} lançamento(s) · informativo`} cor="#f97316" />
@@ -6043,7 +6177,7 @@ function RelatorioMensal({ mes, setMes }) {
 
           <div style={card}>
             <div style={titulo}>📤 Gastos por tipo</div>
-            {g.porTipo.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nenhum gasto lançado {anual ? "neste ano" : "neste mês"}. Lance em "💸 Gastos".</div>}
+            {g.porTipo.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nenhum gasto lançado {nestePer}. Lance em "💸 Gastos".</div>}
             {g.porTipo.map(t => (
               <div key={t.tipo} style={{ marginBottom: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
@@ -6056,7 +6190,7 @@ function RelatorioMensal({ mes, setMes }) {
             {g.porTipo.length > 0 && linha("Total de gastos", fmtBR(g.total), "#b91c1c", 800)}
             {rel.perdas?.lancamentos > 0 && (
               <div style={{ fontSize: 11.5, color: "#c2410c", marginTop: 8 }}>
-                🗑️ Perdas de mercadoria {anual ? "no ano" : "no mês"}: {rel.perdas.lancamentos} lançamento(s){rel.perdas.custo > 0 ? `, custo estimado ${fmtBR(rel.perdas.custo)}` : ""}. Já estão dentro das compras, por isso não entram no resultado; o detalhe está em Estoque → Perdas.
+                🗑️ Perdas de mercadoria {anual ? "no ano" : entreDatas ? "no período" : "no mês"}: {rel.perdas.lancamentos} lançamento(s){rel.perdas.custo > 0 ? `, custo estimado ${fmtBR(rel.perdas.custo)}` : ""}. Já estão dentro das compras, por isso não entram no resultado; o detalhe está em Estoque → Perdas.
               </div>
             )}
           </div>
@@ -6078,12 +6212,12 @@ function RelatorioMensal({ mes, setMes }) {
           )}
 
           <div style={card}>
-            <div style={titulo}>📅 {anual ? "Mês a mês" : "Dia a dia"}</div>
-            {periodos.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nada registrado {anual ? "neste ano" : "neste mês"}.</div>}
+            <div style={titulo}>📅 {porMes ? "Mês a mês" : "Dia a dia"}</div>
+            {periodos.length === 0 && <div style={{ color: "#888", fontSize: 13 }}>Nada registrado {nestePer}.</div>}
             {periodos.length > 0 && (
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                  <thead><tr style={{ color: "#888", fontSize: 11, textTransform: "uppercase" }}><th style={{ textAlign: "left", padding: "4px 6px" }}>{anual ? "Mês" : "Dia"}</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Entradas</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Gastos</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Saldo</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Perdas</th></tr></thead>
+                  <thead><tr style={{ color: "#888", fontSize: 11, textTransform: "uppercase" }}><th style={{ textAlign: "left", padding: "4px 6px" }}>{porMes ? "Mês" : "Dia"}</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Entradas</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Gastos</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Saldo</th><th style={{ textAlign: "right", padding: "4px 6px" }}>Perdas</th></tr></thead>
                   <tbody>
                     {periodos.map(d => (
                       <tr key={d.chave} style={{ borderTop: "1px solid #f3f3f3" }}>
@@ -6276,7 +6410,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
 
       {/* Sub-abas */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Mês/Ano"],["equipe","👥 Equipe"],["lucro","💰 Lucro"],["precos","🏷️ Preços"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["itens","🍢 Itens"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
+        {[["dash","📈 Dashboard"],["geral","📊 Geral"],["gastos","💸 Gastos"],["mes","📆 Período"],["equipe","👥 Equipe"],["lucro","💰 Lucro"],["precos","🏷️ Preços"],["vendas","🧾 Vendas"],["diasemana","📅 Por dia"],["itens","🍢 Itens"],["ranking","🏆 Ranking"],["garcons","🧑‍🍳 Garçons"]].map(([k,l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flex:1, padding:"8px 4px", borderRadius:10, border:"none", background:subAba===k?"#7b1a0a":"#f0f0f0", color:subAba===k?"#fff":"#666", fontWeight:subAba===k?700:500, fontSize:12, cursor:"pointer", whiteSpace:"nowrap" }}>{l}</button>
         ))}
       </div>

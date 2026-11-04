@@ -3120,6 +3120,16 @@ function periodoDaConsulta(q = {}) {
     return { inicio: new Date(seg + FUSO_MS), fim: new Date(seg + 7 * 86400000 + FUSO_MS), agrupar: "dia", chave: porDia };
   }
   if (q.de !== undefined || q.ate !== undefined) {
+    // Só a data (de=2026-10-01&ate=2026-10-15): dias inteiros em Brasília, os
+    // dois inclusos (relatório entre datas, 04/11/2026). Mais de 3 meses
+    // agrupa por mês. Com hora (ISO completo) vale o instante exato.
+    const soDia = (s) => { const m = String(s ?? "").match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return null; const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])); return new Date(t).toISOString().slice(0, 10) === m[0] ? t : null; };
+    if (soDia(q.de) !== null || soDia(q.ate) !== null) {
+      const a = soDia(q.de), b = soDia(q.ate);
+      if (a === null || b === null || b < a || b - a > 3 * 366 * 86400000) return null;
+      const longo = b - a >= 92 * 86400000;
+      return { inicio: new Date(a + FUSO_MS), fim: new Date(b + 86400000 + FUSO_MS), agrupar: longo ? "mes" : "dia", chave: longo ? porMes : porDia };
+    }
     const de = new Date(q.de), ate = q.ate ? new Date(q.ate) : new Date();
     if (isNaN(de) || isNaN(ate) || ate < de) return null;
     return { inicio: de, fim: ate, agrupar: "dia", chave: porDia };
@@ -3478,11 +3488,16 @@ app.delete("/consumo-interno/:id", authMiddleware(["dono"]), async (req, res) =>
 // que saiu no mês ou no ano. Entradas = vendas do salão (pelo fechamento) +
 // delivery entregue (pelo momento da entrega). Gorjeta não é receita: vai à
 // parte. Desconto já está descontado do total das vendas. No ano, o detalhe
-// vem mês a mês (porMes); no mês, dia a dia (porDia).
+// vem mês a mês (porMes); no mês, dia a dia (porDia). Entre datas
+// (?de=AAAA-MM-DD&ate=AAAA-MM-DD, pedido dos donos de 04/11/2026): dia a dia,
+// ou mês a mês se passar de 3 meses.
 app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
-  const anual = req.query.ano !== undefined;
-  const lim = anual ? periodoDaConsulta({ ano: req.query.ano }) : limitesDoMes(req.query.mes);
-  if (!lim) return res.status(400).json({ erro: anual ? "Informe ano=AAAA" : "Informe mes=AAAA-MM" });
+  const entreDatas = req.query.de !== undefined || req.query.ate !== undefined;
+  const lim = entreDatas
+    ? (/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.de)) && /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.ate)) ? periodoDaConsulta({ de: req.query.de, ate: req.query.ate }) : null)
+    : req.query.ano !== undefined ? periodoDaConsulta({ ano: req.query.ano }) : limitesDoMes(req.query.mes);
+  if (!lim) return res.status(400).json({ erro: entreDatas ? "Informe de=AAAA-MM-DD e ate=AAAA-MM-DD (até 3 anos)" : req.query.ano !== undefined ? "Informe ano=AAAA" : "Informe mes=AAAA-MM" });
+  const anual = req.query.ano !== undefined || lim.agrupar === "mes";   // detalhe mês a mês
   const chavePeriodo = (d) => (anual ? diaBrasilia(d).slice(0, 7) : diaBrasilia(d));
   try {
     const [vendas, pedidos, despesas, perdasMes, consumoEquipe] = await Promise.all([
@@ -3536,8 +3551,9 @@ app.get("/relatorio/mensal", authMiddleware(["dono"]), async (req, res) => {
     const periodos = Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia))
       .map(d => ({ ...d, salao: arred(d.salao), delivery: arred(d.delivery), gastos: arred(d.gastos), perdas: arred(d.perdas), entradas: arred(d.salao + d.delivery) }));
     res.json({
-      mes: anual ? undefined : req.query.mes,
-      ano: anual ? String(req.query.ano) : undefined,
+      mes: entreDatas || anual ? undefined : req.query.mes,
+      ano: !entreDatas && anual ? String(req.query.ano) : undefined,
+      de: entreDatas ? req.query.de : undefined, ate: entreDatas ? req.query.ate : undefined,
       inicio: lim.inicio, fim: lim.fim,
       entradas: {
         total: entradas, salao: arred(salao), delivery: arred(delivery),
