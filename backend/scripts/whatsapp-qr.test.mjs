@@ -34,6 +34,8 @@ console.log("\n=== a tela sabe dizer o que esta acontecendo ===");
   ok(st.status === 200 && "temSessao" in st.corpo, `status diz se ha sessao guardada (${JSON.stringify(st.corpo).slice(0, 90)})`);
   const qr = await api("GET", "/whatsapp/qr");
   ok(qr.status === 200 && "temSessao" in qr.corpo, "a consulta do QR tambem");
+  // Sem ninguem ler o QR, o servidor para de gerar e avisa a tela
+  ok(typeof st.corpo.pausado === "boolean" && typeof qr.corpo.pausado === "boolean", "e dizem se o pareamento esta em pausa");
 }
 
 console.log("\n=== sessao velha travando o QR ===");

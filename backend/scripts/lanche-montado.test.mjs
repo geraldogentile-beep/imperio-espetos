@@ -51,11 +51,6 @@ console.log("\n=== parte 1: regras do lanche montado ===");
   // Preco do espeto muda: o lanche acompanha sozinho
   const maisCaro = CARDAPIO.map(i => i.nome === "Picanha meia lua" ? { ...i, preco: 17 } : i);
   ok(opcoesMontado(lanche, maisCaro, preco).find(o => o.nome === "Picanha meia lua").preco === 23, "picanha a 17 vira lanche de 23 sem mexer no cadastro");
-
-  // Modo evento: o preco promocional entra pelos dois lados
-  const promo = (i) => (i.precoPromocional > 0 ? i.precoPromocional : Number(i.preco) || 0);
-  const comPromo = CARDAPIO.map(i => i.nome === "Picanha meia lua" ? { ...i, precoPromocional: 12 } : i);
-  ok(opcoesMontado(lanche, comPromo, promo).find(o => o.nome === "Picanha meia lua").preco === 18, "preco promocional do espeto vale no lanche");
 }
 
 console.log("\n=== parte 1b: mais de um espeto no mesmo lanche ===");

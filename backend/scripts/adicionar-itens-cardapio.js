@@ -88,7 +88,6 @@ export function planejar(existentes, novos) {
       categoria: item.categoria,
       nome: item.nome,
       preco: item.preco,
-      precoPromocional: null,
       tempoPreparo: item.tempoPreparo,
       ativo: true,
       obs: item.obs,

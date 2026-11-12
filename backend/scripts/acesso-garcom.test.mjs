@@ -45,7 +45,7 @@ for (const [metodo, rota, corpo] of [
 }
 
 console.log("\n=== o garcom continua trabalhando ===");
-for (const [metodo, rota] of [["GET", "/mesas"], ["GET", "/cardapio"], ["GET", "/config"], ["GET", "/modo-evento"], ["GET", "/impressao/status"]]) {
+for (const [metodo, rota] of [["GET", "/mesas"], ["GET", "/cardapio"], ["GET", "/config"], ["GET", "/impressao/status"]]) {
   const r = await garcom(metodo, rota);
   ok(r.status === 200, `${metodo} ${rota} -> ${r.status}`);
 }

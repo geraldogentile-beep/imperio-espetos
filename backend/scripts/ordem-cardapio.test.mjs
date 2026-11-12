@@ -56,9 +56,11 @@ console.log("\n=== nao mexe na lista original ===");
   const srv = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
   const a = srv.indexOf("function cardapioTexto()");
   const b = srv.indexOf("function buildSystemPrompt");
-  const cardapioTexto = new Function("CARDAPIO", "estaEmModoEvento", "precoAtual",
+  // O trecho recortado usa as funcoes do lanche montado, que o servidor importa
+  const { ehMontado, opcoesMontado, textoMontado } = await import("../cardapio/montado.js");
+  const cardapioTexto = new Function("CARDAPIO", "precoAtual", "ehMontado", "opcoesMontado", "textoMontado",
     srv.slice(a, b) + "\nreturn cardapioTexto;"
-  )(lista.map(i => ({ ...i, ativo: true, preco: 10 })), () => false, (i) => i.preco);
+  )(lista.map(i => ({ ...i, ativo: true, preco: 10 })), (i) => i.preco, ehMontado, opcoesMontado, textoMontado);
   const texto = cardapioTexto();
   const linhas = texto.split("\n").filter(l => l.startsWith("  • ")).map(l => l.slice(4).split(":")[0]);
   console.log("\n=== bot do WhatsApp: mesma ordem ===");

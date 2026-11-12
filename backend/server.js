@@ -11,6 +11,7 @@ import * as focus from "./fiscal/focusnfe.js";
 import * as sefapr from "./fiscal/sefapr.js";
 import { aplicarPagamentoNaMesa, mesaZeradaServidor } from "./salao/fechamento.js";
 import { transferirMesa } from "./salao/transferencia.js";
+import { decidirVirada } from "./salao/virada.js";
 import { ehMontado, opcoesMontado, lerItemMontado, textoMontado } from "./cardapio/montado.js";
 import { EQUIPE_PADRAO, calcularConsumo, valorEfetivo } from "./salao/equipe.js";
 import { validarProducao, custoDaProducao, resumoProducoes, unidadeDe } from "./estoque/producao.js";
@@ -76,12 +77,14 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // Rate limiting específico para login (anti brute-force)
-// 100 tentativas/15min e SÓ falhas contam. O frontend já tem lockout de 5 tentativas.
-// O objetivo aqui é só barrar bots agressivos, não atrapalhar o uso normal.
+// 10 PINs errados em 15 min, por endereço, e SÓ falhas contam. Com 100 dava
+// para testar os 10 mil PINs em um dia. Os aparelhos da casa saem pelo mesmo
+// endereço (o Wi-Fi), então o limite é da casa toda: quem já está logado
+// continua trabalhando, só novos logins esperam.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: { erro: "Muitas tentativas. Aguarde 1 minuto." },
+  max: 10,
+  message: { erro: "Muitas tentativas de PIN errado. Aguarde 15 minutos." },
   skipSuccessfulRequests: true, // logins certos não contam
   standardHeaders: true,
   legacyHeaders: false,
@@ -107,15 +110,6 @@ function authMiddleware(rolesPermitidas = []) {
       return res.status(401).json({ erro: "Token inválido ou expirado" });
     }
   };
-}
-
-// Middleware que aceita autenticado OU não (para rotas que funcionam com/sem auth)
-function authOpcional(req, res, next) {
-  const header = req.headers.authorization;
-  if (header?.startsWith("Bearer ")) {
-    try { req.user = jwt.verify(header.slice(7), ENV.JWT_SECRET); } catch {}
-  }
-  next();
 }
 
 // ── ENV ───────────────────────────────────────────────────────
@@ -198,7 +192,6 @@ const CardapioSchema = new mongoose.Schema({
   categoria: { type: String, required: true },
   nome: { type: String, required: true },
   preco: { type: Number, required: true, min: 0 },
-  precoPromocional: { type: Number, default: null, min: 0 },
   tempoPreparo: { type: Number, default: 10, min: 0 },
   ativo: { type: Boolean, default: true },
   obs: String,
@@ -562,6 +555,9 @@ const MesaSalaoSchema = new mongoose.Schema({
   // em vez de apagar o que outro aparelho acabou de lancar.
   versao:  { type: Number, default: 1 },
   porQuem: { type: String, default: "" },
+  // Registro de um dia anterior cuja mesa ja foi tratada na virada (trazida
+  // para este dia, ou regravada nele). Sem valor = ainda nao olhado.
+  levadaPara: String,
 }, { timestamps: true });
 MesaSalaoSchema.index({ dataStr: 1, mesaId: 1 }, { unique: true });
 const MesaSalaoDB = mongoose.model("MesaSalao", MesaSalaoSchema);
@@ -737,6 +733,29 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 let motivoWhatsapp = "";        // por que caiu, em portugues, para o painel
 
+// Sem ninguem para ler o QR, o servidor ficava gerando um QR novo a cada 20s,
+// dia e noite: em 11/2026 eram 3.400 linhas de log seguidas e uma conexao
+// aberta com o WhatsApp o tempo todo, com o numero desligado havia semanas.
+// Agora o QR fica disponivel por uma janela; passou dela, o pareamento entra
+// em pausa e so volta quando alguem pede pelo painel (WhatsApp → QR Code).
+const JANELA_QR_MS = Number(process.env.WHATSAPP_JANELA_QR_MS) || 10 * 60 * 1000;
+let qrDesde = null;             // quando comecou a janela de QR atual
+let pareamentoPausado = false;
+const MOTIVO_PAUSA = "Ninguém leu o QR Code, então o pareamento entrou em pausa. Toque no botão abaixo para gerar um QR novo.";
+
+function retomarPareamento() { pareamentoPausado = false; qrDesde = null; }
+function pausarPareamento() {
+  pareamentoPausado = true;
+  qrDesde = null;
+  qrCodeBase64 = null;
+  whatsappStatus = "disconnected";
+  motivoWhatsapp = MOTIVO_PAUSA;
+  try { if (sock) { sock.ev.removeAllListeners(); sock.end(undefined); } } catch {}
+  sock = null;
+  console.log("📱 Pareamento do WhatsApp em pausa: ninguem leu o QR Code. Volta pelo painel (WhatsApp → Mostrar QR Code).");
+}
+const janelaDoQrVenceu = () => qrDesde !== null && Date.now() - qrDesde > JANELA_QR_MS;
+
 // Sessao morta (numero desligado no celular, sessao expirada) faz o Baileys
 // tentar restaurar e NUNCA emitir QR: o painel fica pedindo o QR para sempre.
 // A saida e tirar a sessao da frente. Nunca apagamos: renomeia, para dar
@@ -762,7 +781,6 @@ let CONFIG = {
   taxaEntrega: 5.00,
   tempoEntregaMin: 30,
   tempoEntregaMax: 45,
-  entregaCEP: { ativo: false, cepBase: "01310100", raioKm: 5, mensagemForaRaio: "😕 Fora do nosso raio de {raio}km." },
   horarioFuncionamento: {
     0: { aberto: false, abertura: "18:00", fechamento: "23:00" },
     1: { aberto: false, abertura: "18:00", fechamento: "23:00" },
@@ -781,7 +799,6 @@ let CONFIG = {
   },
   fidelidade: { ativo: true, pedidosParaGanhar: 5, brinde: "1 espetinho grátis", mensagemGanhou: "🎉 Parabéns {cliente}! Você ganhou *{brinde}*! Mencione no próximo pedido 😄" },
   avaliacao:  { ativo: true, delayMinutos: 10, mensagem: "Olá {cliente}! Como foi seu pedido? Responda com uma nota de *1 a 5* ⭐", mensagemObrigado: "Obrigado pela avaliação, {cliente}! 💛" },
-  modoEvento: { ativo: false, nome: "", agendado: false, inicio: null, fim: null, mensagemWhats: "🏆 *PROMOÇÃO ESPECIAL!* Confira nossos preços diferenciados durante o evento!" },
 };
 
 // ── CARDÁPIO ──────────────────────────────────────────────────
@@ -886,9 +903,6 @@ async function carregarFidelidade(tel) {
   } catch (e) { console.error("Erro ao carregar fidelidade:", e.message); }
   return getFidelidade(tel);
 }
-async function salvarFidelidade(tel, dados) {
-  try { await FidelidadeDB.updateOne({ telefone: tel }, { $set: dados }, { upsert: true }); } catch (e) { console.error("Erro ao salvar fidelidade:", e.message); }
-}
 
 // ── AVALIAÇÕES ────────────────────────────────────────────────
 const avaliacoes = [];
@@ -909,21 +923,9 @@ function addMsg(tel, role, content) {
 }
 
 // ── HELPERS ───────────────────────────────────────────────────
-function estaEmModoEvento() {
-  const me = CONFIG.modoEvento || {};
-  if (me.ativo) return true; // Manual ativo
-  if (me.agendado && me.inicio && me.fim) {
-    const agora = new Date();
-    return agora >= new Date(me.inicio) && agora <= new Date(me.fim);
-  }
-  return false;
-}
-
+// Um lugar so para "quanto custa agora". O modo evento (preco promocional)
+// saiu em 11/2026 a pedido da casa; hoje e sempre o preco do cardapio.
 function precoAtual(item) {
-  // Usa preço promocional se modo evento estiver ativo E o item tiver preço promocional
-  if (estaEmModoEvento() && item.precoPromocional && item.precoPromocional > 0) {
-    return item.precoPromocional;
-  }
   return item.preco;
 }
 
@@ -988,15 +990,10 @@ function cardapioTexto() {
   const ativos = CARDAPIO.filter(i => i.ativo).sort((a, b) =>
     (ordemCat.indexOf(a.categoria) - ordemCat.indexOf(b.categoria)) ||
     String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR", { sensitivity: "base" }));
-  const emEvento = estaEmModoEvento();
   return Object.entries(
     ativos.reduce((acc, item) => {
       if (!acc[item.categoria]) acc[item.categoria] = [];
-      const preco = precoAtual(item);
-      const temPromo = emEvento && item.precoPromocional && item.precoPromocional > 0 && item.precoPromocional < item.preco;
-      const precoTxt = temPromo
-        ? `~R$${item.preco.toFixed(2)}~ *R$${preco.toFixed(2)}* 🏆`
-        : `R$${preco.toFixed(2)}`;
+      const precoTxt = `R$${precoAtual(item).toFixed(2)}`;
       // Lanche montado: o cliente escolhe o espeto e o preco soma
       const linhaPreco = ehMontado(item) ? textoMontado(item, CARDAPIO, precoAtual) : precoTxt;
       acc[item.categoria].push(`  • ${item.nome}${item.obs ? ` (${item.obs})` : ""}: ${linhaPreco}`);
@@ -1028,16 +1025,12 @@ ${linhas}
 
 function buildSystemPrompt(tel) {
   const aberto = estaAberto();
-  const emEvento = estaEmModoEvento();
-  const nomeEvento = CONFIG.modoEvento?.nome || "Evento Especial";
-  const cuponsAtivos = cupons.filter(c => c.ativo).map(c => `${c.codigo} — ${c.descricao}`).join(", ");
   const telLimpo = tel ? tel.replace("@s.whatsapp.net","").replace("@lid","").replace(/\D/g,"") : "";
   return `Você é o assistente virtual do *${CONFIG.nomeEstabelecimento}* 👑🔥
 Seu nome é *${CONFIG.nomeAgente}*.
 
 STATUS: ${aberto ? "✅ LOJA ABERTA" : `🔴 LOJA FECHADA — próxima abertura: ${proximaAbertura()}. NÃO aceite pedidos.`}
 
-${emEvento ? `🏆 *PROMOÇÃO ATIVA — ${nomeEvento}*: Os preços marcados com 🏆 no cardápio estão com valor promocional especial! Use sempre o preço promocional ao calcular o pedido. Pode mencionar a promoção ao cliente de forma calorosa.\n` : ""}
 TELEFONE DO CLIENTE: ${telLimpo} (já capturado automaticamente — NUNCA peça o número de telefone ao cliente)
 
 FIDELIDADE: A cada ${CONFIG.fidelidade.pedidosParaGanhar} pedidos o cliente ganha ${CONFIG.fidelidade.brinde}.
@@ -1315,7 +1308,7 @@ async function processarMensagemCliente(tel, texto) {
           return;
         }
 
-        // Reforça preços do cardápio (promocional se em modo evento).
+        // Reforça preços do cardápio: vale o cadastrado, não o que a IA escreveu.
         // Item fora do cardápio é rejeitado: antes mantinha o preço inventado pela IA.
         const itensValidados = [];
         for (const it of dadosPedido.itens) {
@@ -1430,6 +1423,8 @@ async function conectarWhatsApp() {
     console.warn("Conexao WhatsApp ja em andamento, ignorando chamada duplicada");
     return;
   }
+  // Em pausa, as reconexoes agendadas nao fazem nada: so o painel retoma
+  if (pareamentoPausado) return;
   conectandoWhatsApp = true;
   try {
     // Encerra o socket anterior antes de abrir outro
@@ -1463,7 +1458,12 @@ async function conectarWhatsApp() {
 
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log("📱 QR Code gerado — acesse /qrcode para escanear");
+      if (janelaDoQrVenceu()) { pausarPareamento(); return; }
+      // Uma linha por janela, nao uma por QR (sai um novo a cada 20s)
+      if (qrDesde === null) {
+        qrDesde = Date.now();
+        console.log(`📱 QR Code disponivel no painel (WhatsApp → Mostrar QR Code) por ${Math.round(JANELA_QR_MS / 60000)} min`);
+      }
       qrCodeBase64 = await qrcode.toDataURL(qr);
       whatsappStatus = "qr";
       // Esperar alguem escanear nao e falha de conexao: sem zerar aqui, o
@@ -1480,6 +1480,8 @@ async function conectarWhatsApp() {
         || codigo === DisconnectReason.badSession
         || codigo === 401;
       const shouldReconnect = (lastDisconnect?.error instanceof Boom) ? !sessaoMorta : true;
+      // O ciclo do QR terminou sem leitura e a janela ja passou: para aqui
+      if (!sessaoMorta && janelaDoQrVenceu()) { pausarPareamento(); return; }
       whatsappStatus = "disconnected";
       qrCodeBase64 = null;
       motivoWhatsapp = sessaoMorta
@@ -1494,9 +1496,10 @@ async function conectarWhatsApp() {
         return;
       }
 
-      // Sem sessao guardada, a conexao existe so para mostrar o QR: volta
-      // rapido e sem contar tentativa, senao o QR fica minutos fora do ar.
-      if (!temSessaoWhatsapp()) {
+      // Sem sessao guardada, ou no meio de uma janela de QR, a conexao existe
+      // so para mostrar o QR: volta rapido e sem contar tentativa, senao o QR
+      // fica minutos fora do ar.
+      if (!temSessaoWhatsapp() || qrDesde !== null) {
         reconnectAttempts = 0;
         motivoWhatsapp = "Aguardando leitura do QR Code";
         setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reabrir para o QR:", e.message)); }, 4000);
@@ -1521,6 +1524,7 @@ async function conectarWhatsApp() {
       qrCodeBase64 = null;
       motivoWhatsapp = "";
       reconnectAttempts = 0; // reset no sucesso
+      retomarPareamento();   // pareou: a janela do QR nao vale mais
     }
     });
 
@@ -1793,7 +1797,7 @@ app.put("/pedidos/:id", authMiddleware(["dono"]), async (req, res) => {
 
 // ── WHATSAPP STATUS API ───────────────────────────────────────
 app.get("/whatsapp/status", authMiddleware(["dono", "garcom"]), (req, res) =>
-  res.json({ status: whatsappStatus, motivo: motivoWhatsapp, temSessao: temSessaoWhatsapp() }));
+  res.json({ status: whatsappStatus, motivo: motivoWhatsapp, temSessao: temSessaoWhatsapp(), pausado: pareamentoPausado }));
 
 // GET /whatsapp/qr — o QR em JSON, para o painel poder ficar consultando
 app.get("/whatsapp/qr", authMiddleware(["dono"]), (req, res) => {
@@ -1802,6 +1806,7 @@ app.get("/whatsapp/qr", authMiddleware(["dono"]), (req, res) => {
     qr: whatsappStatus === "qr" ? qrCodeBase64 : null,
     motivo: motivoWhatsapp,
     temSessao: temSessaoWhatsapp(),   // com sessao guardada, o QR pode nunca nascer
+    pausado: pareamentoPausado,       // ninguem leu o QR: so volta por /whatsapp/reconectar
   });
 });
 
@@ -1815,6 +1820,8 @@ app.post("/whatsapp/reconectar", authMiddleware(["dono"]), async (req, res) => {
   // limparSessao: tira da frente a sessao antiga. E o que destrava o caso do
   // QR que nunca aparece — com credencial velha o Baileys nem chega a emitir.
   const limpou = req.body?.limparSessao ? arquivarSessaoWhatsapp() : false;
+  retomarPareamento();   // alguem pediu o QR: abre uma janela nova
+  motivoWhatsapp = "";
   reconnectAttempts = 0;
   qrCodeBase64 = null;
   whatsappStatus = "disconnected";
@@ -1836,6 +1843,7 @@ app.post("/whatsapp/logout", authMiddleware(["dono"]), async (req, res) => {
   whatsappStatus = "disconnected";
   qrCodeBase64 = null;
   motivoWhatsapp = "Desconectado pelo painel";
+  retomarPareamento();
   reconnectAttempts = 0;
   setTimeout(() => { conectarWhatsApp().catch(e => console.error("Falha ao reconectar apos logout:", e.message)); }, 2000);
   res.json({ ok: true, sessaoArquivada: arquivada, message: "Desconectado. Novo QR Code sera gerado." });
@@ -1950,7 +1958,7 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
   const idx = CARDAPIO.findIndex(i => i.id === id);
   if (idx === -1) return res.status(404).json({ erro: "Item não encontrado" });
   // Apenas campos permitidos
-  const allowed = ["categoria", "nome", "preco", "precoPromocional", "tempoPreparo", "ativo", "obs", "fiscal", "variacaoRotulo", "variacoes", "montarCom", "montarRotulo"];
+  const allowed = ["categoria", "nome", "preco", "tempoPreparo", "ativo", "obs", "fiscal", "variacaoRotulo", "variacoes", "montarCom", "montarRotulo"];
   const update = {};
   for (const key of allowed) { if (req.body[key] !== undefined) update[key] = req.body[key]; }
   // Nome e categoria em branco, ou preço que não é número, quebravam a venda
@@ -1968,10 +1976,6 @@ app.put("/cardapio/:id", authMiddleware(["dono"]), async (req, res) => {
     update.preco = lerPreco(update.preco);
     if (update.preco === null) return res.status(400).json({ erro: "Preço inválido" });
   }
-  if (update.precoPromocional !== undefined && update.precoPromocional !== null && update.precoPromocional !== "") {
-    update.precoPromocional = lerPreco(update.precoPromocional);
-    if (update.precoPromocional === null) return res.status(400).json({ erro: "Preço promocional inválido" });
-  } else if (update.precoPromocional === "") update.precoPromocional = null;
   if (update.tempoPreparo !== undefined) {
     const t = parseInt(update.tempoPreparo);
     update.tempoPreparo = Number.isFinite(t) && t >= 0 ? t : (CARDAPIO[idx].tempoPreparo ?? 10);
@@ -2122,9 +2126,9 @@ app.put("/config", authMiddleware(["dono"]), async (req, res) => {
   if (b.tempoEntregaMin  !== undefined) novo.tempoEntregaMin  = numOr(b.tempoEntregaMin,  CONFIG.tempoEntregaMin,  { min: 1, max: 600 });
   if (b.tempoEntregaMax  !== undefined) novo.tempoEntregaMax  = numOr(b.tempoEntregaMax,  CONFIG.tempoEntregaMax,  { min: 1, max: 600 });
 
-  if (b.entregaCEP && typeof b.entregaCEP === "object") {
-    novo.entregaCEP = { ...CONFIG.entregaCEP, ...b.entregaCEP };
-  }
+  // "Zona de entrega" (entregaCEP) e "modo evento" sairam do painel em 11/2026:
+  // o primeiro nunca foi usado pelo bot e o segundo a casa pediu para tirar.
+  // O que ja estava gravado continua no banco, so nao e mais lido.
 
   // Blocos que antes eram DESCARTADOS silenciosamente
   if (b.horarioFuncionamento && typeof b.horarioFuncionamento === "object") {
@@ -2150,12 +2154,6 @@ app.put("/config", authMiddleware(["dono"]), async (req, res) => {
     novo.avaliacao.delayMinutos = numOr(b.avaliacao.delayMinutos, CONFIG.avaliacao.delayMinutos, { min: 1, max: 1440 });
   }
 
-  if (b.modoEvento && typeof b.modoEvento === "object") {
-    novo.modoEvento = { ...CONFIG.modoEvento, ...b.modoEvento };
-    novo.modoEvento.ativo    = b.modoEvento.ativo === true    || b.modoEvento.ativo === "true";
-    novo.modoEvento.agendado = b.modoEvento.agendado === true || b.modoEvento.agendado === "true";
-  }
-
   CONFIG = novo;
   await salvarConfig();
   res.json(CONFIG);
@@ -2166,37 +2164,6 @@ app.put("/config/fidelidade", authMiddleware(["dono"]), async (req, res) => { CO
 app.put("/config/avaliacao", authMiddleware(["dono"]), async (req, res) => { CONFIG.avaliacao = { ...CONFIG.avaliacao, ...req.body }; await salvarConfig(); res.json(CONFIG.avaliacao); });
 app.get("/config/status-loja", (req, res) => res.json({ aberto: estaAberto(), proximaAbertura: proximaAbertura() }));
 
-// ── MODO EVENTO (preços promocionais durante eventos) ────────
-app.get("/modo-evento", authMiddleware(["dono", "garcom"]), (req, res) => {
-  res.json({ ...CONFIG.modoEvento, ativoAgora: estaEmModoEvento() });
-});
-app.put("/modo-evento", authMiddleware(["dono"]), async (req, res) => {
-  const { ativo, nome, agendado, inicio, fim, mensagemWhats } = req.body;
-  CONFIG.modoEvento = {
-    ativo: ativo !== undefined ? !!ativo : CONFIG.modoEvento?.ativo,
-    nome: nome !== undefined ? nome : CONFIG.modoEvento?.nome,
-    agendado: agendado !== undefined ? !!agendado : CONFIG.modoEvento?.agendado,
-    inicio: inicio !== undefined ? inicio : CONFIG.modoEvento?.inicio,
-    fim: fim !== undefined ? fim : CONFIG.modoEvento?.fim,
-    mensagemWhats: mensagemWhats !== undefined ? mensagemWhats : CONFIG.modoEvento?.mensagemWhats,
-  };
-  await salvarConfig();
-  res.json({ ...CONFIG.modoEvento, ativoAgora: estaEmModoEvento() });
-});
-
-// Atualizar preço promocional de um item
-app.patch("/cardapio/:id/preco-promocional", authMiddleware(["dono"]), async (req, res) => {
-  const id = parseInt(req.params.id);
-  const { precoPromocional } = req.body;
-  const item = CARDAPIO.find(i => i.id === id);
-  if (!item) return res.status(404).json({ erro: "Item não encontrado" });
-  const valor = precoPromocional === null || precoPromocional === "" ? null : parseFloat(precoPromocional);
-  if (valor !== null && (isNaN(valor) || valor < 0)) return res.status(400).json({ erro: "Preço promocional inválido" });
-  item.precoPromocional = valor;
-  try { await CardapioDB.updateOne({ id }, { $set: { precoPromocional: valor } }); }
-  catch (e) { console.error("Erro ao atualizar preço promocional:", e.message); }
-  res.json(item);
-});
 
 // ── VENDAS SALÃO API ─────────────────────────────────────────
 // Vendas e faturamento sao do dono. O login do salao (5678) nao recebe.
@@ -5350,8 +5317,39 @@ app.post("/reset/dados-teste", authMiddleware(["dono"]), async (req, res) => {
 // seu salão no localStorage e eles nunca se falavam.
 
 // GET /mesas — o estado do salão no dia operacional de hoje
+// Mesa que ficou aberta com itens na virada do dia (06:00) vem para o salao
+// de hoje, com a marca de quando foi aberta. A regra esta em salao/virada.js.
+// Registro de dia anterior nao muda mais (toda rota grava no dia de hoje),
+// entao basta conferir de tempos em tempos, nao a cada consulta dos aparelhos.
+const DIAS_VIRADA = 7;
+const VIRADA_INTERVALO_MS = process.env.VIRADA_INTERVALO_MS !== undefined ? Number(process.env.VIRADA_INTERVALO_MS) : 10 * 60 * 1000;
+let viradaConferida = { dia: "", em: 0 };
+async function trazerMesasDaVirada(hoje) {
+  if (viradaConferida.dia === hoje && Date.now() - viradaConferida.em < VIRADA_INTERVALO_MS) return;
+  const limite = diaOperacional(new Date(Date.now() - DIAS_VIRADA * 86400000));
+  const antigas = await MesaSalaoDB.find({ dataStr: { $lt: hoje, $gte: limite }, levadaPara: { $exists: false } })
+    .select("mesaId dataStr dados").lean();
+  if (antigas.length) {
+    const idsDeHoje = (await MesaSalaoDB.find({ dataStr: hoje }).select("mesaId").lean()).map(m => m.mesaId);
+    const { trazer, encerrar } = decidirVirada(antigas, idsDeHoje);
+    for (const t of trazer) {
+      try {
+        await MesaSalaoDB.create({ mesaId: t.mesaId, dataStr: hoje, dados: t.dados, versao: 1, porQuem: "virada do dia" });
+        console.log(`Mesa ${t.mesaId} ficou aberta em ${t.dataStr}: trazida para o salao de ${hoje}`);
+      } catch (e) {
+        if (e.code !== 11000) throw e;   // outro aparelho trouxe no mesmo instante
+      }
+    }
+    if (encerrar.length) await MesaSalaoDB.updateMany({ _id: { $in: encerrar } }, { $set: { levadaPara: hoje } });
+  }
+  viradaConferida = { dia: hoje, em: Date.now() };
+}
+
 app.get("/mesas", authMiddleware(["dono", "garcom"]), async (req, res) => {
   if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  // Falha aqui nao pode derrubar o mapa do salao
+  try { await trazerMesasDaVirada(diaOperacional()); }
+  catch (e) { console.error("Erro ao trazer mesas da virada do dia:", e.message); }
   try {
     const lista = await MesaSalaoDB.find({ dataStr: diaOperacional() })
       .select("mesaId dados versao porQuem updatedAt").lean();
@@ -5712,6 +5710,10 @@ app.get("/ia/status", authMiddleware(["dono"]), (req, res) => {
     modelo: MODELO_IA,
     ok: !ultimaFalhaIA,
     ultimaFalha: ultimaFalhaIA,
+    // "ok" so quer dizer que a ultima chamada nao falhou. O painel precisa
+    // saber tambem se o robo tem como trabalhar: chave e WhatsApp ligados.
+    temChave: !!ENV.ANTHROPIC_KEY,
+    whatsapp: whatsappStatus,
   });
 });
 
@@ -5736,7 +5738,7 @@ app.listen(ENV.PORT, async () => {
   ║   👑 Império dos Espetos — Backend v5            ║
   ║   Porta: ${ENV.PORT}  — WhatsApp via Baileys          ║
   ║                                                  ║
-  ║   GET /qrcode    → escanear QR Code              ║
+  ║   QR Code do WhatsApp: pelo painel (WhatsApp)    ║
   ║   GET /health    → status geral                  ║
   ╚══════════════════════════════════════════════════╝
   `);

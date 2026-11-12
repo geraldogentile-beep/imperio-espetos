@@ -46,7 +46,6 @@ const STATUS_CONFIG = {
 // painel (o schema descarta), entao toda venda vinda dele tinha id undefined:
 // clicar numa abria todas, e excluir uma tirava todas da tela.
 const chaveVenda = (v) => String(v?._id || v?.id || "");
-function isMesmosDias(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
 // Momento em que o pedido "fechou" para o caixa: a entrega. Pedido feito antes
 // do "Fechar caixa" e entregue depois entra no caixa seguinte. Pedido antigo,
 // sem entregueEm, conta pelo horario em que foi feito.
@@ -55,18 +54,12 @@ function momentoEntrega(p) { return new Date(p.entregueEm || p.horario); }
 const FORMAS_DELIVERY = [["pix", "🟢 Pix"], ["cartao", "💳 Cartão"], ["dinheiro", "💵 Dinheiro"]];
 const rotuloForma = k => (FORMAS_DELIVERY.find(([f]) => f === k) || [])[1] || "";
 
-const MOCK_PEDIDOS    = [];
-const MOCK_CARDAPIO   = [];
-const MOCK_CUPONS     = [];
-const MOCK_AVALIACOES = [];
-
 const DEFAULT_CONFIG = {
   nomeEstabelecimento: "Império dos Espetos e Grill",
   nomeAgente: "Imperador",
   taxaEntrega: 5.00,
   tempoEntregaMin: 30,
   tempoEntregaMax: 45,
-  entregaCEP: { ativo: true, cepBase: "01310100", raioKm: 5, mensagemForaRaio: "😕 Fora do nosso raio de {raio}km." },
   horarioFuncionamento: {
     0: { aberto: false, abertura: "18:00", fechamento: "23:00" },
     1: { aberto: false, abertura: "18:00", fechamento: "23:00" },
@@ -613,7 +606,6 @@ function Cardapio({ cardapio, onReload }) {
     // Variação em branco é rascunho do formulário, não erro: some no salvamento
     const limpo = {
       ...item, preco,
-      precoPromocional: String(item.precoPromocional ?? "").trim() === "" || parseMoedaGlobal(item.precoPromocional) <= 0 ? null : parseMoedaGlobal(item.precoPromocional),
       tempoPreparo: Number.isFinite(Number(item.tempoPreparo)) ? Number(item.tempoPreparo) : 10,
       variacoes: (item.variacoes || []).filter(v => String(v.nome || "").trim() !== "").map(v => ({ ...v, preco: parseMoedaGlobal(v.preco) })),
     };
@@ -706,12 +698,6 @@ function Cardapio({ cardapio, onReload }) {
                 <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>⏱️ Preparo (min)</div><input type="number" value={editando.tempoPreparo} onChange={e => setEditando(p => ({ ...p, tempoPreparo: parseInt(e.target.value) }))} style={inputStyle} /></div>
                 <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>Obs.</div><input value={editando.obs || ""} onChange={e => setEditando(p => ({ ...p, obs: e.target.value }))} style={inputStyle} /></div>
               </div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 3 }}>🎉 Preço promocional (modo evento)</div>
-                  <InputDinheiro value={editando.precoPromocional || ""} onChange={v => setEditando(p => ({ ...p, precoPromocional: v }))} placeholder="Deixe vazio para não entrar no evento" style={inputStyle} />
-                </div>
-              </div>
 
               {/* Variações — mesmo prato, preço diferente conforme a escolha */}
               <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginBottom: 8 }}>
@@ -793,11 +779,10 @@ function Cardapio({ cardapio, onReload }) {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 2 }}>
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 15, color: "#7b1a0a" }}>{fmtBR(item.preco)}</div>
-                  {item.precoPromocional > 0 && <div style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>🎉 {fmtBR(item.precoPromocional)}</div>}
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   <button onClick={() => toggleAtivo(item)} title={item.ativo ? "Marcar em falta" : "Voltar a vender"} style={{ background: item.ativo ? "#d1fae5" : "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>{item.ativo ? "✅" : "❌"}</button>
-                  <button onClick={() => setEditando({ ...item, preco: moedaDeNumero(item.preco), precoPromocional: item.precoPromocional > 0 ? moedaDeNumero(item.precoPromocional) : "", variacoes: (item.variacoes || []).map(v => ({ ...v, preco: moedaDeNumero(v.preco) })) })} title="Editar" style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
+                  <button onClick={() => setEditando({ ...item, preco: moedaDeNumero(item.preco), variacoes: (item.variacoes || []).map(v => ({ ...v, preco: moedaDeNumero(v.preco) })) })} title="Editar" style={{ background: "#dbeafe", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>✏️</button>
                   <button onClick={() => deletarItem(item.id)} title="Excluir" style={{ background: "#fee2e2", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 14 }}>🗑️</button>
                 </div>
               </div>
@@ -4102,8 +4087,6 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
   const [subAba, setSubAba] = useState("horario");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [testeCEP, setTesteCEP] = useState("");
-  const [resultadoCEP, setResultadoCEP] = useState(null);
   // Marca que o usuario mexeu em algo. Enquanto true, o polling (que reescreve
   // `config` a cada 8s com um objeto novo) NAO pode sobrescrever o formulario.
   const editandoRef = useRef(false);
@@ -4123,13 +4106,8 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
   }
   function setHorario(dia, campo, v) { marcarEditado(); setCfg(p => ({ ...p, horarioFuncionamento: { ...p.horarioFuncionamento, [dia]: { ...p.horarioFuncionamento[dia], [campo]: v } } })); }
   function setMensagem(campo, v) { marcarEditado(); setCfg(p => ({ ...p, mensagensAutomaticas: { ...p.mensagensAutomaticas, [campo]: v } })); }
-  function setCEP(campo, v) { marcarEditado(); setCfg(p => ({ ...p, entregaCEP: { ...p.entregaCEP, [campo]: v } })); }
   function setFidelidade(campo, v) { marcarEditado(); setCfg(p => ({ ...p, fidelidade: { ...p.fidelidade, [campo]: v } })); }
   function setAvaliacao(campo, v) { marcarEditado(); setCfg(p => ({ ...p, avaliacao: { ...p.avaliacao, [campo]: v } })); }
-  function setEvento(campo, v) { marcarEditado(); setCfg(p => ({ ...p, modoEvento: { ...(p.modoEvento || {}), [campo]: v } })); }
-  async function testarCEP() {
-    try { const r = await fetch("https://viacep.com.br/ws/" + testeCEP.replace(/\D/g, "") + "/json/"); const d = await r.json(); setResultadoCEP({ valido: !d.erro, endereco: d.erro ? null : d.logradouro + ", " + d.bairro + " - " + d.localidade + "/" + d.uf }); } catch { setResultadoCEP({ valido: false }); }
-  }
   const inputStyle = { width: "100%", padding: "8px 10px", border: "1.5px solid #e0e0e0", borderRadius: 8, fontSize: 13, color: "#333", outline: "none", boxSizing: "border-box" };
 
   return (
@@ -4142,7 +4120,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         </div>
       </div>
       <div style={{ display: "flex", background: "#f0f0f0", borderRadius: 10, padding: 3, gap: 1, flexWrap: "wrap" }}>
-        {[["horario","🕐"],["notif","🔔"],["impressora","🖨️"],["fiscal","🧾"],["mensagens","💬"],["entrega","📍"],["fidelidade","🏆"],["avaliacao","⭐"],["evento","🎉"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
+        {[["horario","🕐"],["notif","🔔"],["impressora","🖨️"],["fiscal","🧾"],["mensagens","💬"],["fidelidade","🏆"],["avaliacao","⭐"],["garcons","🧑‍🍳"],["pins","🔑"],["geral","⚙️"]].map(([k, l]) => (
           <button key={k} onClick={() => setSubAba(k)} style={{ flexShrink: 0, padding: "7px 10px", borderRadius: 8, border: "none", background: subAba === k ? "#fff" : "transparent", color: subAba === k ? "#7b1a0a" : "#888", fontWeight: subAba === k ? 700 : 500, fontSize: 13, cursor: "pointer", boxShadow: subAba === k ? "0 1px 4px rgba(0,0,0,0.1)" : "none" }}>{l}</button>
         ))}
       </div>
@@ -4183,31 +4161,10 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
         </div>
       )}
 
-      {subAba === "entrega" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>📍 Zona de entrega</div>
-          <Toggle value={cfg.entregaCEP.ativo} onChange={v => setCEP("ativo", v)} label="Validar CEP antes de aceitar" sub="O bot verifica se está dentro do raio" />
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 2 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>CEP do estabelecimento</div><input value={cfg.entregaCEP.cepBase} onChange={e => setCEP("cepBase", e.target.value.replace(/\D/g, ""))} maxLength={8} style={inputStyle} /></div>
-            <div style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Raio (km)</div><input type="number" value={cfg.entregaCEP.raioKm} onChange={e => setCEP("raioKm", parseInt(e.target.value))} style={inputStyle} /></div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input value={testeCEP} onChange={e => { setTesteCEP(e.target.value); setResultadoCEP(null); }} placeholder="Testar CEP..." maxLength={9} style={{ ...inputStyle, flex: 1 }} />
-            <button onClick={testarCEP} disabled={!testeCEP} style={{ background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "0 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Testar</button>
-          </div>
-          {resultadoCEP && (
-            <div style={{ padding: "10px 12px", borderRadius: 10, background: resultadoCEP.valido ? "#d1fae5" : "#fee2e2", border: "1px solid " + (resultadoCEP.valido ? "#10b981" : "#ef4444") }}>
-              <div style={{ fontWeight: 700, fontSize: 13, color: resultadoCEP.valido ? "#065f46" : "#991b1b" }}>{resultadoCEP.valido ? "✅ Dentro da área" : "❌ Fora da área"}</div>
-              {resultadoCEP.endereco && <div style={{ fontSize: 12, color: "#555", marginTop: 3 }}>{resultadoCEP.endereco}</div>}
-            </div>
-          )}
-        </div>
-      )}
-
       {subAba === "fidelidade" && (
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🏆 Programa de fidelidade</div>
-          <Toggle value={cfg.fidelidade.ativo} onChange={v => setFidelidade("ativo", v)} label="Ativar programa de fidelidade" sub="O bot avisa o cliente quando ganhar brinde" />
+          <Toggle value={cfg.fidelidade.ativo} onChange={v => setFidelidade("ativo", v)} label="Ativar programa de fidelidade" sub="O bot avisa o cliente quando ganhar brinde. Ligado, a tela Fidelid. aparece no menu" />
           <div style={{ display: "flex", gap: 8 }}>
             <div style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Pedidos para ganhar</div><input type="number" value={cfg.fidelidade.pedidosParaGanhar} onChange={e => setFidelidade("pedidosParaGanhar", parseInt(e.target.value))} style={inputStyle} /></div>
             <div style={{ flex: 2 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Brinde</div><input value={cfg.fidelidade.brinde} onChange={e => setFidelidade("brinde", e.target.value)} placeholder="Ex: 1 espetinho grátis" style={inputStyle} /></div>
@@ -4219,7 +4176,7 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
       {subAba === "avaliacao" && (
         <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>⭐ Avaliação pós-entrega</div>
-          <Toggle value={cfg.avaliacao.ativo} onChange={v => setAvaliacao("ativo", v)} label="Ativar avaliação automática" sub="Envia mensagem pedindo nota após entrega" />
+          <Toggle value={cfg.avaliacao.ativo} onChange={v => setAvaliacao("ativo", v)} label="Ativar avaliação automática" sub="Envia mensagem pedindo nota após entrega. Ligada, a tela Aval. aparece no menu" />
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Enviar após (minutos)</div><input type="number" value={cfg.avaliacao.delayMinutos} onChange={e => setAvaliacao("delayMinutos", parseInt(e.target.value))} style={inputStyle} /></div>
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de avaliação</div><textarea value={cfg.avaliacao.mensagem} onChange={e => setAvaliacao("mensagem", e.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
           <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Mensagem de agradecimento</div><textarea value={cfg.avaliacao.mensagemObrigado} onChange={e => setAvaliacao("mensagemObrigado", e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></div>
@@ -4240,42 +4197,6 @@ function Configuracoes({ config, onSave, statusLoja, garcons, onReloadGarcons })
           <SugestoesFiscais />
           <FiscalConfig />
           <ResumoFiscal />
-        </div>
-      )}
-
-      {subAba === "evento" && (
-        <div style={{ background: "#fff", borderRadius: 14, padding: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🎉 Modo Evento (preços promocionais)</div>
-          <div style={{ background: "#fef3c7", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#92400e" }}>
-            ℹ️ Defina preços promocionais por item no cardápio. Ative o modo manualmente ou agende horários (ex: durante jogos da Copa). O WhatsApp e o salão usam o preço promocional automaticamente quando o modo está ativo.
-          </div>
-
-          <Toggle value={cfg.modoEvento?.ativo || false} onChange={v => setEvento("ativo", v)} label="Ativar modo evento agora (manual)" sub="Liga imediatamente, independente do agendamento" />
-
-          <div><div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>Nome do evento</div><input value={cfg.modoEvento?.nome || ""} onChange={e => setEvento("nome", e.target.value)} placeholder="Ex: Copa do Mundo - Brasil x Argentina" style={inputStyle} /></div>
-
-          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginTop: 4 }}>
-            <Toggle value={cfg.modoEvento?.agendado || false} onChange={v => setEvento("agendado", v)} label="Agendar período" sub="Ativa automaticamente no horário definido" />
-            {cfg.modoEvento?.agendado && (
-              <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: "#aaa", marginBottom: 3 }}>Início</div>
-                  <input type="datetime-local" value={cfg.modoEvento?.inicio ? new Date(cfg.modoEvento.inicio).toISOString().slice(0,16) : ""} onChange={e => setEvento("inicio", e.target.value ? new Date(e.target.value).toISOString() : null)} style={inputStyle} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: "#aaa", marginBottom: 3 }}>Fim</div>
-                  <input type="datetime-local" value={cfg.modoEvento?.fim ? new Date(cfg.modoEvento.fim).toISOString().slice(0,16) : ""} onChange={e => setEvento("fim", e.target.value ? new Date(e.target.value).toISOString() : null)} style={inputStyle} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 10, marginTop: 4 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#666", marginBottom: 5 }}>💡 Como configurar preços promocionais</div>
-            <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5 }}>
-              Vá na aba <strong>🍢 Cardápio</strong> e clique no item para definir o "Preço promocional". Itens sem preço promocional mantêm o preço normal mesmo durante o evento.
-            </div>
-          </div>
         </div>
       )}
 
@@ -4446,7 +4367,7 @@ function CaixaGaveta({ backendUrl, conf, recarregar }) {
               <input value={texto} onChange={e => setTexto(e.target.value)} placeholder={modo === "saida" ? "ex.: 3 entregas do João" : "ex.: moedas do banco"} maxLength={120} style={inp} onKeyDown={e => { if (e.key === "Enter") confirmar(); }} />
             </div>
           )}
-          {modo === "saida" && motivoSel.gasto && <div style={{ fontSize: 11, color: "#1d4ed8", marginTop: 6 }}>Vai aparecer também em Rel. → Gastos, como pago com dinheiro da gaveta.</div>}
+          {modo === "saida" && motivoSel.gasto && <div style={{ fontSize: 11, color: "#1d4ed8", marginTop: 6 }}>Vai aparecer também em Relatórios → Gastos, como pago com dinheiro da gaveta.</div>}
           {erro && <div style={{ marginTop: 8, color: "#b91c1c", fontSize: 12, fontWeight: 600 }}>{erro}</div>}
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button onClick={confirmar} disabled={salvando} style={{ flex: 2, background: "linear-gradient(135deg,#7b1a0a,#c0392b)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 0", fontWeight: 800, fontSize: 14, cursor: "pointer", opacity: salvando ? 0.6 : 1 }}>{salvando ? "Salvando..." : "Confirmar"}</button>
@@ -4464,9 +4385,9 @@ function CaixaGaveta({ backendUrl, conf, recarregar }) {
             <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", borderTop: "1px solid #f5f5f5" }}>
               <span style={{ flex: 1, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{icone[m.tipo]} {m.motivo || (m.tipo === "reforco" ? "Reforço" : "Saída")} <span style={{ color: "#aaa" }}>· {horaCurta(m.data)}</span></span>
               <span style={{ fontWeight: 700, color: m.tipo === "reforco" || m.tipo === "equipe" ? "#065f46" : "#b91c1c" }}>{m.tipo === "reforco" || m.tipo === "equipe" ? "+" : "−"} {fmtBR(m.valor)}</span>
-              {/* Consumo da equipe pago: desfaz a baixa em Rel. → Equipe */}
+              {/* Consumo da equipe pago: desfaz a baixa em Relatórios → Equipe */}
               {m.tipo === "equipe"
-                ? <span title="Para tirar, desfaça a baixa em Rel. → Equipe" style={{ fontSize: 13, padding: "0 2px", opacity: 0.35 }}>🔒</span>
+                ? <span title="Para tirar, desfaça a baixa em Relatórios → Equipe" style={{ fontSize: 13, padding: "0 2px", opacity: 0.35 }}>🔒</span>
                 : <button onClick={() => excluir(m)} title="Excluir" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "0 2px" }}>🗑️</button>}
             </div>
           ))}
@@ -4847,10 +4768,12 @@ function FechamentoDia({ backendUrl, pedidos, historicoSalao, faturadoSalao, mes
 // ── ABA RELATÓRIOS ────────────────────────────────────────────
 
 // ── DASHBOARD COM GRÁFICOS ────────────────────────────────────
+// historicoSalao: vendas do salão do período E do período anterior (para o
+// comparativo), vindas do servidor. O dia começa às 06:00 (dia operacional).
 function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntrega = TAXA_ENTREGA_PADRAO }) {
   const dias = periodo === "hoje" ? 1 : periodo === "semana" ? 7 : 30;
   const agora = new Date();
-  const dataInicio = new Date(agora); dataInicio.setDate(dataInicio.getDate() - dias + 1); dataInicio.setHours(0,0,0,0);
+  const dataInicio = inicioDoExpediente(agora); dataInicio.setDate(dataInicio.getDate() - dias + 1);
 
   // Filtra pedidos delivery entregues no período
   const pedidosEntregues = pedidos.filter(p => p.status === "entregue" && new Date(p.horario) >= dataInicio);
@@ -4875,15 +4798,17 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
 
   // ── VENDAS POR DIA DA SEMANA ──
   const diasSemana = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  // Dia da semana do expediente: a venda de 00:30 de sábado conta na sexta
+  const diaSemanaOp = (d) => new Date(diaOperacional(new Date(d)) + "T12:00:00").getDay();
   const porDiaSemana = diasSemana.map(d => ({ dia: d, valor: 0, qty: 0 }));
   pedidosEntregues.forEach(p => {
-    const d = new Date(p.horario).getDay();
+    const d = diaSemanaOp(p.horario);
     const total = totalPedido(p, taxaEntrega);
     porDiaSemana[d].valor += total;
     porDiaSemana[d].qty += 1;
   });
   vendasSalao.forEach(v => {
-    const d = new Date(v.fechamento).getDay();
+    const d = diaSemanaOp(v.fechamento);
     porDiaSemana[d].valor += v.total || 0;
     porDiaSemana[d].qty += 1;
   });
@@ -4946,9 +4871,13 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
             const alt = (h.valor / maxHora) * 100;
             const ehPico = h.hora === horaPico.hora && h.valor > 0;
             return (
-              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, position: "relative" }} title={`${String(h.hora).padStart(2,"0")}h: ${fmtBR(h.valor)} (${h.qty} vendas)`}>
-                <div style={{ width: "85%", height: `${Math.max(alt, h.valor > 0 ? 4 : 0)}%`, background: ehPico ? "linear-gradient(180deg,#f59e0b,#d97706)" : h.valor > 0 ? "linear-gradient(180deg,#c0392b,#7b1a0a)" : "transparent", borderRadius: "4px 4px 0 0", transition: "height 0.6s ease", minHeight: h.valor > 0 ? 4 : 0 }} />
-                {[0,6,12,18,23].includes(h.hora) && <div style={{ fontSize: 9, color: "#888", marginTop: 2 }}>{h.hora}h</div>}
+              // A coluna precisa ter a altura do grafico: sem isso o "height: %" da
+              // barra nao tinha referencia e toda barra ficava com 4px (grafico "vazio").
+              <div key={i} style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, position: "relative" }} title={`${String(h.hora).padStart(2,"0")}h: ${fmtBR(h.valor)} (${h.qty} vendas)`}>
+                <div style={{ flex: 1, width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+                  <div style={{ width: "85%", height: `${Math.max(alt, h.valor > 0 ? 4 : 0)}%`, background: ehPico ? "linear-gradient(180deg,#f59e0b,#d97706)" : h.valor > 0 ? "linear-gradient(180deg,#c0392b,#7b1a0a)" : "transparent", borderRadius: "4px 4px 0 0", transition: "height 0.6s ease", minHeight: h.valor > 0 ? 4 : 0 }} />
+                </div>
+                <div style={{ fontSize: 9, color: "#888", minHeight: 11, lineHeight: "11px" }}>{[0,6,12,18,23].includes(h.hora) ? h.hora + "h" : ""}</div>
               </div>
             );
           })}
@@ -4961,9 +4890,9 @@ function DashboardCharts({ pedidos = [], historicoSalao = [], periodo, taxaEntre
         <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 140 }}>
           {porDiaSemana.map((d, i) => {
             const alt = (d.valor / maxDia) * 100;
-            const isHoje = i === agora.getDay();
+            const isHoje = i === diaSemanaOp(agora);
             return (
-              <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+              <div key={i} style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                 <div style={{ fontSize: 10, color: d.valor > 0 ? "#7b1a0a" : "#ccc", fontWeight: 700, minHeight: 14 }}>{d.valor > 0 ? `R$${d.valor.toFixed(0)}` : "—"}</div>
                 <div style={{ width: "100%", flex: 1, display: "flex", alignItems: "flex-end" }}>
                   <div style={{ width: "100%", height: `${Math.max(alt, d.valor > 0 ? 5 : 0)}%`, background: isHoje ? "linear-gradient(180deg,#f59e0b,#d97706)" : d.valor > 0 ? "linear-gradient(180deg,#c0392b,#7b1a0a)" : "#f0f0f0", borderRadius: "6px 6px 0 0", transition: "height 0.6s ease", minHeight: d.valor > 0 ? 6 : 6, boxShadow: isHoje ? "0 0 0 2px #f59e0b40" : "none" }} />
@@ -5027,8 +4956,6 @@ const mudarMes = (m, delta) => { const [a, mm] = String(m).split("-").map(Number
 const fmtDataBR = (iso) => { const [a, m, d] = String(iso).slice(0, 10).split("-"); return `${d}/${m}/${a}`; };
 // Dia em Brasília (UTC-3, sem horário de verão) de uma data vinda do servidor
 const diaBR = (d) => new Date(new Date(d).getTime() - 3 * 3600 * 1000).toISOString().slice(0, 10);
-// "35,90" / "35.90" / "R$ 1.234,50" -> número
-const lerValor = (s) => { const t = String(s || "").replace(/[R$\s]/g, ""); const n = t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t; return parseFloat(n); };
 
 // Período de relatório: semana (segunda a domingo), mês ou ano, a partir de um dia
 const isoDia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -6207,7 +6134,7 @@ function RelatorioMensal({ mes, setMes }) {
                   <span style={{ whiteSpace: "nowrap", fontWeight: 700, color: pp.tipo === "dono" ? "#b45309" : "#0e7490" }}>{fmtBR(pp.total)}</span>
                 </div>
               ))}
-              <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>Detalhes, correção de valores e regras em Rel. → 👥 Equipe.</div>
+              <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>Detalhes, correção de valores e regras em Relatórios → 👥 Equipe.</div>
             </div>
           )}
 
@@ -6239,7 +6166,7 @@ function RelatorioMensal({ mes, setMes }) {
   );
 }
 
-function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], onZerarSalao, setHistoricoSalao, setFaturadoSalaoRel }) {
+function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao = 0, mesasSalao = [], setMesasSalaoRel, historicoSalao = [], setHistoricoSalao, setFaturadoSalaoRel }) {
   const [periodo, setPeriodo] = useState("semana");
   const [subAba, setSubAba] = useState("geral");
   const [mesRel, setMesRel] = useState(mesAtual);   // Gastos e relatório do mês andam juntos
@@ -6334,67 +6261,106 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
     if (subAba === "lucro") carregarLucro();
   }, [subAba, periodo]);
 
+  // ── VENDAS DO SALÃO NO PERÍODO (Dashboard, Geral, Por dia, Ranking) ──
+  // Antes essas telas usavam só as vendas do caixa aberto: depois do
+  // fechamento do caixa ficavam zeradas, e "7 dias"/"30 dias" nunca contavam
+  // as vendas dos dias anteriores. Agora vêm do servidor, pelo período.
+  // O dia começa às 06:00 (dia operacional), como no resto do app.
+  const diasPeriodo = { hoje: 1, semana: 7, mes: 30 }[periodo] ?? 7;
+  const inicioPeriodo = inicioDoExpediente();
+  inicioPeriodo.setDate(inicioPeriodo.getDate() - (diasPeriodo - 1));
+  const chavePeriodo = inicioPeriodo.toISOString();
+  const [vendasRel, setVendasRel] = useState({ chave: "", lista: null, erro: "" });
+  useEffect(() => {
+    let vivo = true;
+    // Busca também o período anterior, para o comparativo do Dashboard
+    const de = new Date(chavePeriodo); de.setDate(de.getDate() - diasPeriodo);
+    const carregar = async () => {
+      try {
+        const r = await authFetch(`${BACKEND_URL}/vendas-salao/historico?de=${de.toISOString()}&ate=${new Date().toISOString()}`);
+        const d = r.ok ? await r.json() : null;
+        if (!vivo) return;
+        if (Array.isArray(d)) setVendasRel({ chave: chavePeriodo, lista: d, erro: "" });
+        else setVendasRel(v => ({ ...v, erro: "Não foi possível carregar as vendas do período." }));
+      } catch { if (vivo) setVendasRel(v => ({ ...v, erro: "Sem conexão: as vendas do período não carregaram." })); }
+    };
+    carregar();
+    const t = setInterval(carregar, 60000);
+    return () => { vivo = false; clearInterval(t); };
+    // historicoSalao.length: venda nova fechada aqui entra na hora
+  }, [chavePeriodo, diasPeriodo, historicoSalao.length]);
+  const carregandoVendas = vendasRel.lista === null || vendasRel.chave !== chavePeriodo;
+  const vendasTodas = vendasRel.lista || [];   // período + o anterior
+  const vendasPer = vendasTodas.filter(v => new Date(v.fechamento) >= inicioPeriodo);
+
   const entregues = pedidos.filter(p => p.status === "entregue");
-  const diasFiltro = { hoje: 0, semana: 6, mes: 29 }[periodo];
-  const corte = new Date(); corte.setDate(corte.getDate() - diasFiltro); corte.setHours(0, 0, 0, 0);
-  const pp = entregues.filter(p => new Date(p.horario) >= corte);
+  const pp = entregues.filter(p => new Date(p.horario) >= inicioPeriodo);
   const totalDelivery = pp.reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
   // Cupons no delivery + desconto dado no fechamento das comandas
   const descontoDelivery = pp.reduce((s, p) => s + (p.desconto || 0), 0);
-  const descontoSalao = historicoSalao.reduce((s, v) => s + (Number(v.desconto) || 0), 0);
+  const descontoSalao = vendasPer.reduce((s, v) => s + (Number(v.desconto) || 0), 0);
   const totalDescontos = descontoDelivery + descontoSalao;
-  const totalGorjetas = historicoSalao.reduce((s, v) => s + (Number(v.gorjeta) || 0), 0);
-  const ticket = pp.length > 0 ? totalDelivery / pp.length : 0;
+  const totalGorjetas = vendasPer.reduce((s, v) => s + (Number(v.gorjeta) || 0), 0);
 
-  // Faturamento do salão — mesas abertas + já fechadas
+  // Faturamento do salão — vendas fechadas no período + mesas abertas agora
   const totalSalaoAberto = mesasSalao.reduce((s, m) => s + totMesaVenda(m), 0);
-  const totalSalao = faturadoSalao + totalSalaoAberto;
+  const totalSalaoFechado = vendasPer.reduce((s, v) => s + (Number(v.total) || 0), 0);
+  const totalSalao = totalSalaoFechado + totalSalaoAberto;
   const totalGeral = totalDelivery + totalSalao;
 
   // Itens mais vendidos — delivery + salão
   const ci = {};
-  pp.forEach(p => p.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
-  historicoSalao.forEach(v => v.itens.forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
+  pp.forEach(p => (p.itens || []).forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
+  vendasPer.forEach(v => (v.itens || []).forEach(i => { ci[i.nome] = (ci[i.nome] || 0) + (i.qty || 1); }));
   const mv = Object.entries(ci).sort((a, b) => b[1] - a[1])[0];
   const ri = Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 8);
 
-  // Ranking por dia da semana — delivery + salão
+  // Ranking por dia da semana — delivery + salão, no período
   const ds = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  // Dia da semana do expediente: a venda de 00:30 de sábado é da sexta
+  const diaSemanaOp = (d) => new Date(diaOperacional(new Date(d)) + "T12:00:00").getDay();
   const porDia = ds.map((nome, idx) => {
-    const pedidosDia = entregues.filter(p => new Date(p.horario).getDay() === idx);
-    const fatDelivery = pedidosDia.reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
-    const fatSalao = historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).reduce((s, v) => s + v.total, 0);
-    const fat = fatDelivery + fatSalao;
-    return { nome, fat, qtd: pedidosDia.length + historicoSalao.filter(v => new Date(v.fechamento).getDay() === idx).length };
+    const pedidosDia = pp.filter(p => diaSemanaOp(p.horario) === idx);
+    const vendasDia = vendasPer.filter(v => diaSemanaOp(v.fechamento) === idx);
+    const fat = pedidosDia.reduce((s, p) => s + totalPedido(p, taxaEntrega), 0) + vendasDia.reduce((s, v) => s + (Number(v.total) || 0), 0);
+    return { nome, fat, qtd: pedidosDia.length + vendasDia.length };
   });
   const maxDia = Math.max(...porDia.map(d => d.fat), 1);
   const melhorDia = [...porDia].sort((a,b) => b.fat - a.fat)[0];
 
   // Barras do gráfico temporal — delivery + salão
+  const somaEntre = (ini, fim) =>
+    pp.filter(p => { const t = new Date(p.horario); return t >= ini && t < fim; }).reduce((s, p) => s + totalPedido(p, taxaEntrega), 0) +
+    vendasPer.filter(v => { const t = new Date(v.fechamento); return t >= ini && t < fim; }).reduce((s, v) => s + (Number(v.total) || 0), 0);
   let barras = [];
   if (periodo === "hoje") {
-    for (let h = 11; h <= 23; h += 2) {
-      const vDel = pp.filter(p => { const hr = new Date(p.horario).getHours(); return hr >= h && hr < h + 2; }).reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
-      const vSal = historicoSalao.filter(v => { const hr = new Date(v.fechamento).getHours(); return hr >= h && hr < h + 2; }).reduce((s, v) => s + v.total, 0);
-      barras.push({ label: h + "h", valor: vDel + vSal, destaque: new Date().getHours() >= h && new Date().getHours() < h + 2 });
+    // De 2 em 2 horas, das 16h à madrugada (a casa abre à tarde e fecha meia-noite)
+    const agoraH = new Date();
+    for (let h = 16; h <= 28; h += 2) {
+      const ini = new Date(inicioPeriodo); ini.setHours(0, 0, 0, 0); ini.setHours(h);
+      const fim = new Date(ini); fim.setHours(fim.getHours() + 2);
+      if (h === 16) ini.setTime(inicioPeriodo.getTime());   // a 1ª barra pega o dia desde as 06:00
+      barras.push({ label: h === 16 ? "até 18h" : (h % 24) + "h", valor: somaEntre(ini, fim), destaque: agoraH >= ini && agoraH < fim });
     }
   } else if (periodo === "semana") {
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i); d.setHours(0, 0, 0, 0);
-      const vDel = entregues.filter(p => isMesmosDias(p.horario, d)).reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
-      const vSal = historicoSalao.filter(v => isMesmosDias(v.fechamento, d)).reduce((s, v) => s + v.total, 0);
-      barras.push({ label: i === 0 ? "Hoje" : ds[d.getDay()], valor: vDel + vSal, destaque: i === 0 });
+      const ini = new Date(inicioDoExpediente()); ini.setDate(ini.getDate() - i);
+      const fim = new Date(ini); fim.setDate(fim.getDate() + 1);
+      barras.push({ label: i === 0 ? "Hoje" : ds[ini.getDay()], valor: somaEntre(ini, fim), destaque: i === 0 });
     }
   } else {
     for (let s = 3; s >= 0; s--) {
-      const ini = new Date(); ini.setDate(ini.getDate() - s * 7 - 6); ini.setHours(0, 0, 0, 0);
-      const fim = new Date(); fim.setDate(fim.getDate() - s * 7); fim.setHours(23, 59, 59, 999);
-      const vDel = entregues.filter(p => new Date(p.horario) >= ini && new Date(p.horario) <= fim).reduce((s, p) => s + totalPedido(p, taxaEntrega), 0);
-      const vSal = historicoSalao.filter(v => new Date(v.fechamento) >= ini && new Date(v.fechamento) <= fim).reduce((s, v) => s + v.total, 0);
-      barras.push({ label: s === 0 ? "Esta sem." : "Sem. -" + s, valor: vDel + vSal, destaque: s === 0 });
+      const fim = new Date(inicioDoExpediente()); fim.setDate(fim.getDate() + 1 - s * 7);
+      const ini = new Date(fim); ini.setDate(ini.getDate() - 7);
+      barras.push({ label: s === 0 ? "Esta sem." : "Sem. -" + s, valor: somaEntre(ini, fim), destaque: s === 0 });
     }
   }
   const maxB = Math.max(...barras.map(b => b.valor), 1);
+  const avisoVendas = vendasRel.erro
+    ? <div style={{ background: "#fee2e2", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#991b1b" }}>⚠️ {vendasRel.erro}</div>
+    : carregandoVendas
+      ? <div style={{ background: "#f5f5f5", borderRadius: 10, padding: "10px 12px", fontSize: 12, color: "#888" }}>⏳ Carregando as vendas do período...</div>
+      : null;
 
   return (
     <div style={{ padding: "16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
@@ -6416,8 +6382,9 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       </div>
 
       {/* DASHBOARD */}
+      {["dash", "geral", "diasemana", "ranking"].includes(subAba) && avisoVendas}
       {subAba === "dash" && (
-        <DashboardCharts pedidos={pedidos} historicoSalao={historicoSalao} periodo={periodo} taxaEntrega={taxaEntrega} />
+        <DashboardCharts pedidos={pedidos} historicoSalao={vendasTodas} periodo={periodo} taxaEntrega={taxaEntrega} />
       )}
 
       {/* GASTOS DA LOJA e RELATÓRIO DO MÊS */}
@@ -6432,7 +6399,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Metrica icon="💰" label="Total geral" valor={fmtBR(totalGeral)} cor="#7b1a0a" />
           <Metrica icon="🛵" label="Delivery" valor={fmtBR(totalDelivery)} sub={pp.length + " pedido" + (pp.length !== 1 ? "s" : "")} cor="#10b981" />
-          <Metrica icon="🍽️" label="Salão" valor={fmtBR(totalSalao)} cor="#3b82f6" />
+          <Metrica icon="🍽️" label="Salão" valor={fmtBR(totalSalao)} sub={`${vendasPer.length} venda${vendasPer.length !== 1 ? "s" : ""}${totalSalaoAberto > 0 ? " + " + fmtBR(totalSalaoAberto) + " em mesas abertas" : ""}`} cor="#3b82f6" />
           <Metrica icon="🏆" label="Mais vendido" valor={mv ? mv[1] + "x" : "—"} sub={mv ? mv[0] : ""} cor="#f59e0b" />
           {totalGorjetas > 0 && <Metrica icon="🙏" label="Gorjetas" valor={fmtBR(totalGorjetas)} sub="fora do faturamento" cor="#10b981" />}
           {totalDescontos > 0 && <Metrica icon="🎟️" label="Descontos" valor={fmtBR(totalDescontos)} sub={descontoSalao > 0 && descontoDelivery > 0 ? "cupons + comandas" : descontoSalao > 0 ? "no fechamento" : "via cupons"} cor="#8b5cf6" />}
@@ -7864,21 +7831,9 @@ function RodadasEditor({ rodadas, isDono, onSave, onReimprimir, onMandarCozinha 
   );
 }
 
-function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada, onMesaRemovida, onMesaAtualizada, onTransferirMesa }) {
-  // ── MODO EVENTO (preços promocionais) ──
-  const modoEvento = configExterna?.modoEvento || {};
-  const emModoEvento = (() => {
-    if (modoEvento.ativo) return true;
-    if (modoEvento.agendado && modoEvento.inicio && modoEvento.fim) {
-      const agora = Date.now();
-      return agora >= new Date(modoEvento.inicio).getTime() && agora <= new Date(modoEvento.fim).getTime();
-    }
-    return false;
-  })();
-  function precoItem(item) {
-    if (emModoEvento && item.precoPromocional && item.precoPromocional > 0) return item.precoPromocional;
-    return item.preco;
-  }
+function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao, mesasSalao, setMesasSalao, faturadoSalao, setFaturadoSalao, selSalao, setSelSalao, telaSalaoGlobal, setTelaSalaoGlobal, isDono, historicoSalao = [], setHistoricoSalao, onSairApp, garcomLogado, onMesaEditada, onMesaRemovida, onMesaAtualizada, onTransferirMesa }) {
+  // Um lugar so para "quanto custa agora" (o modo evento saiu em 11/2026)
+  const precoItem = (item) => item.preco;
   const perfil = perfilSalao;
   // Quem pode lancar pedido na comanda. Na espetaria o caixa tambem anota —
   // deixar isso so para garcom travava a operacao quando ninguem entrava
@@ -8176,7 +8131,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     // nomeBase preserva o nome do cardápio: o backend liga estoque e dados
     // fiscais por ele, já que o nome exibido ganha o sufixo da variação
     const base = variacao
-      ? { ...item, nome: `${item.nome} (${variacao.nome})`, nomeBase: item.nome, variacao: variacao.nome, precoPromocional: null,
+      ? { ...item, nome: `${item.nome} (${variacao.nome})`, nomeBase: item.nome, variacao: variacao.nome,
           // Cadastro do item nao precisa viajar na mesa (ela vai e volta do
           // servidor a cada edicao); o que importa e nome, preco e o espeto.
           variacoes: undefined, montarCom: undefined, montarRotulo: undefined,
@@ -8187,7 +8142,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const chave = chaveLinha(base);
     const existe=sc.itens.find(i=>chaveLinha(i)===chave);
     const itens=existe
-      // Sempre atualiza o preço para o atual (caso modo evento tenha ligado/desligado)
+      // Sempre atualiza o preço para o atual (o cadastro pode ter mudado com a mesa aberta)
       ? sc.itens.map(i=>chaveLinha(i)===chave?{...i,qty:(i.qty||1)+1,preco:precoAgora}:i)
       : [...sc.itens,{...base,preco:precoAgora,qty:1}];
     const nomeGarcom = mesa.garcom || (garcomLogado?.nome) || "";
@@ -8207,7 +8162,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
     const espetos = partes.flatMap(([nome,q])=>Array(q).fill(nome));
     const novo = {
       ...item, nome: `${item.nome} (${rotulo})`, nomeBase: item.nome, variacao: rotulo,
-      preco: total, qty: 1, precoPromocional: null, espetos,
+      preco: total, qty: 1, espetos,
       variacoes: undefined, montarCom: undefined, montarRotulo: undefined,
     };
     const chave = chaveLinha(novo);
@@ -8595,7 +8550,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
   const fat = faturado + mesas.reduce((s,m)=>s+totMesaVenda(m),0);
   const ocup = mesas.filter(m=>m.status!=="livre").length;
   const alertas = mesas.filter(m=>m.status==="chamando"||m.status==="conta");
-  const cats = ordenarCategorias(cardapio.map(i=>i.cat||i.categoria));
   const catIcons = {"todos":"📋","Tradicionais":"🍢","Especiais":"⭐","Doces":"🍫","Acompanhamentos":"🥗","Água":"💧","Suco":"🥤","Refrigerantes":"🥫","Cervejas":"🍺","Energético":"⚡"};
 
   const H2 = {background:"linear-gradient(135deg,#6b1c0e,#8b2510)",color:"#fff",padding:"12px 16px"};
@@ -8637,11 +8591,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           ✅ Comanda {sc.itens.length>0?`(${sc.itens.reduce((s,i)=>s+(i.qty||1),0)})`:""}
         </button>
       </div>
-      {emModoEvento && (
-        <div style={{background:"linear-gradient(135deg,#f59e0b,#d97706)",color:"#fff",padding:"8px 14px",fontSize:12,fontWeight:700,textAlign:"center"}}>
-          🎉 {modoEvento.nome || "Modo Evento"} ATIVO — preços promocionais aplicados
-        </div>
-      )}
       {/* Grade em vez de lista: no celular dao 2 colunas, no PC 5 ou 6. A dona
           reclamou da distancia entre o nome e o preco (a linha ocupava a tela
           inteira) e do tanto que o garcom rolava para achar o item. */}
@@ -8661,7 +8610,6 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           const variacoes = opcoesMontar.length ? opcoesMontar : (Array.isArray(item.variacoes) ? item.variacoes : []);
           const temVariacao = variacoes.length > 0;
           const precoExibido = precoItem(item);
-          const temPromo = emModoEvento && item.precoPromocional && item.precoPromocional > 0 && item.precoPromocional < item.preco;
 
           // Item com variação: a linha soma todas as carnes lançadas
           const naSimples = sc.itens.find(i=>chaveLinha(i)===chaveLinha(item));
@@ -8684,7 +8632,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           return(
             <div key={item.id} style={{
               background:"#fff",borderRadius:12,padding:"10px 10px 8px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",
-              border:`2px solid ${qtdTotal?"#7b1a0a":temPromo?"#f59e0b":"transparent"}`,
+              border:`2px solid ${qtdTotal?"#7b1a0a":"transparent"}`,
               display:"flex",flexDirection:"column",gap:6,
               // Com a escolha de carne aberta, o cartao toma a linha inteira
               ...(temVariacao && aberto ? {gridColumn:"1/-1"} : {}),
@@ -8692,9 +8640,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
               <div style={{fontWeight:700,fontSize:13,lineHeight:1.25,color:"#1a1a1a",minHeight:"2.5em",
                 display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{item.nome}</div>
               <div style={{fontSize:12,fontWeight:700,color:"#7b1a0a"}}>
-                {temVariacao ? faixa
-                  : temPromo ? <><span style={{textDecoration:"line-through",color:"#999",fontWeight:500,marginRight:6}}>{fmtR(item.preco)}</span><span style={{color:"#f59e0b"}}>🎉 {fmtR(precoExibido)}</span></>
-                  : fmtR(precoExibido)}
+                {temVariacao ? faixa : fmtR(precoExibido)}
               </div>
               {temVariacao ? (
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -9546,6 +9492,22 @@ function SalaoIntegrado({ cardapio: cardapioExterno, config: configExterna, perf
           <button onClick={()=>setUltimaVenda(null)} title="Fechar aviso" style={{background:"transparent",border:"none",color:"#065f46",fontSize:18,fontWeight:800,cursor:"pointer",padding:"0 4px",flexShrink:0}}>×</button>
         </div>
       )}
+      {/* Mesa que ficou aberta com itens na virada do dia (06:00). Antes ela
+          sumia do mapa; agora o servidor a traz para hoje com "veioDe". */}
+      {(() => {
+        const antigas = mesas.filter(m => m.veioDe && m.status !== "livre");
+        if (!antigas.length) return null;
+        const dia = (s) => String(s).slice(8, 10) + "/" + String(s).slice(5, 7);
+        return (
+          <div style={{background:"#fef3c7",borderBottom:"1px solid #fcd34d",padding:"10px 14px",fontSize:13,color:"#92400e",fontWeight:700}}>
+            ⚠️ {antigas.length === 1 ? "Ficou uma mesa aberta" : `Ficaram ${antigas.length} mesas abertas`} de outro dia:{" "}
+            {antigas.map(m => `${m.nome || "Mesa " + m.id} (desde ${dia(m.veioDe)})`).join(", ")}
+            <div style={{fontSize:11,fontWeight:500,marginTop:2}}>
+              O que estava lançado continua nela. Feche a conta{isDono ? " ou, se já foi paga, use \"Liberar mesa sem cobrar\"" : " ou avise o caixa"}.
+            </div>
+          </div>
+        );
+      })()}
       <div style={{background:`linear-gradient(135deg,${T.wineD},${T.wine})`,color:"#fff",padding:"12px 16px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
           <div>
@@ -9848,7 +9810,20 @@ function WhatsAppConexao({ conexao, backendUrl }) {
         </div>
       )}
 
-      {statusIA && statusIA.ok && (
+      {/* "ok" so quer dizer que a ultima chamada a IA nao falhou. Com o
+          WhatsApp desligado o robo nao responde ninguem, e a tela dizia
+          "respondendo normalmente" mesmo assim. */}
+      {statusIA && statusIA.ok && statusIA.temChave === false && (
+        <div style={{ background: T.amberL, border: `1px solid ${T.amber}30`, borderRadius: T.radius, padding: "12px 20px", fontSize: 13, color: "#92400e" }}>
+          🤖 Robô sem chave da IA configurada no servidor: ele não consegue responder.
+        </div>
+      )}
+      {statusIA && statusIA.ok && statusIA.temChave !== false && !conectado && (
+        <div style={{ background: T.amberL, border: `1px solid ${T.amber}30`, borderRadius: T.radius, padding: "12px 20px", fontSize: 13, color: "#92400e" }}>
+          🤖 Robô parado: ele só responde com o WhatsApp conectado · modelo {statusIA.modelo}
+        </div>
+      )}
+      {statusIA && statusIA.ok && statusIA.temChave !== false && conectado && (
         <div style={{ background: T.greenL, border: `1px solid ${T.green}30`, borderRadius: T.radius, padding: "12px 20px", fontSize: 13, color: "#065f46" }}>
           🤖 Robô respondendo normalmente · modelo {statusIA.modelo}
         </div>
@@ -9897,11 +9872,11 @@ function WhatsAppConexao({ conexao, backendUrl }) {
 }
 
 // ── PAINEL PRINCIPAL ──────────────────────────────────────────
-export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSalao, onSair, garcomLogado }) {
-  const [pedidos, setPedidos] = useState(MOCK_PEDIDOS);
-  const [cardapio, setCardapio] = useState(MOCK_CARDAPIO);
-  const [cupons, setCupons] = useState(MOCK_CUPONS);
-  const [avaliacoes, setAvaliacoes] = useState(MOCK_AVALIACOES);
+export default function PainelPedidos({ abrirSalao, onSair, garcomLogado }) {
+  const [pedidos, setPedidos] = useState([]);
+  const [cardapio, setCardapio] = useState([]);
+  const [cupons, setCupons] = useState([]);
+  const [avaliacoes, setAvaliacoes] = useState([]);
   const [garcons, setGarcons] = useState([]);
   // Todos abrem no Salão (pedido da dona, 15/10/2026). Pedido novo do delivery
   // continua tocando o som e aparece no número do botão "Pedidos".
@@ -10525,10 +10500,16 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
   const mediaAv = avaliacoes.length > 0 ? (avaliacoes.reduce((s, a) => s + a.nota, 0) / avaliacoes.length).toFixed(1) : null;
   const cc = { conectando: { cor: "#f59e0b", txt: "conectando..." }, online: { cor: "#10b981", txt: "atualizado às " + (ultimaAtt ? horaFmt(ultimaAtt) : "") }, offline: { cor: "#f59e0b", txt: "modo demonstração" } }[conexao];
 
+  // Fidelidade e Avaliação só entram no menu quando estão ligadas em Config
+  // (a de avaliação também quando já existe nota para mostrar). Desligadas,
+  // as duas telas ficavam vazias, sem dizer por quê.
+  const abaOculta = (k) =>
+    (k === "fidelidade" && config?.fidelidade?.ativo === false) ||
+    (k === "avaliacoes" && config?.avaliacao?.ativo === false && avaliacoes.length === 0);
   const abas = [
     ["pedidos",    "📋", "Pedidos"],
     ["salao",      "🍽️", "Salão"],
-    ["relatorios", "📊", "Rel."],
+    ["relatorios", "📊", "Relatórios"],
     ["fechamento", "🔒", "Fechamento"],
     ["estoque",    "📦", "Estoque"],
     ["clientes",   "👥", "Clientes"],
@@ -10538,7 +10519,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
     ["avaliacoes", "⭐", "Aval."],
     ["whatsapp",   "📱", "WhatsApp"],
     ["config",     "⚙️", "Config"],
-  ];
+  ].filter(([k]) => !abaOculta(k));
 
   const mesasPendentes = mesasSalao.filter(m => m.status === "chamando" || m.status === "conta").length;
 
@@ -10711,7 +10692,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {aba === "cupons"      && <Cupons cupons={cupons} onReload={fetchAll} />}
           {aba === "fidelidade"  && <Fidelidade pedidos={pedidos} config={config} />}
           {aba === "avaliacoes"  && <Avaliacoes avaliacoes={avaliacoes} />}
-          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} config={config} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} onMesaRemovida={removerMesaExtra} onMesaAtualizada={aplicarMesaAutoritativa} onTransferirMesa={transferirMesa} />}
+          {aba === "salao"       && <SalaoIntegrado cardapio={cardapio} perfilSalao={abrirSalao ? perfilSalao : (perfilSalao || "caixa")} setPerfilSalao={setPerfilSalao} mesasSalao={mesasSalao} setMesasSalao={setMesasSalao} faturadoSalao={faturadoSalao} setFaturadoSalao={setFaturadoSalao} selSalao={selSalao} setSelSalao={setSelSalao} telaSalaoGlobal={telaSalao} setTelaSalaoGlobal={setTelaSalaoGlobal} isDono={!abrirSalao} historicoSalao={historicoSalao} setHistoricoSalao={setHistoricoSalao} onSairApp={onSair} garcomLogado={garcomLogado} onMesaEditada={marcarMesaEditada} onMesaRemovida={removerMesaExtra} onMesaAtualizada={aplicarMesaAutoritativa} onTransferirMesa={transferirMesa} />}
           {aba === "whatsapp"   && <WhatsAppConexao conexao={conexao} backendUrl={BACKEND_URL} />}
           {aba === "config"      && <Configuracoes config={config} onSave={saveConfig} statusLoja={statusLoja} garcons={garcons} onReloadGarcons={fetchAll} />}
         </div>
@@ -10736,7 +10717,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
                   ["avaliacoes", "⭐", "Aval."],
                   ["whatsapp",   "📱", "WhatsApp"],
                   ["config",     "⚙️", "Config"],
-                ].map(([k, icon, label]) => (
+                ].filter(([k]) => !abaOculta(k)).map(([k, icon, label]) => (
                   <button key={k} onClick={()=>{ setAba(k); setMaisAberto(false); }} style={{
                     padding:"10px 4px 8px", border:"none", cursor:"pointer",
                     borderRadius:12, display:"flex", flexDirection:"column", alignItems:"center", gap:4,
@@ -10757,7 +10738,7 @@ export default function PainelPedidos({ onLogout, onPinChange, pinAtual, abrirSa
           {[
             ["pedidos",    "📋", "Pedidos"],
             ["salao",      "🍽️", "Salão"],
-            ["relatorios", "📊", "Rel."],
+            ["relatorios", "📊", "Relatórios"],
           ].map(([k, icon, label]) => (
             <button key={k} onClick={() => { setAba(k); setMaisAberto(false); }} style={{ flex:1, padding:"8px 2px 10px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, color: aba===k ? T.wine : T.gray, position:"relative", transition:"color 0.15s" }}>
               <span style={{ fontSize: aba===k ? 21 : 19 }}>{icon}</span>
