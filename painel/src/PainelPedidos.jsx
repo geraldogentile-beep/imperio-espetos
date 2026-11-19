@@ -5458,8 +5458,10 @@ function rotuloPedaco(agrupar, p) {
 }
 function RelatorioItens() {
   const [modo, setModo] = useState("dia");   // dia | semana | mes | ano | datas
-  const [ref, setRef] = useState(hojeISO);
-  const [datas, setDatas] = useState(() => [inicioDoMes(hojeISO()), hojeISO()]);
+  // O dia deste relatório vai das 06h às 06h (como o salão): à 01h, "hoje"
+  // ainda é a noite que começou ontem
+  const [ref, setRef] = useState(() => diaOperacional());
+  const [datas, setDatas] = useState(() => [inicioDoMes(diaOperacional()), diaOperacional()]);
   const consulta = modo === "datas" ? `de=${datas[0]}&ate=${datas[1]}` : consultaPeriodo(modo, ref);
   const [rel, setRel] = useState(null);
   const [erro, setErro] = useState("");
@@ -5506,7 +5508,7 @@ function RelatorioItens() {
   const pedacos = sel ? escolhido?.porPeriodo || [] : rel?.porPeriodo || [];
   const mostrarPedacos = verPedacos ?? pedacos.length <= 12;
   const base = sel
-    ? escolhido || { vendido: 0, salao: 0, delivery: 0, vendidoValor: 0, equipe: 0, perdas: 0, unidade: sel.unidade }
+    ? escolhido || { vendido: 0, salao: 0, delivery: 0, vendidoValor: 0, equipe: 0, perdas: 0, emLanche: 0, aberto: 0, total: 0, unidade: sel.unidade }
     : { ...(rel?.totais || {}), unidade: "un" };
 
   const barras = (lista, un) => {
@@ -5528,16 +5530,17 @@ function RelatorioItens() {
     const win = abrirJanelaImpressao("width=900,height=900");
     if (!win) return;
     const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-    const tr = (i) => `<tr><td>${esc(i.nome)}${i.unidade !== "un" ? ` <i>(${i.unidade})</i>` : ""}</td><td class="n">${qtdBR(i.salao)}</td><td class="n">${qtdBR(i.delivery)}</td><td class="n">${qtdBR(i.equipe)}</td><td class="n">${qtdBR(i.perdas)}</td><td class="n"><b>${qtdBR(i.total)}</b></td><td class="n">${fmtBR(i.vendidoValor)}</td></tr>`;
+    const tr = (i) => `<tr><td>${esc(i.nome)}${i.unidade !== "un" ? ` <i>(${i.unidade})</i>` : ""}</td><td class="n">${qtdBR(i.salao)}</td><td class="n">${qtdBR(i.delivery)}</td><td class="n">${qtdBR(i.emLanche || 0)}</td><td class="n">${qtdBR(i.equipe)}</td><td class="n">${qtdBR(i.perdas)}</td><td class="n">${qtdBR(i.aberto || 0)}</td><td class="n"><b>${qtdBR(i.total)}</b></td><td class="n">${fmtBR(i.vendidoValor)}</td></tr>`;
     const corpo = ordenarCategorias(visiveis.map(i => i.categoria)).filter(c => c !== "todos")
-      .map(c => `<tr class="c"><td colspan="7">${esc(c)}</td></tr>` + visiveis.filter(i => i.categoria === c).map(tr).join("")).join("");
+      .map(c => `<tr class="c"><td colspan="9">${esc(c)}</td></tr>` + visiveis.filter(i => i.categoria === c).map(tr).join("")).join("");
     const pedTab = pedacos.length ? `<h2>${tituloPedacos}${sel ? " — " + esc(sel.nome) : ""}</h2><table><tr><th>${rel.agrupar === "hora" ? "Hora" : rel.agrupar === "mes" ? "Mês" : "Dia"}</th><th class="n">Quantidade</th>${sel ? "" : '<th class="n">Valor vendido</th>'}</tr>` +
       pedacos.map(p => `<tr><td>${rotuloPedaco(rel.agrupar, p.periodo)}</td><td class="n">${qtdBR(p.quantidade)}</td>${sel ? "" : `<td class="n">${fmtBR(p.valor)}</td>`}</tr>`).join("") + "</table>" : "";
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Itens ${esc(titulo)}</title>
       <style>body{font-family:Arial,sans-serif;padding:20px;color:#222;font-size:12px}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:18px 0 0}table{width:100%;border-collapse:collapse;margin-top:10px}td,th{padding:5px 6px;border-bottom:1px solid #e5e5e5;text-align:left}td.n,th.n{text-align:right;white-space:nowrap}tr.c td{background:#f3f3f3;font-weight:bold;border-top:2px solid #999}@media print{button{display:none}}</style></head><body>
-      <h1>Império dos Espetos — Item por item${sel ? ": " + esc(sel.nome) : ""}</h1><div style="color:#666">${esc(titulo)} · gerado em ${new Date().toLocaleString("pt-BR")} · valor = preço do item na comanda, antes do desconto da conta</div>
-      <p>Vendidos: <b>${q(base.vendido, base.unidade)}</b> (salão ${qtdBR(base.salao)} · delivery ${qtdBR(base.delivery)}) · Valor vendido: <b>${fmtBR(base.vendidoValor)}</b> · Equipe: <b>${qtdBR(base.equipe)}</b> · Perdas: <b>${qtdBR(base.perdas)}</b></p>
-      ${visiveis.length ? `<table><tr><th>Item</th><th class="n">Salão</th><th class="n">Delivery</th><th class="n">Equipe</th><th class="n">Perdas</th><th class="n">Total</th><th class="n">Valor vendido</th></tr>${corpo}</table>` : "<p>Nada saiu nesse período.</p>"}
+      <h1>Império dos Espetos — Item por item${sel ? ": " + esc(sel.nome) : ""}</h1><div style="color:#666">${esc(titulo)} (dia das 6h às 6h) · gerado em ${new Date().toLocaleString("pt-BR")} · valor = preço do item na comanda, antes do desconto da conta</div>
+      <p>Vendidos: <b>${q(base.vendido, base.unidade)}</b> (salão ${qtdBR(base.salao)} · delivery ${qtdBR(base.delivery)}) · Valor vendido: <b>${fmtBR(base.vendidoValor)}</b> · No lanche: <b>${qtdBR(base.emLanche || 0)}</b> · Equipe: <b>${qtdBR(base.equipe)}</b> · Perdas: <b>${qtdBR(base.perdas)}</b> · Mesa aberta: <b>${qtdBR(base.aberto || 0)}</b></p>
+      ${visiveis.length ? `<table><tr><th>Item</th><th class="n">Salão</th><th class="n">Delivery</th><th class="n">No lanche</th><th class="n">Equipe</th><th class="n">Perdas</th><th class="n">Mesa aberta</th><th class="n">Total</th><th class="n">Valor vendido</th></tr>${corpo}</table>` : "<p>Nada saiu nesse período.</p>"}
+      <p style="color:#666">No lanche = espeto que foi dentro de um lanche (o lanche aparece na linha dele). Mesa aberta = já foi para a cozinha e a conta ainda não fechou. Total = tudo que saiu do estoque por causa do item.</p>
       ${pedTab}
       <br><button onclick="window.print()" style="padding:10px 18px;font-size:14px">🖨️ Imprimir / salvar PDF</button></body></html>`);
     win.document.close();
@@ -5545,8 +5548,8 @@ function RelatorioItens() {
   function baixarCsv() {
     const n = (v) => String(qtdNum(v)).replace(".", ",");
     const din = (v) => (Number(v) || 0).toFixed(2).replace(".", ",");
-    const ls = [["Categoria", "Item", "Unidade", "Salão", "Valor salão", "Delivery", "Valor delivery", "Equipe", "Perdas", "Total que saiu", "Valor vendido"],
-      ...visiveis.map(i => [i.categoria, i.nome, i.unidade, n(i.salao), din(i.salaoValor), n(i.delivery), din(i.deliveryValor), n(i.equipe), n(i.perdas), n(i.total), din(i.vendidoValor)])];
+    const ls = [["Categoria", "Item", "Unidade", "Salão", "Valor salão", "Delivery", "Valor delivery", "No lanche", "Equipe", "Perdas", "Mesa aberta", "Total que saiu", "Valor vendido"],
+      ...visiveis.map(i => [i.categoria, i.nome, i.unidade, n(i.salao), din(i.salaoValor), n(i.delivery), din(i.deliveryValor), n(i.emLanche || 0), n(i.equipe), n(i.perdas), n(i.aberto || 0), n(i.total), din(i.vendidoValor)])];
     const csv = "﻿" + ls.map(l => l.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -5558,7 +5561,7 @@ function RelatorioItens() {
   const chip = (ativo) => ({ whiteSpace: "nowrap", padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 12, fontWeight: ativo ? 700 : 500, background: ativo ? "#7b1a0a" : "#f0f0f0", color: ativo ? "#fff" : "#555" });
   const linhaItem = (i) => {
     const ab = !sel && aberto === i.chave; // com item escolhido, o dia a dia já está no quadro de cima
-    const partes = [i.salao && `Salão ${q(i.salao, i.unidade)}`, i.delivery && `Delivery ${q(i.delivery, i.unidade)}`, i.equipe && `Equipe ${q(i.equipe, i.unidade)}`, i.perdas && `Perdas ${q(i.perdas, i.unidade)}`].filter(Boolean);
+    const partes = [i.salao && `Salão ${q(i.salao, i.unidade)}`, i.delivery && `Delivery ${q(i.delivery, i.unidade)}`, i.emLanche && `No lanche ${q(i.emLanche, i.unidade)}`, i.equipe && `Equipe ${q(i.equipe, i.unidade)}`, i.perdas && `Perdas ${q(i.perdas, i.unidade)}`, i.aberto && `Mesa aberta ${q(i.aberto, i.unidade)}`].filter(Boolean);
     return (
       <div key={i.chave} style={{ borderTop: "1px solid #f3f3f3" }}>
         <div onClick={() => !sel && setAberto(ab ? null : i.chave)} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "9px 0", cursor: sel ? "default" : "pointer" }}>
@@ -5616,10 +5619,17 @@ function RelatorioItens() {
           <Metrica icon="💰" label="Valor vendido" valor={fmtBR(base.vendidoValor)} sub="preço da comanda" cor="#10b981" />
           <Metrica icon="👥" label="Equipe" valor={q(base.equipe, base.unidade)} cor="#0891b2" />
           <Metrica icon="🗑️" label="Perdas" valor={q(base.perdas, base.unidade)} cor="#f59e0b" />
+          {base.emLanche > 0 && <Metrica icon="🥪" label="No lanche" valor={q(base.emLanche, base.unidade)} sub="espeto dentro do lanche" cor="#a16207" />}
+          {base.aberto > 0 && <Metrica icon="🍽️" label="Mesa aberta" valor={q(base.aberto, base.unidade)} sub="na cozinha, conta não fechou" cor="#6d28d9" />}
+          {sel && escolhido && <Metrica icon="📦" label="Saiu do estoque" valor={q(base.total, base.unidade)} sub="o total do item" cor="#334155" />}
         </div>
         <div style={{ fontSize: 11.5, color: "#888", lineHeight: 1.5 }}>
-          Vendido = salão + delivery, pelo preço do item na comanda (antes do desconto da conta, sem a taxa de entrega). Total = vendido + equipe + perdas.
-          {modo === "dia" && " Conta pela hora em que a conta fechou (delivery: a entrega); depois da meia-noite já é o dia seguinte."}
+          Vendido = salão + delivery, pelo preço do item na comanda (antes do desconto da conta, sem a taxa de entrega).
+          {" "}O dia vai das 6h às 6h: o que sai depois da meia-noite conta na noite anterior.
+          {" "}O total de cada item é tudo que saiu do estoque por causa dele e bate com a movimentação do estoque:
+          {" "}vendido + no lanche (o espeto que foi dentro de um lanche; o lanche aparece na linha dele) + equipe + perdas
+          {" "}+ mesa aberta (já foi para a cozinha e a conta ainda não fechou; some daqui quando a mesa fecha e passa a contar como vendido).
+          {" "}A venda conta na hora em que a conta fechou (delivery: na entrega).
           {!sel && " Perda de item controlado em kg ou litro aparece na unidade do estoque e fica fora da soma de unidades."}
         </div>
 
@@ -5628,7 +5638,7 @@ function RelatorioItens() {
             <button onClick={() => setVerPedacos(!mostrarPedacos)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontWeight: 800, fontSize: 14, color: "#7b1a0a", width: "100%", textAlign: "left" }}>
               📊 {tituloPedacos}{sel ? `: ${sel.nome}` : ""} {mostrarPedacos ? "▴" : "▾"}
             </button>
-            <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{sel ? "tudo que saiu (vendido, equipe e perdas)" : "unidades que saíram (vendido, equipe e perdas) e valor vendido"}</div>
+            <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{sel ? "tudo que saiu do estoque (inclui no lanche e mesa aberta)" : "unidades vendidas, da equipe e perdas, e valor vendido"}</div>
             {mostrarPedacos && <div style={{ marginTop: 8 }}>{barras(pedacos, sel ? sel.unidade : "un")}</div>}
           </div>
         )}

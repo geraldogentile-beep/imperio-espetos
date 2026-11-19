@@ -2901,37 +2901,71 @@ app.post("/estoque/:id/perda", authMiddleware(["dono"]), async (req, res) => {
 // consumo da equipe, perdas e o total que saiu, com o dia a dia (hora a hora
 // no dia; mês a mês no ano). Perda de item que não é vendido por unidade
 // (frango em kg, chopp em litros) fica numa linha própria, na unidade dele.
+//
+// Para bater com a movimentação do estoque (Daiane, 18/11/2026: "a kafta no
+// relatório fala 9 e na movimentação são 13"):
+//   • o dia vai das 06:00 às 06:00 (expediente): o que sai à 01h é da noite anterior;
+//   • o espeto que vai dentro do lanche conta também na linha do espeto
+//     ("emLanche"), porque o estoque baixa o espeto;
+//   • no período que inclui agora, o que já foi para a cozinha em mesa ainda
+//     aberta aparece em "aberto" (o estoque já baixou; a conta não fechou).
 app.get("/relatorio/itens", authMiddleware(["dono"]), async (req, res) => {
-  const per = periodoDaConsulta(req.query);
+  const per = periodoDaConsulta(req.query, { expediente: true });
   if (!per) return res.status(400).json({ erro: "Informe dia=AAAA-MM-DD, semana=AAAA-MM-DD, mes=AAAA-MM, ano=AAAA ou de/ate" });
   const noPeriodo = { $gte: per.inicio, $lt: per.fim };
+  const agora = new Date();
+  const incluiAgora = per.inicio <= agora && agora < per.fim;
   try {
-    const [vendas, pedidos, equipe, perdas, estoques] = await Promise.all([
+    const [vendas, pedidos, equipe, perdas, estoques, mesas] = await Promise.all([
       VendaSalaoDB.find({ fechamento: noPeriodo }).select("itens fechamento").lean(),
       PedidoDB.find({ status: "entregue", $or: [{ entregueEm: noPeriodo }, { entregueEm: null, horario: noPeriodo }] }).select("itens entregueEm horario").lean(),
       ConsumoInternoDB.find({ data: noPeriodo }).select("itens data").lean(),
       MovEstoqueDB.find({ tipo: "perda", horario: noPeriodo }).lean(),
       EstoqueDB.find({}).select("nome cardapioNomes categoria unidade tipo consumoPorVenda").lean(),
+      incluiAgora ? MesaSalaoDB.find({ dataStr: diaOperacional() }).select("mesaId dados").lean() : [],
     ]);
     const itens = {}, porPeriodo = {};
     const categoriaDo = (nome, it) => CARDAPIO.find(c => String(c.nome).toLowerCase() === nome.toLowerCase())?.categoria || it?.categoria || it?.cat || "Outros";
     const linha = (nome, extra = {}) => {
       const k = nome.toLowerCase() + "|" + (extra.unidade || "un");
-      return (itens[k] ||= { chave: k, nome, categoria: extra.categoria || categoriaDo(nome, extra), unidade: extra.unidade || "un", salao: 0, salaoValor: 0, delivery: 0, deliveryValor: 0, equipe: 0, perdas: 0, porPeriodo: {} });
+      return (itens[k] ||= { chave: k, nome, categoria: extra.categoria || categoriaDo(nome, extra), unidade: extra.unidade || "un", salao: 0, salaoValor: 0, delivery: 0, deliveryValor: 0, equipe: 0, perdas: 0, emLanche: 0, aberto: 0, porPeriodo: {} });
     };
-    const somar = (l, campo, q, quando, valor = 0) => {
+    // geral=false: entra na linha do item, mas não no gráfico do período
+    // inteiro (o espeto do lanche já está contado no lanche; a mesa aberta
+    // ainda não é venda)
+    const somar = (l, campo, q, quando, valor = 0, geral = true) => {
       l[campo] += q;
       if (valor) l[campo + "Valor"] += valor;
       const p = per.chave(quando);
       l.porPeriodo[p] = (l.porPeriodo[p] || 0) + q;
+      if (!geral) return;
       const pp = (porPeriodo[p] ||= { periodo: p, quantidade: 0, valor: 0 });
       if (l.unidade === "un") pp.quantidade += q;
       pp.valor += valor;
     };
     const nomeDe = (it) => String(it?.nomeBase || it?.nome || "").trim();
-    for (const v of vendas) for (const it of v.itens || []) { const n = nomeDe(it); if (!n) continue; const q = Number(it.qty) || 1; somar(linha(n, it), "salao", q, v.fechamento, q * (Number(it.preco) || 0)); }
-    for (const pd of pedidos) for (const it of pd.itens || []) { const n = nomeDe(it); if (!n) continue; const q = Number(it.qty) || 1; somar(linha(n, it), "delivery", q, pd.entregueEm || pd.horario, q * (Number(it.preco) || 0)); }
-    for (const c of equipe) for (const it of c.itens || []) { const n = nomeDe(it); if (!n) continue; somar(linha(n, it), "equipe", Number(it.qty) || 1, c.data); }
+    // Espetos de dentro do lanche (mesma regra da baixa do estoque, estoque/baixa.js)
+    const espetosDe = (it) => (Array.isArray(it?.espetos) && it.espetos.length ? it.espetos : (it?.espeto ? [it.espeto] : [])).map(e => String(e || "").trim()).filter(Boolean);
+    // O espeto de dentro do lanche entra sempre como "emLanche" (vendido, da
+    // equipe ou em mesa aberta): assim os totais de cada coluna não contam o
+    // mesmo lanche duas vezes, e o total da linha do espeto bate com o estoque.
+    const contar = (it, campo, quando, { comValor = false, geral = true } = {}) => {
+      const n = nomeDe(it); if (!n) return;
+      const q = Number(it.qty) || 1;
+      somar(linha(n, it), campo, q, quando, comValor ? q * (Number(it.preco) || 0) : 0, geral);
+      for (const e of espetosDe(it)) somar(linha(e), "emLanche", q, quando, 0, false);
+    };
+    for (const v of vendas) for (const it of v.itens || []) contar(it, "salao", v.fechamento, { comValor: true });
+    for (const pd of pedidos) for (const it of pd.itens || []) contar(it, "delivery", pd.entregueEm || pd.horario, { comValor: true });
+    for (const c of equipe) for (const it of c.itens || []) contar(it, "equipe", c.data);
+    // Mesas abertas agora: só as rodadas (o que foi para a cozinha ou lançado
+    // na conta), que é o que o estoque já baixou. Rodada paga já saiu da mesa.
+    for (const m of mesas) for (const sc of m.dados?.subComandas || []) for (const r of sc.rodadas || []) {
+      if (!r?.id) continue;   // rodada sem id (painel antigo) só baixa no fechamento
+      const quando = r.hora ? new Date(r.hora) : agora;
+      if (quando < per.inicio || quando >= per.fim) continue;
+      for (const it of r.itens || []) contar(it, "aberto", quando, { geral: false });
+    }
     for (const m of perdas) {
       const est = estoques.find(e => String(e._id) === String(m.estoqueId));
       const unidade = est?.tipo === "chopp" ? "L" : (est?.unidade || "un");
@@ -2940,22 +2974,26 @@ app.get("/relatorio/itens", authMiddleware(["dono"]), async (req, res) => {
       somar(l, "perdas", Number(m.quantidade) || 0, m.horario);
     }
     const r4 = (v) => Math.round((Number(v) || 0) * 10000) / 10000;
+    // Hora a hora do expediente: 06h primeiro, a madrugada no fim
+    const ordenar = (a, b) => (per.ordem ? per.ordem(a.periodo) - per.ordem(b.periodo) : a.periodo.localeCompare(b.periodo));
     const lista = Object.values(itens).map(l => ({
       ...l, salaoValor: arred(l.salaoValor), deliveryValor: arred(l.deliveryValor), perdas: r4(l.perdas),
       vendido: l.salao + l.delivery, vendidoValor: arred(l.salaoValor + l.deliveryValor),
-      total: r4(l.salao + l.delivery + l.equipe + l.perdas),
-      porPeriodo: Object.entries(l.porPeriodo).map(([periodo, quantidade]) => ({ periodo, quantidade: r4(quantidade) })).sort((a, b) => a.periodo.localeCompare(b.periodo)),
+      // Total = tudo que saiu do estoque por causa desse item no período
+      total: r4(l.salao + l.delivery + l.equipe + l.perdas + l.emLanche + l.aberto),
+      porPeriodo: Object.entries(l.porPeriodo).map(([periodo, quantidade]) => ({ periodo, quantidade: r4(quantidade) })).sort(ordenar),
     })).sort((a, b) => b.total - a.total || a.nome.localeCompare(b.nome, "pt-BR"));
     const un = lista.filter(l => l.unidade === "un");
     res.json({
-      inicio: per.inicio, fim: per.fim, agrupar: per.agrupar,
+      inicio: per.inicio, fim: per.fim, agrupar: per.agrupar, expediente: true,
       totais: {
         vendido: un.reduce((t, l) => t + l.vendido, 0), vendidoValor: arred(lista.reduce((t, l) => t + l.vendidoValor, 0)),
         salao: un.reduce((t, l) => t + l.salao, 0), delivery: un.reduce((t, l) => t + l.delivery, 0),
         equipe: un.reduce((t, l) => t + l.equipe, 0), perdas: r4(un.reduce((t, l) => t + l.perdas, 0)),
+        emLanche: un.reduce((t, l) => t + l.emLanche, 0), aberto: un.reduce((t, l) => t + l.aberto, 0),
         vendas: vendas.length, pedidos: pedidos.length,
       },
-      porPeriodo: Object.values(porPeriodo).map(p => ({ ...p, valor: arred(p.valor) })).sort((a, b) => a.periodo.localeCompare(b.periodo)),
+      porPeriodo: Object.values(porPeriodo).map(p => ({ ...p, valor: arred(p.valor) })).sort(ordenar),
       itens: lista,
     });
   } catch (e) {
@@ -3057,13 +3095,19 @@ const arred = (v) => Math.round((Number(v) || 0) * 100) / 100;
 // Período pedido por um relatório, sempre no horário de Brasília:
 //   semana=AAAA-MM-DD (segunda a domingo da semana desse dia) | mes=AAAA-MM |
 //   ano=AAAA | de=ISO&ate=ISO. Devolve o intervalo e como agrupar (dia ou mês).
-function periodoDaConsulta(q = {}) {
-  const porDia = (d) => diaBrasilia(d);
-  const porMes = (d) => diaBrasilia(d).slice(0, 7);
+// expediente: true -> os dias vão das 06:00 às 06:00 de Brasília (como o
+// salão), e o que sai depois da meia-noite conta no dia anterior. Só o
+// relatório de itens usa (18/11/2026); os outros seguem com o dia civil.
+// Período com hora exata (de/ate ISO) não muda.
+function periodoDaConsulta(q = {}, { expediente = false } = {}) {
+  const SEIS = expediente ? 6 * 3600 * 1000 : 0;
+  const FUSO = FUSO_MS + SEIS;   // início do dia em UTC
+  const porDia = (d) => diaBrasilia(new Date(d).getTime() - SEIS);
+  const porMes = (d) => porDia(d).slice(0, 7);
   if (q.ano !== undefined) {
     const a = Number(q.ano);
     if (!Number.isInteger(a) || a < 2000 || a > 2100) return null;
-    return { inicio: new Date(Date.UTC(a, 0, 1) + FUSO_MS), fim: new Date(Date.UTC(a + 1, 0, 1) + FUSO_MS), agrupar: "mes", chave: porMes };
+    return { inicio: new Date(Date.UTC(a, 0, 1) + FUSO), fim: new Date(Date.UTC(a + 1, 0, 1) + FUSO), agrupar: "mes", chave: porMes };
   }
   if (q.dia !== undefined) {
     const m = String(q.dia).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -3071,11 +3115,13 @@ function periodoDaConsulta(q = {}) {
     const d0 = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
     if (isNaN(d0)) return null;
     const porHora = (d) => new Date(new Date(d).getTime() - FUSO_MS).toISOString().slice(11, 13) + "h";
-    return { inicio: new Date(d0 + FUSO_MS), fim: new Date(d0 + 86400000 + FUSO_MS), agrupar: "hora", chave: porHora };
+    // No expediente a hora 00h vem depois das 23h
+    const ordem = SEIS ? (p) => (parseInt(p, 10) - 6 + 24) % 24 : undefined;
+    return { inicio: new Date(d0 + FUSO), fim: new Date(d0 + 86400000 + FUSO), agrupar: "hora", chave: porHora, ordem };
   }
   if (q.mes !== undefined) {
     const lim = limitesDoMes(q.mes);
-    return lim ? { ...lim, agrupar: "dia", chave: porDia } : null;
+    return lim ? { inicio: new Date(lim.inicio.getTime() + SEIS), fim: new Date(lim.fim.getTime() + SEIS), agrupar: "dia", chave: porDia } : null;
   }
   if (q.semana !== undefined) {
     const m = String(q.semana).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -3084,7 +3130,7 @@ function periodoDaConsulta(q = {}) {
     if (isNaN(dia)) return null;
     const desdeSegunda = (dia.getUTCDay() + 6) % 7;   // segunda = 0
     const seg = Date.UTC(dia.getUTCFullYear(), dia.getUTCMonth(), dia.getUTCDate() - desdeSegunda);
-    return { inicio: new Date(seg + FUSO_MS), fim: new Date(seg + 7 * 86400000 + FUSO_MS), agrupar: "dia", chave: porDia };
+    return { inicio: new Date(seg + FUSO), fim: new Date(seg + 7 * 86400000 + FUSO), agrupar: "dia", chave: porDia };
   }
   if (q.de !== undefined || q.ate !== undefined) {
     // Só a data (de=2026-10-01&ate=2026-10-15): dias inteiros em Brasília, os
@@ -3095,7 +3141,7 @@ function periodoDaConsulta(q = {}) {
       const a = soDia(q.de), b = soDia(q.ate);
       if (a === null || b === null || b < a || b - a > 3 * 366 * 86400000) return null;
       const longo = b - a >= 92 * 86400000;
-      return { inicio: new Date(a + FUSO_MS), fim: new Date(b + 86400000 + FUSO_MS), agrupar: longo ? "mes" : "dia", chave: longo ? porMes : porDia };
+      return { inicio: new Date(a + FUSO), fim: new Date(b + 86400000 + FUSO), agrupar: longo ? "mes" : "dia", chave: longo ? porMes : porDia };
     }
     const de = new Date(q.de), ate = q.ate ? new Date(q.ate) : new Date();
     if (isNaN(de) || isNaN(ate) || ate < de) return null;
