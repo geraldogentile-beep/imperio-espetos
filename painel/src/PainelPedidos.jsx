@@ -7218,6 +7218,30 @@ function totMesaCompleta(mesa) {
 // Cada rodada tem um id: o servidor baixa o estoque dela uma vez só, na hora
 // em que vai para a cozinha (ou é lançada na conta).
 const novoIdRodada = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+// Ids das rodadas que estão sendo pagas: vão junto no fechamento para o
+// servidor não baixar de novo o que já saiu na cozinha, mesmo que a mesa dele
+// esteja diferente da deste aparelho (Caixa Direto, 17/11/2026)
+const idsDasRodadas = (comandas) => (comandas || []).flatMap(sc => (sc?.rodadas || []).map(r => r?.id).filter(Boolean));
+// Nomes do cardápio que o item tira do estoque (mesma regra do servidor,
+// estoque/baixa.js): ele mesmo e, no lanche, cada espeto. Em minúsculas.
+function nomesDoEstoque(it) {
+  const espetos = Array.isArray(it?.espetos) && it.espetos.length ? it.espetos : (it?.espeto ? [it.espeto] : []);
+  return [it?.nomeBase || it?.nome, ...espetos].map(n => String(n || "").trim().toLowerCase()).filter(Boolean);
+}
+// Quantidade em estoque, discreta, ao lado do nome do item. Cinza normal;
+// laranja no mínimo ou abaixo; vermelho quando acabou.
+function EtiquetaEstoque({ info, style }) {
+  if (!info) return null;   // item sem estoque cadastrado: nada a mostrar
+  const n = info.disponivel;
+  const baixo = n > 0 && n <= info.minimo;
+  const cor = n <= 0 ? "#dc2626" : baixo ? "#b45309" : "#9ca3af";
+  return (
+    <span title="Em estoque agora (já desconta o que foi lançado e ainda não foi para a cozinha)"
+      style={{ fontSize: 10.5, fontWeight: n <= 0 || baixo ? 700 : 500, color: cor, whiteSpace: "nowrap", ...style }}>
+      {n <= 0 ? "sem estoque" : `${n} em estoque`}
+    </span>
+  );
+}
 function initSubComanda(id=1) { return {id, label:`Comanda ${id}`, cliente:"", itens:[], rodadas:[]}; }
 function initMesa(i) {
   return {id:i+1, status:"livre", garcom:"", obs:"", abertura:null, solicitadoPor:null, solicitadoEm:null,
@@ -7918,6 +7942,51 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
   const setSel = setSelSalao;
   const telaSalao = telaSalaoGlobal;
   const setTelaSalao = setTelaSalaoGlobal;
+
+  // ── ESTOQUE NA COMANDA (pedido da dona, 23/11/2026: "para não acabar
+  // vendendo algo que não tenha em estoque"). Lê só as quantidades (o garçom
+  // também vê) enquanto a tela de lançar ou a comanda está aberta.
+  const [saldos, setSaldos] = useState(null);
+  const verSaldos = telaSalao === "adicionar" || telaSalao === "comanda";
+  const lerSaldos = useCallback(async () => {
+    try {
+      const r = await authFetch(BACKEND_URL + "/estoque/saldos");
+      if (r.ok) setSaldos((await r.json()).saldos || {});
+    } catch { /* sem rede: fica o último número lido */ }
+  }, []);
+  useEffect(() => {
+    if (!verSaldos) return;
+    lerSaldos();
+    const t = setInterval(lerSaldos, 20000);
+    return () => clearInterval(t);
+  }, [verSaldos, lerSaldos]);
+  // Foi para a cozinha: o item deixa de contar como "lançado" na hora, mas o
+  // servidor só baixa quando a mesa chega lá. Lê de novo logo depois.
+  const totalRodadas = (mesasSalao || []).reduce((s, m) => s + (m.subComandas || []).reduce((t, x) => t + (x.rodadas || []).length, 0), 0);
+  useEffect(() => {
+    if (!verSaldos) return;
+    const t = setTimeout(lerSaldos, 2500);
+    return () => clearTimeout(t);
+  }, [totalRodadas, verSaldos, lerSaldos]);
+  // O estoque só baixa quando vai para a cozinha. O que já está lançado nas
+  // comandas (de todas as mesas) e ainda não foi sai da conta aqui, para o
+  // número mostrar o que de fato sobra.
+  const pendentesEstoque = {};
+  for (const m of mesasSalao || []) for (const s of m.subComandas || []) for (const it of s.itens || []) {
+    for (const n of nomesDoEstoque(it)) pendentesEstoque[n] = (pendentesEstoque[n] || 0) + (Number(it.qty) || 1);
+  }
+  // { disponivel, minimo } do que limita o item (no lanche, o pão e o espeto)
+  const estoqueDe = (nomes) => {
+    if (!saldos) return null;
+    let melhor = null;
+    for (const n of nomes) {
+      const s = saldos[n];
+      if (!s) continue;
+      const disponivel = s.disponivel - (pendentesEstoque[n] || 0);
+      if (!melhor || disponivel < melhor.disponivel) melhor = { disponivel, minimo: s.minimo };
+    }
+    return melhor;
+  };
   const [catFiltro, setCatFiltro] = useState("todos");
   const [pagSalao, setPagSalao] = useState("pix");
   const [varAberta, setVarAberta] = useState(null);   // item com a escolha de carne aberta
@@ -8335,7 +8404,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
       try {
         const res = await authFetch(BACKEND_URL + "/consumo-interno", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mesa: mesa.id, subComanda: sc.label, pessoa: sc.cliente || "", itens: juntar(sc), observacao: (mesa.obs || "").trim(),
-            liberarMesa: { mesaId: mesa.id, modo: "comanda", scIds: [sc.id] } }) });
+            liberarMesa: { mesaId: mesa.id, modo: "comanda", scIds: [sc.id] }, rodadasPagas: idsDasRodadas([sc]) }) });
         if (!res.ok) { const err = await res.json().catch(()=>({})); msgSalao(`❌ Não foi possível registrar ${sc.cliente || sc.label}: ${err.erro || res.status}`, "#ef4444"); break; }
         const salvo = await res.json();
         mesaServidor = salvo.mesaAtualizada || mesaServidor;
@@ -8391,7 +8460,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
     let mesaServidor = null;
     try {
       const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ ...registro, liberarMesa: { mesaId: mesa.id, modo: "comanda", scIds: [scFechando.id] } })});
+        body:JSON.stringify({ ...registro, liberarMesa: { mesaId: mesa.id, modo: "comanda", scIds: [scFechando.id] }, rodadasPagas: idsDasRodadas([scFechando]) })});
       if (!res.ok) {
         const err = await res.json().catch(()=>({}));
         msgSalao(`❌ Nao foi possivel registrar a venda: ${err.erro || res.status}`, "#ef4444");
@@ -8523,7 +8592,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
     let mesaServidor = null;
     try {
       const res = await authFetch(BACKEND_URL+"/vendas-salao",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ ...registro, liberarMesa: { mesaId: mesa.id, modo: "mesa" } })});
+        body:JSON.stringify({ ...registro, liberarMesa: { mesaId: mesa.id, modo: "mesa" }, rodadasPagas: idsDasRodadas(mesa.subComandas) })});
       if (!res.ok) {
         const err = await res.json().catch(()=>({}));
         msgSalao(`❌ Nao foi possivel registrar a venda: ${err.erro || res.status}`, "#ef4444");
@@ -8649,8 +8718,9 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
             }}>
               <div style={{fontWeight:700,fontSize:13,lineHeight:1.25,color:"#1a1a1a",minHeight:"2.5em",
                 display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{item.nome}</div>
-              <div style={{fontSize:12,fontWeight:700,color:"#7b1a0a"}}>
-                {temVariacao ? faixa : fmtR(precoExibido)}
+              <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:6,flexWrap:"wrap"}}>
+                <span style={{fontSize:12,fontWeight:700,color:"#7b1a0a"}}>{temVariacao ? faixa : fmtR(precoExibido)}</span>
+                <EtiquetaEstoque info={estoqueDe(nomesDoEstoque(item))} />
               </div>
               {temVariacao ? (
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -8689,6 +8759,8 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
                       return (
                         <div key={v.nome} style={{display:"flex",flexDirection:"column",gap:4,background:qtd?"#fef0ed":"#faf9f8",borderRadius:10,padding:"8px 10px",border:`1.5px solid ${qtd?"#7b1a0a":"transparent"}`}}>
                           <div style={{fontSize:13,fontWeight:qtd?700:500,color:"#333",lineHeight:1.2}}>{v.nome}</div>
+                          {/* No lanche, o espeto escolhido também precisa ter */}
+                          {opcoesMontar.length > 0 && v.espeto && <EtiquetaEstoque info={estoqueDe(nomesDoEstoque({ nome: v.espeto }))} style={{marginTop:-2}} />}
                           <div style={{fontSize:12,color:"#7b1a0a",fontWeight:700}}>{opcoesMontar.length ? fmtR(Number(v.precoEspeto)||0) : fmtR(Number(v.preco)||0)}</div>
                           {!opcoesMontar.length && v.detalhe && <div style={{fontSize:10,color:"#999",marginTop:-2}}>{v.detalhe}</div>}
                           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
@@ -9271,7 +9343,7 @@ function SalaoIntegrado({ cardapio: cardapioExterno, perfilSalao, setPerfilSalao
                 <div key={chaveLinha(it)} style={{padding:"7px 0",borderBottom:"1px dashed #f0f0f0"}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontWeight:600,fontSize:13}}>{it.nome}</div>
+                      <div style={{fontWeight:600,fontSize:13}}>{it.nome} <EtiquetaEstoque info={estoqueDe(nomesDoEstoque(it))} style={{marginLeft:4}} /></div>
                       {it.nota
                         ? <div onClick={()=>abrirNota(it)} style={{fontSize:12,color:"#c2410c",fontWeight:700,cursor:"pointer"}}>📝 {it.nota}</div>
                         : <div style={{fontSize:11,color:"#888"}}>{fmtR(it.preco)} cada</div>}

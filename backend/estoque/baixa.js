@@ -74,3 +74,28 @@ export function itensSemBaixa(dados, { modo, scIds } = {}, pagos, jaBaixada = ()
   for (const [k, q] of Object.entries(falta)) if (q > 0) semBaixa[k] = (semBaixa[k] || 0) + q;
   return Object.entries(semBaixa).map(([k, q]) => ({ ...modelo[k], qty: q }));
 }
+
+// Teto da baixa no fechamento (Caixa Direto, 17/11/2026: a "Comanda 4" foi
+// fechada às 20h28 e baixou de novo 2 alcatras, 2 medalhões e 1 kafta que
+// tinham saído na cozinha às 20h26). itensSemBaixa depende de a mesa do
+// servidor ter as rodadas na comanda paga; com um aparelho desatualizado (ou
+// número de comanda reaproveitado) isso falha e tudo baixa outra vez.
+// Por isso o painel manda os ids das rodadas que está pagando e, por item do
+// estoque, o fechamento nunca baixa mais que (o que a venda pede) − (o que
+// essas rodadas já pediram na cozinha). Só vale para fechar comanda ou mesa
+// inteira: aí todas as rodadas informadas estão sendo pagas por completo.
+//   pendente: { estoqueId: q } que o fechamento ia baixar (de itensSemBaixa)
+//   daVenda:  { estoqueId: q } de todos os itens da venda
+//   pedidos:  [{ estoqueId: q }] — o `pedido` de cada rodada paga (BaixaRodada)
+export function tetoDoFechamento(pendente, daVenda, pedidos) {
+  const jaSaiu = {};
+  for (const p of pedidos || []) for (const [k, q] of Object.entries(p || {})) jaSaiu[k] = (jaSaiu[k] || 0) + (Number(q) || 0);
+  const mapa = {}, evitado = {};
+  for (const [k, q] of Object.entries(pendente || {})) {
+    const teto = Math.max(0, Math.round(((daVenda?.[k] || 0) - (jaSaiu[k] || 0)) * 10000) / 10000);
+    mapa[k] = Math.min(q, teto);
+    const e = Math.round((q - mapa[k]) * 10000) / 10000;
+    if (e > 0) evitado[k] = e;
+  }
+  return { mapa, evitado };
+}

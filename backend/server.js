@@ -15,7 +15,7 @@ import { decidirVirada } from "./salao/virada.js";
 import { ehMontado, opcoesMontado, lerItemMontado, textoMontado } from "./cardapio/montado.js";
 import { EQUIPE_PADRAO, calcularConsumo, valorEfetivo } from "./salao/equipe.js";
 import { validarProducao, custoDaProducao, resumoProducoes, unidadeDe } from "./estoque/producao.js";
-import { mapaDaBaixa, rodadasComId, diferencaMapas, itensSemBaixa } from "./estoque/baixa.js";
+import { mapaDaBaixa, rodadasComId, diferencaMapas, itensSemBaixa, tetoDoFechamento } from "./estoque/baixa.js";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcode from "qrcode";
@@ -2310,7 +2310,7 @@ app.post("/vendas-salao", authMiddleware(["dono"]), async (req, res) => {
   }
 
   try {
-    const { liberarMesa: _ignorar, ...corpo } = req.body;
+    const { liberarMesa: _ignorar, rodadasPagas: _rodadas, ...corpo } = req.body;
     const venda = await VendaSalaoDB.create({
       ...corpo, ...desc, ...gor,
       pagamento: pag.pagamento, pagamentos: pag.pagamentos,
@@ -2330,7 +2330,7 @@ app.post("/vendas-salao", authMiddleware(["dono"]), async (req, res) => {
       }
     }
     // Estoque: o que foi para a cozinha já saiu; aqui sai só o resto
-    await baixarNoFechamento(req.body.itens, antes, liberar, String(venda._id), "venda");
+    await baixarNoFechamento(req.body.itens, antes, liberar, String(venda._id), "venda", rodadasPagasDo(req.body, liberar));
     res.status(201).json(resposta);
   }
   catch (e) { res.status(500).json({ erro: e.message }); }
@@ -2586,7 +2586,11 @@ async function acertarRodadasRestantes(dados) {
 // Fechamento (venda ou consumo da equipe): baixa só o que ainda não saiu.
 // `antes` = a mesa como estava no servidor quando o pagamento foi aplicado;
 // sem ela (painel antigo, mesa fora do servidor), baixa tudo, como antes.
-async function baixarNoFechamento(itens, antes, liberar, vendaId, motivo) {
+// `rodadasPagas` = ids das rodadas que o aparelho está pagando (comanda ou
+// mesa inteira): teto contra baixar de novo o que já saiu na cozinha
+// (tetoDoFechamento, estoque/baixa.js — Caixa Direto, 17/11/2026).
+async function baixarNoFechamento(itens, antes, liberar, vendaId, motivo, rodadasPagas = []) {
+  if (!itens?.length) return;
   let pendentes = itens;
   if (antes && liberar) {
     try {
@@ -2595,7 +2599,26 @@ async function baixarNoFechamento(itens, antes, liberar, vendaId, motivo) {
       pendentes = itensSemBaixa(antes, liberar, itens, (id) => feitas.has(id));
     } catch (e) { console.error("Erro ao separar o que já baixou:", e.message); }
   }
-  await baixarEstoqueVenda(pendentes, vendaId, motivo);
+  try {
+    const estoques = await EstoqueDB.find({ ativo: true }).lean();
+    let mapa = mapaDaBaixa(pendentes, estoques);
+    if (rodadasPagas.length && Object.keys(mapa).length) {
+      const pedidos = (await BaixaRodadaDB.find({ chave: { $in: rodadasPagas } }).select("pedido").lean()).map(f => f.pedido);
+      const { mapa: comTeto, evitado } = tetoDoFechamento(mapa, mapaDaBaixa(itens, estoques), pedidos);
+      if (Object.keys(evitado).length) {
+        const nomes = Object.entries(evitado).map(([id, q]) => `${q}x ${estoques.find(e => String(e._id) === id)?.nome || id}`).join(", ");
+        console.log(`Fechamento ${vendaId}: não baixou de novo ${nomes} (já tinha saído na cozinha; a mesa do servidor não batia com a do aparelho)`);
+      }
+      mapa = comTeto;
+    }
+    await baixarMapa(mapa, vendaId, motivo);
+  } catch (e) { console.error("Erro na baixa de estoque:", e.message); }
+}
+// Ids das rodadas pagas, só quando a comanda ou a mesa inteira é fechada
+// (no pagamento parcial nem todo item das rodadas está sendo pago)
+function rodadasPagasDo(body, liberar) {
+  if (!liberar || liberar.modo === "parcial" || !Array.isArray(body?.rodadasPagas)) return [];
+  return [...new Set(body.rodadasPagas.map(x => String(x || "").trim()).filter(x => x && x.length <= 60))].slice(0, 300);
 }
 
 // Avisa no WhatsApp quando o item chega ao mínimo (uma vez) e rearma o aviso
@@ -2624,6 +2647,36 @@ app.get("/estoque", authMiddleware(["dono"]), async (req, res) => {
     const lista = await EstoqueDB.find({ ativo: true }).sort({ nome: 1 }).lean();
     res.json(lista);
   } catch { res.json([]); }
+});
+
+// GET /estoque/saldos — quantas unidades de cada produto do cardápio ainda
+// dá para vender, para aparecer na comanda (pedido da dona, 23/11/2026: "para
+// não acabar vendendo algo que não tenha"). O garçom também vê, por isso só
+// sai a quantidade: nada de custo, margem ou fornecedor.
+// Chave = nome do cardápio em minúsculas. Mesmo vínculo da baixa
+// (estoque/baixa.js: o primeiro item ativo com o nome em cardapioNomes), e
+// unidades = saldo ÷ consumo por venda (chopp: litros ÷ litros do copo).
+app.get("/estoque/saldos", authMiddleware(["dono", "garcom"]), async (req, res) => {
+  if (!mongoPronto()) return res.status(503).json({ erro: "Banco indisponivel" });
+  try {
+    const ests = await EstoqueDB.find({ ativo: true }).select("cardapioNomes quantidade minimo consumoPorVenda").lean();
+    const saldos = {};
+    for (const e of ests) {
+      const consumo = Number(e.consumoPorVenda) > 0 ? Number(e.consumoPorVenda) : 1;
+      for (const n of e.cardapioNomes || []) {
+        const k = String(n || "").trim().toLowerCase();
+        if (!k || k in saldos) continue;
+        saldos[k] = {
+          disponivel: Math.floor((Number(e.quantidade) || 0) / consumo + 1e-9),
+          minimo: Math.floor((Number(e.minimo) || 0) / consumo + 1e-9),
+        };
+      }
+    }
+    res.json({ saldos, em: new Date().toISOString() });
+  } catch (e) {
+    console.error("Erro ao ler saldos do estoque:", e.message);
+    res.status(500).json({ erro: "Erro ao ler o estoque" });
+  }
 });
 
 app.post("/estoque", authMiddleware(["dono"]), async (req, res) => {
@@ -3361,7 +3414,7 @@ app.post("/consumo-interno", authMiddleware(["dono"]), async (req, res) => {
         antes = (await MesaSalaoDB.findOne({ dataStr: diaOperacional(), mesaId: liberar.mesaId }).lean().catch(() => null))?.dados || null;
       }
     }
-    await baixarNoFechamento(itens, antes, liberar, "interno:" + reg._id, "consumo da equipe");
+    await baixarNoFechamento(itens, antes, liberar, "interno:" + reg._id, "consumo da equipe", rodadasPagasDo(req.body, liberar));
     res.status(201).json(resposta);
   } catch (e) {
     console.error("Erro ao registrar consumo da equipe:", e.message);

@@ -139,7 +139,52 @@ console.log("\n=== 9) delivery: sai quando vai para a cozinha ===");
   await mongoose.disconnect();
 }
 
-for (const id of [5, 6, 7, 901]) await api("POST", `/mesas/${id}/liberar`, { motivo: "fim do teste" });
+// Caixa Direto, 17/11/2026: a "Comanda 4" fechou às 20h28 e baixou de novo o
+// que tinha saído na cozinha às 20h26. A mesa do servidor não batia com a do
+// aparelho que fechou (número de comanda reaproveitado / aparelho atrasado).
+console.log("\n=== 10) aparelho atrasado fecha a comanda: não baixa duas vezes ===");
+{
+  const comandaCaixa = [sc(4, [], [rod("rcd1", [alcatra(2), cerveja(1)])])];
+  // No servidor a rodada está na comanda 5 (o outro aparelho reabriu a numeração)
+  await gravar(mesa(902, [sc(5, [], [rod("rcd1", [alcatra(2), cerveja(1)])])], { nome: "Caixa Direto", tipo: "caixa_direto", icon: "🛒" }));
+  const a0 = await qtd(estA._id), h0 = await qtd(estH._id);
+  // O aparelho atrasado ainda vê a rodada na comanda 4 e fecha a comanda 4
+  const v = await api("POST", "/vendas-salao", {
+    mesa: 902, itens: [alcatra(2), cerveja(1)], subtotal: 30, desconto: 0, total: 30, pagamento: "pix",
+    liberarMesa: { mesaId: 902, modo: "comanda", scIds: [4] }, rodadasPagas: comandaCaixa.flatMap(s => s.rodadas.map(r => r.id)),
+  });
+  ok(v.status === 201 && (await qtd(estA._id)) === a0 && (await qtd(estH._id)) === h0, `com os ids das rodadas: não baixou de novo (alcatra ${a0} -> ${await qtd(estA._id)}, cerveja ${h0} -> ${await qtd(estH._id)})`);
+  ok(!("rodadasPagas" in v.corpo), "a lista de rodadas não é gravada na venda");
+
+  // Mesmo caso com um item a mais, que nunca foi para a cozinha: esse baixa
+  await gravar(mesa(903, [sc(5, [], [rod("rcd2", [alcatra(1)])])]));
+  const a1 = await qtd(estA._id);
+  await api("POST", "/vendas-salao", {
+    mesa: 903, itens: [alcatra(3)], subtotal: 27, desconto: 0, total: 27, pagamento: "pix",
+    liberarMesa: { mesaId: 903, modo: "comanda", scIds: [4] }, rodadasPagas: ["rcd2"],
+  });
+  ok((await qtd(estA._id)) === a1 - 2, `das 3 pagas, 1 já tinha saído: baixa só 2 (${a1} -> ${await qtd(estA._id)})`);
+
+  // Painel antigo (sem a lista): comportamento de antes, baixa pelo que o servidor sabe
+  await gravar(mesa(904, [sc(5, [], [rod("rcd3", [alcatra(1)])])]));
+  const a2 = await qtd(estA._id);
+  await api("POST", "/vendas-salao", {
+    mesa: 904, itens: [alcatra(1)], subtotal: 9, desconto: 0, total: 9, pagamento: "pix",
+    liberarMesa: { mesaId: 904, modo: "comanda", scIds: [4] },
+  });
+  ok((await qtd(estA._id)) === a2 - 1, `sem a lista (painel antigo), a comanda que não bate baixa de novo, como antes (${a2} -> ${await qtd(estA._id)})`);
+
+  // Pagamento parcial ignora a lista (nem tudo das rodadas está sendo pago)
+  await gravar(mesa(905, [sc(1, [alcatra(1)], [rod("rcd4", [alcatra(2)])])]));
+  const a3 = await qtd(estA._id);
+  await api("POST", "/vendas-salao", {
+    mesa: 905, itens: [alcatra(3)], subtotal: 27, desconto: 0, total: 27, pagamento: "pix",
+    liberarMesa: { mesaId: 905, modo: "parcial", scIds: [1] }, rodadasPagas: ["rcd4"],
+  });
+  ok((await qtd(estA._id)) === a3 - 1, `parcial: baixa só a que não foi para a cozinha (${a3} -> ${await qtd(estA._id)})`);
+}
+
+for (const id of [5, 6, 7, 901, 902, 903, 904, 905]) await api("POST", `/mesas/${id}/liberar`, { motivo: "fim do teste" });
 await api("DELETE", "/estoque/" + estA._id);
 await api("DELETE", "/estoque/" + estH._id);
 console.log(falhas === 0 ? "\nTUDO PASSOU\n" : `\n${falhas} FALHA(S)\n`);

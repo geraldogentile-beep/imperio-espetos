@@ -58,6 +58,23 @@ for (const [metodo, rota] of [["GET", "/mesas"], ["GET", "/cardapio"], ["GET", "
   ok(t.status === 201, `POST /impressao (ticket para o caixa) -> ${t.status}`);
 }
 
+// Estoque na comanda (pedido da dona, 23/11/2026): o garçom vê quanto tem de
+// cada produto, mas nada de custo nem margem, e não vê a lista do estoque.
+console.log("\n=== o garcom ve a quantidade em estoque, sem custo ===");
+{
+  const est = (await dono("POST", "/estoque", { nome: "Alcatra (teste garçom)", unidade: "un", quantidade: 7, minimo: 3, cardapioNomes: ["Alcatra"], custoPorUnidade: 6.5, margemDesejada: 50 })).corpo;
+  const chopp = (await dono("POST", "/estoque", { nome: "Barril (teste garçom)", unidade: "L", tipo: "chopp", quantidade: 10, consumoPorVenda: 0.4, cardapioNomes: ["Chopp Pilsen"] })).corpo;
+  const r = await garcom("GET", "/estoque/saldos");
+  const s = r.corpo.saldos || {};
+  ok(r.status === 200 && s.alcatra?.disponivel === 7 && s.alcatra?.minimo === 3, `GET /estoque/saldos -> ${r.status}: alcatra ${JSON.stringify(s.alcatra)}`);
+  ok(s["chopp pilsen"]?.disponivel === 25, `chopp em copos: 10 L ÷ 0,4 = ${s["chopp pilsen"]?.disponivel}`);
+  ok(!/custo|margem|6\.5|fornecedor/i.test(JSON.stringify(r.corpo)), "nenhum custo, margem ou fornecedor na resposta");
+  ok((await garcom("GET", "/estoque")).status === 403, "a lista completa do estoque continua só do adm");
+  await dono("DELETE", "/estoque/" + est._id);
+  await dono("DELETE", "/estoque/" + chopp._id);
+  ok(!("alcatra" in ((await garcom("GET", "/estoque/saldos")).corpo.saldos || {})), "item tirado do estoque some dos saldos");
+}
+
 console.log("\n=== o dono continua vendo tudo ===");
 for (const [metodo, rota] of [["GET", "/vendas-salao"], ["GET", "/caixa/periodo"], ["GET", "/pedidos"], ["GET", "/fechamento-dia"]]) {
   const r = await dono(metodo, rota);
