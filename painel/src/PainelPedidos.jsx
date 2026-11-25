@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { Fragment, useState, useEffect, useCallback, useRef } from "react";
 import { authFetch } from "./auth.js";
 import { impressora, ehCelular } from "./bluetoothPrinter.js";
 
@@ -6187,11 +6187,19 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const [loadingGarcons, setLoadingGarcons] = useState(false);
   const [relLucro, setRelLucro] = useState(null);
   const [loadingLucro, setLoadingLucro] = useState(false);
+  // Início do período escolhido em cima ("Hoje", "7 dias", "30 dias"). O dia
+  // começa às 06:00 (dia operacional), igual em todas as abas: antes Lucro e
+  // Perdas contavam da meia-noite e Vendas/Garçons nem olhavam o período.
+  const inicioDoPeriodo = (p) => {
+    const d = inicioDoExpediente();
+    d.setDate(d.getDate() - (({ hoje: 1, semana: 7, mes: 30 }[p] ?? 7) - 1));
+    return d;
+  };
   // Perdas de mercadoria no mesmo período do relatório
   const [perdasPeriodo, setPerdasPeriodo] = useState(null);
   useEffect(() => {
     let vivo = true;
-    const de = new Date(); de.setDate(de.getDate() - ({ hoje: 0, semana: 6, mes: 29 }[periodo] ?? 6)); de.setHours(0, 0, 0, 0);
+    const de = inicioDoPeriodo(periodo);
     authFetch(`${BACKEND_URL}/estoque/perdas?de=${de.toISOString()}&ate=${new Date().toISOString()}`)
       .then(r => (r.ok ? r.json() : null)).then(d => { if (vivo) setPerdasPeriodo(d); }).catch(() => {});
     return () => { vivo = false; };
@@ -6201,12 +6209,6 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const [selecionadas, setSelecionadas] = useState([]);
   const [emitindoLote, setEmitindoLote] = useState(false);
   const [resultadoLote, setResultadoLote] = useState(null);
-
-  // So entra no lote comanda que ja foi salva no servidor e ainda nao tem nota
-  const elegiveisLote = historicoSalao.filter(v => v._id && v.notaFiscalStatus !== "autorizada");
-  const totalSelecionado = historicoSalao
-    .filter(v => selecionadas.includes(v._id))
-    .reduce((soma, v) => soma + (Number(v.total) || 0), 0);
 
   function alternarSelecao(id) {
     setSelecionadas(atual => atual.includes(id) ? atual.filter(x => x !== id) : [...atual, id]);
@@ -6236,9 +6238,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       } else {
         setResultadoLote(d);
         const ok = new Set(d.resultados.filter(x => x.ok).map(x => x.vendaId));
-        if (setHistoricoSalao) {
-          setHistoricoSalao(h => h.map(v => ok.has(String(v._id)) ? { ...v, notaFiscalStatus: "autorizada" } : v));
-        }
+        ok.forEach(id => atualizarVendaNaTela(id, { notaFiscalStatus: "autorizada" }));
         setSelecionadas(atual => atual.filter(id => !ok.has(String(id))));
       }
     } catch { setResultadoLote({ erroGeral: "Erro de conexao ao emitir o lote." }); }
@@ -6248,7 +6248,10 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   async function carregarRelGarcons() {
     setLoadingGarcons(true);
     try {
-      const res = await authFetch(BACKEND_URL + "/garcons/relatorio");
+      // Sem as datas o servidor somava as vendas de sempre, qualquer que
+      // fosse o período escolhido
+      const de = inicioDoPeriodo(periodo);
+      const res = await authFetch(`${BACKEND_URL}/garcons/relatorio?de=${de.toISOString()}&ate=${new Date().toISOString()}`);
       if (res.ok) setRelGarcons(await res.json());
     } catch {}
     setLoadingGarcons(false);
@@ -6258,8 +6261,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
     setLoadingLucro(true);
     try {
       const hoje = new Date();
-      const dias = { hoje: 0, semana: 6, mes: 29 }[periodo];
-      const de = new Date(hoje); de.setDate(de.getDate() - dias); de.setHours(0,0,0,0);
+      const de = inicioDoPeriodo(periodo);
       const res = await authFetch(`${BACKEND_URL}/relatorio/lucro?de=${de.toISOString()}&ate=${hoje.toISOString()}`);
       if (res.ok) setRelLucro(await res.json());
     } catch {}
@@ -6277,8 +6279,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   // as vendas dos dias anteriores. Agora vêm do servidor, pelo período.
   // O dia começa às 06:00 (dia operacional), como no resto do app.
   const diasPeriodo = { hoje: 1, semana: 7, mes: 30 }[periodo] ?? 7;
-  const inicioPeriodo = inicioDoExpediente();
-  inicioPeriodo.setDate(inicioPeriodo.getDate() - (diasPeriodo - 1));
+  const inicioPeriodo = inicioDoPeriodo(periodo);
   const chavePeriodo = inicioPeriodo.toISOString();
   const [vendasRel, setVendasRel] = useState({ chave: "", lista: null, erro: "" });
   useEffect(() => {
@@ -6302,6 +6303,47 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
   const carregandoVendas = vendasRel.lista === null || vendasRel.chave !== chavePeriodo;
   const vendasTodas = vendasRel.lista || [];   // período + o anterior
   const vendasPer = vendasTodas.filter(v => new Date(v.fechamento) >= inicioPeriodo);
+
+  // Lista da aba Vendas: as vendas do período (servidor) e as recém-fechadas
+  // neste aparelho que ainda não vieram na última leitura. Antes era só o
+  // caixa aberto: com o caixa fechado a aba ficava vazia, qualquer período.
+  const idsDoPeriodo = new Set(vendasPer.map(chaveVenda));
+  const vendasLista = [
+    ...vendasPer,
+    ...historicoSalao.filter(v => !idsDoPeriodo.has(chaveVenda(v)) && new Date(v.fechamento) >= inicioPeriodo),
+  ].sort((a, b) => new Date(b.fechamento) - new Date(a.fechamento));
+  // Nota emitida, venda corrigida ou excluída: muda nas duas listas
+  function atualizarVendaNaTela(id, patch) {
+    const mesma = (x) => String(x._id) === String(id);
+    setVendasRel(r => (r.lista ? { ...r, lista: r.lista.map(x => (mesma(x) ? { ...x, ...patch } : x)) } : r));
+    if (setHistoricoSalao) setHistoricoSalao(h => h.map(x => (mesma(x) ? { ...x, ...patch } : x)));
+  }
+  function tirarVendaDaTela(v) {
+    setVendasRel(r => (r.lista ? { ...r, lista: r.lista.filter(x => chaveVenda(x) !== chaveVenda(v)) } : r));
+    // O faturamento do caixa só cai se a venda era do caixa aberto
+    if (historicoSalao.some(x => chaveVenda(x) === chaveVenda(v)) && setFaturadoSalaoRel) {
+      setFaturadoSalaoRel(f => Math.max(0, f - (Number(v.total) || 0)));
+    }
+    if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => chaveVenda(x) !== chaveVenda(v)));
+  }
+  // Só entra no lote venda do caixa aberto, já salva no servidor e sem nota.
+  // O lote é para emitir as notas da noite de uma vez; venda de outro dia
+  // tem o botão individual (não dá para mandar 7 dias de notas sem querer).
+  const idsDoCaixa = new Set(historicoSalao.map(chaveVenda));
+  const elegiveisLote = vendasLista.filter(v => v._id && v.notaFiscalStatus !== "autorizada" && idsDoCaixa.has(chaveVenda(v)));
+  const idsDoLote = new Set(elegiveisLote.map(chaveVenda));
+  const totalSelecionado = vendasLista
+    .filter(v => selecionadas.includes(v._id))
+    .reduce((soma, v) => soma + (Number(v.total) || 0), 0);
+  // Cabeçalho do dia na lista: "Hoje", "Ontem" ou "qua 19/11" (dia operacional)
+  const hojeOp = diaOperacional();
+  const ontemOp = (() => { const d = inicioDoExpediente(); d.setDate(d.getDate() - 1); return diaOperacional(d); })();
+  const rotuloDia = (dia) => {
+    if (dia === hojeOp) return "Hoje";
+    if (dia === ontemOp) return "Ontem";
+    const d = new Date(dia + "T12:00:00");
+    return d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" }).replace(".", "");
+  };
 
   const entregues = pedidos.filter(p => p.status === "entregue");
   const pp = entregues.filter(p => new Date(p.horario) >= inicioPeriodo);
@@ -6392,7 +6434,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
       </div>
 
       {/* DASHBOARD */}
-      {["dash", "geral", "diasemana", "ranking"].includes(subAba) && avisoVendas}
+      {["dash", "geral", "diasemana", "ranking", "vendas"].includes(subAba) && avisoVendas}
       {subAba === "dash" && (
         <DashboardCharts pedidos={pedidos} historicoSalao={vendasTodas} periodo={periodo} taxaEntrega={taxaEntrega} />
       )}
@@ -6428,9 +6470,9 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {/* Resumo */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Metrica icon="🧾" label="Vendas do caixa" valor={historicoSalao.length} sub={historicoSalao.length === 0 ? "nenhuma ainda" : "desde o ultimo fechamento"} cor="#7b1a0a" />
-            <Metrica icon="💰" label="Total salão" valor={fmtBR(faturadoSalao + mesasSalao.reduce((s,m)=>s+totMesaVenda(m),0))} cor="#10b981" />
-            <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(historicoSalao.map(v=>v.garcom).filter(g=>g!=="—"))].length || "—"} cor="#3b82f6" />
+            <Metrica icon="🧾" label="Vendas" valor={vendasLista.length} sub={{ hoje: "hoje (desde as 06:00)", semana: "nos últimos 7 dias", mes: "nos últimos 30 dias" }[periodo]} cor="#7b1a0a" />
+            <Metrica icon="💰" label="Total das vendas" valor={fmtBR(vendasLista.reduce((s, v) => s + (Number(v.total) || 0), 0))} sub="comandas fechadas" cor="#10b981" />
+            <Metrica icon="🧑‍🍳" label="Garçons" valor={[...new Set(vendasLista.map(v=>v.garcom).filter(g=>g && g!=="—"))].length || "—"} cor="#3b82f6" />
           </div>
 
           {/* Botão zerar operação */}
@@ -6482,7 +6524,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
               {!modoLote ? (
                 <button onClick={() => setModoLote(true)}
                   style={{ width: "100%", background: "#fff", color: "#7b1a0a", border: "1.5px solid #7b1a0a", borderRadius: 10, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                  🧾 Emitir notas em lote ({elegiveisLote.length} sem nota)
+                  🧾 Emitir notas em lote do caixa aberto ({elegiveisLote.length} sem nota)
                 </button>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -6532,7 +6574,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                         {resultadoLote.falhas > 0 && <span style={{ color: "#991b1b" }}> · {resultadoLote.falhas} com erro</span>}
                       </div>
                       {resultadoLote.resultados.filter(x => !x.ok).map(x => {
-                        const v = historicoSalao.find(h => String(h._id) === String(x.vendaId));
+                        const v = vendasLista.find(h => String(h._id) === String(x.vendaId));
                         return (
                           <div key={x.vendaId} style={{ fontSize: 11, color: "#991b1b", lineHeight: 1.45 }}>
                             <strong>{v ? `Mesa ${v.mesa}` : x.vendaId}</strong>: {x.erro}
@@ -6548,26 +6590,38 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
           )}
 
           {/* Lista de vendas */}
-          {historicoSalao.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 20px", color: "#ccc" }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>🧾</div>
-              <div>Nenhuma venda registrada hoje</div>
-            </div>
+          {vendasLista.length === 0 ? (
+            !carregandoVendas && (
+              <div style={{ textAlign: "center", padding: "40px 20px", color: "#ccc" }}>
+                <div style={{ fontSize: 40, marginBottom: 8 }}>🧾</div>
+                <div>{periodo === "hoje" ? "Nenhuma venda hoje ainda" : "Nenhuma venda no período"}</div>
+              </div>
+            )
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {[...historicoSalao].reverse().map(v => (
-                <div key={chaveVenda(v)} style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: vendaAberta === chaveVenda(v) ? "2px solid #7b1a0a" : "2px solid transparent" }}>
+              {vendasLista.map((v, i) => {
+                const dia = diaOperacional(new Date(v.fechamento));
+                const diaAnterior = i > 0 ? diaOperacional(new Date(vendasLista[i - 1].fechamento)) : null;
+                const doDia = dia !== diaAnterior ? vendasLista.filter(x => diaOperacional(new Date(x.fechamento)) === dia) : null;
+                return (
+                <Fragment key={chaveVenda(v)}>
+                {doDia && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: i > 0 ? "8px 4px 0" : "0 4px", fontSize: 12, fontWeight: 700, color: "#7b1a0a" }}>
+                    <span style={{ textTransform: "capitalize" }}>{rotuloDia(dia)}</span>
+                    <span style={{ color: "#888", fontWeight: 600 }}>{doDia.length} venda{doDia.length !== 1 ? "s" : ""} · {fmtBR(doDia.reduce((s, x) => s + (Number(x.total) || 0), 0))}</span>
+                  </div>
+                )}
+                <div style={{ background: "#fff", borderRadius: 14, padding: "14px 16px", boxShadow: "0 2px 10px rgba(0,0,0,0.07)", border: vendaAberta === chaveVenda(v) ? "2px solid #7b1a0a" : "2px solid transparent" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
                     onClick={() => {
                       // No modo lote, tocar na comanda marca/desmarca em vez de abrir
-                      if (modoLote && v._id && v.notaFiscalStatus !== "autorizada") return alternarSelecao(v._id);
+                      if (modoLote && idsDoLote.has(chaveVenda(v))) return alternarSelecao(v._id);
                       setVendaAberta(vendaAberta === chaveVenda(v) ? null : chaveVenda(v));
                     }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      {modoLote && (
+                      {modoLote && idsDoLote.has(chaveVenda(v)) && (
                         <input type="checkbox" readOnly
                           checked={selecionadas.includes(v._id)}
-                          disabled={!v._id || v.notaFiscalStatus === "autorizada"}
                           style={{ width: 20, height: 20, accentColor: "#7b1a0a", flexShrink: 0, cursor: "pointer" }} />
                       )}
                     <div>
@@ -6596,7 +6650,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                           <span>{fmtBR((it.qty*it.preco))}</span>
                         </div>
                       ))}
-                      {v._id && <BotaoEmitirNota venda={v} onEmitido={(st, notaId) => { if (setHistoricoSalao) setHistoricoSalao(h => h.map(x => x._id === v._id ? { ...x, notaFiscalStatus: st || "autorizada", notaFiscalId: notaId || x.notaFiscalId } : x)); }} />}
+                      {v._id && <BotaoEmitirNota venda={v} onEmitido={(st, notaId) => atualizarVendaNaTela(v._id, { notaFiscalStatus: st || "autorizada", notaFiscalId: notaId || v.notaFiscalId })} />}
                       <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.grayL}`, display:"flex", gap:8 }}>
                         <button onClick={(e)=>{
                           e.stopPropagation();
@@ -6641,8 +6695,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                                 if (!r.ok) { const d = await r.json().catch(() => ({})); alert("Nao foi possivel excluir: " + (d.erro || r.status)); return; }
                               } catch { alert("Sem conexao: a venda nao foi excluida."); return; }
                             }
-                            if (setHistoricoSalao) setHistoricoSalao(h => h.filter(x => chaveVenda(x) !== chaveVenda(v)));
-                            if (setFaturadoSalaoRel) setFaturadoSalaoRel(f => Math.max(0, f - v.total));
+                            tirarVendaDaTela(v);
                             setVendaAberta(null);
                           }
                         }} style={{ background: "#fee2e2", color: "#ef4444", border: "1.5px solid #ef4444", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", flex: 1 }}>
@@ -6661,9 +6714,7 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                           onCancelar={() => setCorrigindo(null)}
                           onPronto={(atualizada) => {
                             setCorrigindo(null);
-                            if (setHistoricoSalao && atualizada) {
-                              setHistoricoSalao(h => h.map(x => String(x._id) === String(atualizada._id) ? { ...x, ...atualizada } : x));
-                            }
+                            if (atualizada) atualizarVendaNaTela(atualizada._id, atualizada);
                           }} />
                       )}
 
@@ -6676,7 +6727,9 @@ function Relatorios({ pedidos, taxaEntrega = TAXA_ENTREGA_PADRAO, faturadoSalao 
                     </div>
                   )}
                 </div>
-              ))}
+                </Fragment>
+                );
+              })}
             </div>
           )}
         </div>
